@@ -27,7 +27,7 @@ from telegram.ext import (
 # ============================================================
 # KHÔNG dán token thật trực tiếp vào mã nguồn.
 # Linux/Termux: export BOT_TOKEN="TOKEN_CUA_BAN"
-# Windows PowerShell: $env:BOT_TOKEN="TOKEN_CUA_BAN"
+# Windows PowerShell: $env:BOT_TOKEN=" 8897687168:AAH4oBxp4puYtbk_L_FjrRxT2sM8Uw9Iq6Q"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 ADMIN_ID = 5633649201
