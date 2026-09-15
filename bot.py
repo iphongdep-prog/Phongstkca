@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 
 # ================= CẤU HÌNH BOT =================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Thay Token Bot của bạn vào đây
+BOT_TOKEN = " 8897687168:AAH4oBxp4puYtbk_L_FjrRxT2sM8Uw9Iq6Q"  # Thay Token Bot của bạn vào đây
 ADMIN_ID = 5633649201
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
