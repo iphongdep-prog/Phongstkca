@@ -52,7 +52,11 @@ MIN_WITHDRAW = 5000
 MAX_WITHDRAW = 300000
 REFERRAL_REWARD = 1000
 
-# Anti spam
+
+# ============================================================
+# ANTI SPAM
+# ============================================================
+
 SPAM_WINDOW_SECONDS = 4
 SPAM_MAX_MESSAGES = 10
 TEMP_BAN_MINUTES = 2
@@ -80,7 +84,9 @@ logger = logging.getLogger(__name__)
 
 def get_db():
     if not DATABASE_URL:
-        raise RuntimeError("Chưa cấu hình DATABASE_URL trên Railway.")
+        raise RuntimeError(
+            "Chưa cấu hình DATABASE_URL trên Railway."
+        )
 
     return psycopg.connect(
         DATABASE_URL,
@@ -98,7 +104,9 @@ def init_db():
         # ----------------------------------------------------
         # USERS
         # ----------------------------------------------------
-        cursor.execute("""
+
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
@@ -109,12 +117,15 @@ def init_db():
                 is_withdraw_banned INTEGER NOT NULL DEFAULT 0,
                 joined_at TEXT
             )
-        """)
+            """
+        )
 
         # ----------------------------------------------------
         # TRANSACTIONS
         # ----------------------------------------------------
-        cursor.execute("""
+
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS transactions (
                 id BIGSERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
@@ -124,64 +135,85 @@ def init_db():
                 created_at TEXT NOT NULL,
                 details TEXT
             )
-        """)
+            """
+        )
 
         # ----------------------------------------------------
         # GROUPS
         # ----------------------------------------------------
-        cursor.execute("""
+
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY
             )
-        """)
+            """
+        )
 
         # ----------------------------------------------------
         # SETTINGS
         # ----------------------------------------------------
-        cursor.execute("""
+
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )
-        """)
+            """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO settings (key, value)
             VALUES ('maintenance', '0')
             ON CONFLICT (key) DO NOTHING
-        """)
+            """
+        )
 
         # ----------------------------------------------------
         # INDEX
         # ----------------------------------------------------
-        cursor.execute("""
+
+        cursor.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_transactions_user
             ON transactions(user_id, id DESC)
-        """)
+            """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_transactions_withdraw
             ON transactions(type, status, id)
-        """)
+            """
+        )
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_users_referrer
             ON users(referrer_id)
-        """)
+            """
+        )
 
         # ----------------------------------------------------
-        # NGĂN THƯỞNG REF GIỚI THIỆU TRÙNG
+        # CHỐNG THƯỞNG REF TRÙNG
         # ----------------------------------------------------
-        cursor.execute("""
+
+        cursor.execute(
+            """
             CREATE UNIQUE INDEX IF NOT EXISTS
             idx_unique_referral_reward
             ON transactions(user_id, type, details)
             WHERE type = 'Thưởng Mời Bạn'
-        """)
+            """
+        )
 
         conn.commit()
 
-        logger.info("Database PostgreSQL đã sẵn sàng.")
+        logger.info(
+            "Database PostgreSQL đã sẵn sàng."
+        )
 
     except Exception:
         conn.rollback()
@@ -245,7 +277,9 @@ def db_transaction(callback):
 
 
 def get_now_str():
-    return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(TIMEZONE).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
 # ============================================================
@@ -287,7 +321,9 @@ def is_maintenance():
         fetchone=True,
     )
 
-    return bool(res and res[0] == "1")
+    return bool(
+        res and res[0] == "1"
+    )
 
 
 # ============================================================
@@ -327,7 +363,10 @@ async def check_channel_membership(bot, user_id):
                 user_id=user_id,
             )
 
-            if member.status in ("left", "kicked"):
+            if member.status in (
+                "left",
+                "kicked",
+            ):
                 return False
 
         except Exception as exc:
@@ -355,7 +394,11 @@ async def handle_anti_spam(
     user = update.effective_user
     message = update.effective_message
 
-    if not user or user.id == ADMIN_ID or not message:
+    if (
+        not user
+        or user.id == ADMIN_ID
+        or not message
+    ):
         return False
 
     now = datetime.now()
@@ -368,15 +411,17 @@ async def handle_anti_spam(
 
             remaining_seconds = max(
                 0,
-                int((ban_until - now).total_seconds()),
+                int(
+                    (ban_until - now).total_seconds()
+                ),
             )
 
             minutes = remaining_seconds // 60
             seconds = remaining_seconds % 60
 
             await message.reply_text(
-                f"🚫 Bạn đang bị cấm sử dụng bot trong "
-                f"{minutes} phút {seconds} giây nữa!\n"
+                f"🚫 Bạn đang bị cấm sử dụng bot "
+                f"trong {minutes} phút {seconds} giây nữa!\n"
                 f"Lý do: Spam tin nhắn."
             )
 
@@ -400,14 +445,15 @@ async def handle_anti_spam(
     if len(user_msg_tracker[user.id]) >= SPAM_MAX_MESSAGES:
 
         temp_bans[user.id] = (
-            now + timedelta(minutes=TEMP_BAN_MINUTES)
+            now
+            + timedelta(minutes=TEMP_BAN_MINUTES)
         )
 
         user_msg_tracker[user.id].clear()
 
         await message.reply_text(
-            f"🚫 Bạn đã bị cấm sử dụng bot trong "
-            f"{TEMP_BAN_MINUTES} phút!\n"
+            f"🚫 Bạn đã bị cấm sử dụng bot "
+            f"trong {TEMP_BAN_MINUTES} phút!\n"
             f"Lý do: Spam {SPAM_MAX_MESSAGES} tin nhắn "
             f"trong {SPAM_WINDOW_SECONDS} giây."
         )
@@ -487,6 +533,34 @@ async def require_private_user(update: Update):
 
         return False
 
+    if not row:
+
+        db_query(
+            """
+            INSERT INTO users
+                (
+                    user_id,
+                    username,
+                    balance,
+                    joined_at
+                )
+            VALUES
+                (
+                    %s,
+                    %s,
+                    0,
+                    %s
+                )
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            (
+                user.id,
+                user.username or "",
+                get_now_str(),
+            ),
+            commit=True,
+        )
+
     return True
 
 
@@ -499,7 +573,10 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    if await handle_anti_spam(update, context):
+    if await handle_anti_spam(
+        update,
+        context,
+    ):
         return
 
     user = update.effective_user
@@ -530,10 +607,14 @@ async def start_command(
     # BẢO TRÌ
     # --------------------------------------------------------
 
-    if is_maintenance() and user.id != ADMIN_ID:
+    if (
+        is_maintenance()
+        and user.id != ADMIN_ID
+    ):
 
         await update.message.reply_text(
-            "🔴 Hệ thống đang bảo trì, vui lòng quay lại sau!"
+            "🔴 Hệ thống đang bảo trì, "
+            "vui lòng quay lại sau!"
         )
 
         return
@@ -587,7 +668,10 @@ async def start_command(
                 if ref_exists:
                     referrer_id = ref_id
 
-        except (ValueError, TypeError):
+        except (
+            ValueError,
+            TypeError,
+        ):
             pass
 
     # --------------------------------------------------------
@@ -606,7 +690,14 @@ async def start_command(
                     referrer_id,
                     joined_at
                 )
-            VALUES (%s, %s, 0, %s, %s)
+            VALUES
+                (
+                    %s,
+                    %s,
+                    0,
+                    %s,
+                    %s
+                )
             ON CONFLICT (user_id) DO NOTHING
             """,
             (
@@ -690,8 +781,8 @@ async def start_command(
         ]
 
         await update.message.reply_text(
-            "⚠️ *Vui lòng tham gia đầy đủ các kênh bên dưới "
-            "để sử dụng bot:*",
+            "⚠️ *Vui lòng tham gia đầy đủ các kênh "
+            "bên dưới để sử dụng bot:*",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="Markdown",
         )
@@ -709,7 +800,7 @@ async def start_command(
 
 
 # ============================================================
-# CAPTCHA
+# GỬI CAPTCHA
 # ============================================================
 
 async def send_captcha_challenge(
@@ -796,7 +887,10 @@ async def verify_join_callback(
     except Exception:
         pass
 
-    if is_maintenance() and user.id != ADMIN_ID:
+    if (
+        is_maintenance()
+        and user.id != ADMIN_ID
+    ):
 
         try:
             await query.answer(
@@ -854,7 +948,10 @@ async def captcha_callback(
             data.split("_")[1]
         )
 
-    except (IndexError, ValueError):
+    except (
+        IndexError,
+        ValueError,
+    ):
         return
 
     correct_ans = context.user_data.get(
@@ -931,7 +1028,6 @@ async def captcha_callback(
 
                 details = f"Mời {user.id}"
 
-                # INSERT TRƯỚC
                 cursor.execute(
                     """
                     INSERT INTO transactions
@@ -967,7 +1063,6 @@ async def captcha_callback(
                 if cursor.rowcount != 1:
                     return False
 
-                # CHỈ CỘNG TIỀN NẾU INSERT THÀNH CÔNG
                 cursor.execute(
                     """
                     UPDATE users
@@ -1064,10 +1159,14 @@ async def menu_handler(
         None,
     )
 
-    if is_maintenance() and user.id != ADMIN_ID:
+    if (
+        is_maintenance()
+        and user.id != ADMIN_ID
+    ):
 
         await message.reply_text(
-            "🔴 Hệ thống đang bảo trì, vui lòng quay lại sau!"
+            "🔴 Hệ thống đang bảo trì, "
+            "vui lòng quay lại sau!"
         )
 
         return
@@ -1113,7 +1212,9 @@ async def menu_handler(
 
             return
 
-    text = (message.text or "").strip()
+    text = (
+        message.text or ""
+    ).strip()
 
     # ========================================================
     # TÀI KHOẢN
@@ -1179,7 +1280,8 @@ async def menu_handler(
             )
 
             await message.reply_text(
-                "❌ Không lấy được thông tin bot. Vui lòng thử lại."
+                "❌ Không lấy được thông tin bot. "
+                "Vui lòng thử lại."
             )
 
             return
@@ -1409,15 +1511,22 @@ async def link_bank_command(
 
     user = update.effective_user
 
-    if is_maintenance() and user.id != ADMIN_ID:
+    if (
+        is_maintenance()
+        and user.id != ADMIN_ID
+    ):
 
         await update.message.reply_text(
-            "🔴 Hệ thống đang bảo trì, vui lòng quay lại sau!"
+            "🔴 Hệ thống đang bảo trì, "
+            "vui lòng quay lại sau!"
         )
 
         return
 
-    if not context.args or len(context.args) < 3:
+    if (
+        not context.args
+        or len(context.args) < 3
+    ):
 
         await update.message.reply_text(
             "❌ Sai cú pháp!\n\n"
@@ -1461,6 +1570,124 @@ async def link_bank_command(
 
 
 # ============================================================
+# RESET BANK - ADMIN
+# ============================================================
+
+async def reset_bank_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not is_admin(update):
+        return
+
+    message = update.effective_message
+
+    if not message:
+        return
+
+    args = context.args or []
+
+    if len(args) < 1:
+
+        await message.reply_text(
+            "❌ Sai cú pháp.\n\n"
+            "Dùng:\n"
+            "`/resetbank USER_ID`\n\n"
+            "Ví dụ:\n"
+            "`/resetbank 123456789`",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    try:
+        target_id = int(args[0])
+
+    except (
+        ValueError,
+        TypeError,
+    ):
+
+        await message.reply_text(
+            "❌ USER_ID không hợp lệ."
+        )
+
+        return
+
+    user_exists = db_query(
+        """
+        SELECT user_id, bank_info
+        FROM users
+        WHERE user_id=%s
+        """,
+        (target_id,),
+        fetchone=True,
+    )
+
+    if not user_exists:
+
+        await message.reply_text(
+            f"❌ Không tìm thấy user `{target_id}` "
+            "trong database.",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    old_bank = user_exists[1]
+
+    db_query(
+        """
+        UPDATE users
+        SET bank_info=NULL
+        WHERE user_id=%s
+        """,
+        (target_id,),
+        commit=True,
+    )
+
+    # Nếu người đó đang trong trạng thái nhập tiền rút
+    user_withdraw_state.pop(
+        target_id,
+        None,
+    )
+
+    await message.reply_text(
+        f"✅ Đã reset thông tin ngân hàng của "
+        f"ID `{target_id}`.\n\n"
+        f"🏦 Bank cũ: "
+        f"`{old_bank or 'Chưa liên kết'}`\n\n"
+        "Người dùng cần dùng `/lk` để liên kết "
+        "ngân hàng mới.",
+        parse_mode="Markdown",
+    )
+
+    # Thông báo cho user
+    try:
+
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=(
+                "⚠️ *Thông tin ngân hàng của bạn "
+                "đã được Admin reset.*\n\n"
+                "Vui lòng liên kết lại ngân hàng bằng lệnh:\n"
+                "`/lk STK NGAN_HANG TEN_CHU_TAI_KHOAN`"
+            ),
+            parse_mode="Markdown",
+        )
+
+    except Exception as exc:
+
+        logger.warning(
+            "Không gửi được thông báo reset bank "
+            "cho user %s: %s",
+            target_id,
+            exc,
+        )
+
+
+# ============================================================
 # RÚT TIỀN
 # ============================================================
 
@@ -1478,10 +1705,15 @@ async def handle_withdraw_amount(
     if update.effective_chat.type != "private":
         return False
 
-    if user_withdraw_state.get(user.id) != "WAITING_AMOUNT":
+    if (
+        user_withdraw_state.get(user.id)
+        != "WAITING_AMOUNT"
+    ):
         return False
 
-    raw_text = (message.text or "").strip()
+    raw_text = (
+        message.text or ""
+    ).strip()
 
     text = (
         raw_text
@@ -1837,7 +2069,10 @@ async def admin_withdraw_callback(
 
         tx_id = int(tx_id_str)
 
-    except (ValueError, TypeError):
+    except (
+        ValueError,
+        TypeError,
+    ):
 
         try:
             await query.answer(
@@ -2136,10 +2371,7 @@ async def admin_commands(
 
                 return
 
-            content = (
-                (message.text or "")[3:]
-                .strip()
-            )
+            content = " ".join(args).strip()
 
             if not content:
 
@@ -2805,7 +3037,10 @@ async def admin_commands(
                 parse_mode="Markdown",
             )
 
-    except (ValueError, TypeError):
+    except (
+        ValueError,
+        TypeError,
+    ):
 
         await message.reply_text(
             "❌ Tham số không hợp lệ. "
@@ -2866,9 +3101,10 @@ async def error_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    logger.exception(
+    logger.error(
         "Exception khi xử lý update: %s",
         context.error,
+        exc_info=context.error,
     )
 
 
@@ -2879,11 +3115,13 @@ async def error_handler(
 def main():
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "Chưa cấu hình BOT_TOKEN."
         )
 
     if not DATABASE_URL:
+
         raise RuntimeError(
             "Chưa cấu hình DATABASE_URL."
         )
@@ -2913,6 +3151,14 @@ def main():
         CommandHandler(
             "lk",
             link_bank_command,
+        )
+    )
+
+    # Lệnh reset bank mới
+    app.add_handler(
+        CommandHandler(
+            "resetbank",
+            reset_bank_command,
         )
     )
 
