@@ -1,0 +1,21 @@
+# Cơ sở dữ liệu SQLite (Không đẩy dữ liệu người dùng lên Github)
+*.db
+*.sqlite3
+
+# File chứa Token / Mật khẩu
+.env
+config.py
+
+# Thư mục môi trường ảo Python
+venv/
+.venv/
+env/
+
+# File rác sinh ra trong quá trình chạy Python
+__pycache__/
+*.py[cod]
+*.log
+
+# Cấu hình IDE / Editor
+.vscode/
+.idea/
