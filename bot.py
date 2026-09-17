@@ -34,11 +34,11 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-ADMIN_ID = 5633649201
+# Danh sách ID Admin (Đã thêm ID 7902882919)
+ADMIN_IDS = [5633649201, 7902882919]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Đã cập nhật kênh mới @khuyenmaionline
 REQUIRED_CHANNELS = [
     "@hocviennghiencobac",
     "@conmuamenmenl",
@@ -357,7 +357,7 @@ async def handle_anti_spam(
     user = update.effective_user
     message = update.effective_message
 
-    if not user or user.id == ADMIN_ID or not message:
+    if not user or user.id in ADMIN_IDS or not message:
         return False
 
     now = datetime.now()
@@ -509,7 +509,7 @@ async def start_command(
         return
 
     # BẢO TRÌ
-    if is_maintenance() and user.id != ADMIN_ID:
+    if is_maintenance() and user.id not in ADMIN_IDS:
         await update.message.reply_text(
             "🔴 *HỆ THỐNG ĐANG BẢO TRÌ*\n\n"
             "🛠️ Bot đang thực hiện nâng cấp định kỳ, vui lòng quay lại sau!",
@@ -579,7 +579,7 @@ async def start_command(
             commit=True,
         )
 
-    # KIỂM TRA KÊNH (Đã cập nhật link Sankhuyenmaionline -> khuyenmaionline)
+    # KIỂM TRA KÊNH
     is_joined = await check_channel_membership(context.bot, user.id)
 
     if not is_joined:
@@ -709,7 +709,7 @@ async def verify_join_callback(
     except Exception:
         pass
 
-    if is_maintenance() and user.id != ADMIN_ID:
+    if is_maintenance() and user.id not in ADMIN_IDS:
         try:
             await query.answer("🔴 Hệ thống đang bảo trì.", show_alert=True)
         except Exception:
@@ -888,7 +888,7 @@ async def menu_handler(
 
     user_withdraw_state.pop(user.id, None)
 
-    if is_maintenance() and user.id != ADMIN_ID:
+    if is_maintenance() and user.id not in ADMIN_IDS:
         await message.reply_text(
             "🔴 *HỆ THỐNG ĐANG BẢO TRÌ*\n\n"
             "🛠️ Vui lòng quay lại sau!",
@@ -919,7 +919,7 @@ async def menu_handler(
         return
 
     # KIỂM TRA KÊNH
-    if user.id != ADMIN_ID:
+    if user.id not in ADMIN_IDS:
         if not await check_channel_membership(context.bot, user.id):
             await message.reply_text(
                 "⚠️ *Bạn chưa tham gia đủ các kênh bắt buộc!*\n"
@@ -1123,8 +1123,8 @@ async def link_bank_command(
 
     user = update.effective_user
 
-    if is_maintenance() and user.id != ADMIN_ID:
-        await message.reply_text("🔴 Hệ thống đang bảo trì, vui lòng quay lại sau!")
+    if is_maintenance() and user.id not in ADMIN_IDS:
+        await update.message.reply_text("🔴 Hệ thống đang bảo trì, vui lòng quay lại sau!")
         return
 
     if not context.args or len(context.args) < 3:
@@ -1367,7 +1367,7 @@ async def handle_withdraw_amount(
         parse_mode="Markdown"
     )
 
-    # GỬI CẢNH BÁO CHO ADMIN
+    # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN
     admin_buttons = [
         [
             InlineKeyboardButton("✅ DUYỆT", callback_data=f"approve_{tx_id}"),
@@ -1385,15 +1385,16 @@ async def handle_withdraw_amount(
         f"🕒 *Thời gian:* `{get_now_str()}`"
     )
 
-    try:
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=admin_msg,
-            reply_markup=InlineKeyboardMarkup(admin_buttons),
-            parse_mode="Markdown",
-        )
-    except Exception as exc:
-        logger.exception("Không gửi được yêu cầu rút cho admin: %s", exc)
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_msg,
+                reply_markup=InlineKeyboardMarkup(admin_buttons),
+                parse_mode="Markdown",
+            )
+        except Exception as exc:
+            logger.exception("Không gửi được yêu cầu rút cho admin %s: %s", admin_id, exc)
 
     return True
 
@@ -1410,7 +1411,7 @@ async def admin_withdraw_callback(
     if not query:
         return
 
-    if query.from_user.id != ADMIN_ID:
+    if query.from_user.id not in ADMIN_IDS:
         try:
             await query.answer("❌ Quyền truy cập bị từ chối.", show_alert=True)
         except Exception:
@@ -1537,11 +1538,74 @@ async def admin_withdraw_callback(
 
 
 # ============================================================
+# CALLBACK XEM FULL THÔNG TIN USER KHI BẤM NÚT ID (/TONG)
+# ============================================================
+
+async def admin_userinfo_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    query = update.callback_query
+    if not query:
+        return
+
+    if query.from_user.id not in ADMIN_IDS:
+        try:
+            await query.answer("❌ Quyền truy cập bị từ chối.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    data = query.data or ""
+    try:
+        target_id = int(data.split("_")[1])
+    except (IndexError, ValueError):
+        return
+
+    u = db_query("SELECT * FROM users WHERE user_id=%s", (target_id,), fetchone=True)
+
+    if not u:
+        try:
+            await query.answer("❌ Không tìm thấy thông tin user này.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    username = f"@{u[1]}" if u[1] else "Chưa đặt"
+    bank = u[3] if u[3] else "Chưa liên kết"
+    referrer = u[4] if u[4] is not None else "Không có"
+
+    msg = (
+        f"🔍 *THÔNG TIN CHI TIẾT USER*\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 ID: `{u[0]}`\n"
+        f"👤 Username: {username}\n"
+        f"💰 Số dư: `{u[2]:,}đ`\n"
+        f"🏦 Ngân hàng: `{bank}`\n"
+        f"🔗 Khách giới thiệu: `{referrer}`\n"
+        f"🚫 Khóa TK: *{'CÓ' if u[5] else 'KHÔNG'}*\n"
+        f"🚫 Cấm rút: *{'CÓ' if u[6] else 'KHÔNG'}*\n"
+        f"🕒 Tham gia: `{u[7]}`"
+    )
+
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=msg,
+        parse_mode="Markdown",
+    )
+
+
+# ============================================================
 # ADMIN COMMANDS
 # ============================================================
 
 def is_admin(update: Update):
-    return bool(update.effective_user and update.effective_user.id == ADMIN_ID)
+    return bool(update.effective_user and update.effective_user.id in ADMIN_IDS)
 
 
 async def admin_commands(
@@ -1559,8 +1623,43 @@ async def admin_commands(
     args = context.args or []
 
     try:
+        # /TONG - TỔNG NGƯỜI DÙNG VÀ HIỂN THỊ NÚT ID
+        if cmd == "/tong":
+            total_users = db_query("SELECT COUNT(*) FROM users", fetchone=True)[0]
+            users = db_query("SELECT user_id, username FROM users ORDER BY joined_at DESC LIMIT 50", fetchall=True)
+
+            msg = (
+                f"📊 *THỐNG KÊ TỔNG NGUỜI DÙNG*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👥 Tổng số người dùng trong hệ thống: *{total_users:,}*\n\n"
+                f"👇 *Bấm vào nút ID bên dưới để kiểm tra full thông tin:*"
+            )
+
+            buttons = []
+            row = []
+
+            for u_id, u_name in users:
+                btn_text = f"🆔 {u_id}"
+                if u_name:
+                    btn_text += f" (@{u_name})"
+                
+                row.append(InlineKeyboardButton(btn_text, callback_data=f"userinfo_{u_id}"))
+
+                if len(row) == 2:
+                    buttons.append(row)
+                    row = []
+
+            if row:
+                buttons.append(row)
+
+            await message.reply_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
+                parse_mode="Markdown",
+            )
+
         # /TB - THÔNG BÁO
-        if cmd == "/tb":
+        elif cmd == "/tb":
             if not args:
                 await message.reply_text("Cú pháp: `/tb Nội dung thông báo`", parse_mode="Markdown")
                 return
@@ -1891,14 +1990,18 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("lk", link_bank_command))
 
-    # CALLBACKS
+    # CALLBACKS USER & DUYỆT RÚT
     app.add_handler(CallbackQueryHandler(verify_join_callback, pattern=r"^verify_join$"))
     app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^captcha_\d+$"))
     app.add_handler(CallbackQueryHandler(cancel_withdraw_callback, pattern=r"^cancel_withdraw$"))
     app.add_handler(CallbackQueryHandler(admin_withdraw_callback, pattern=r"^(approve|reject)_\d+$"))
+    
+    # CALLBACK DÀNH CHO XEM THÔNG TIN USER KHI BẤM NÚT TỪ LỆNH /TONG
+    app.add_handler(CallbackQueryHandler(admin_userinfo_callback, pattern=r"^userinfo_\d+$"))
 
     # COMMANDS ADMIN
     admin_cmds = [
+        "tong",
         "tb",
         "info",
         "ban",
