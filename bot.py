@@ -1367,7 +1367,7 @@ async def handle_withdraw_amount(
         parse_mode="Markdown"
     )
 
-    # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN VÀ LƯU DẪN CHIẾU TIN NHẮN
+    # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN VÀ TẠO BỘ LƯU VẾT
     admin_buttons = [
         [
             InlineKeyboardButton("✅ DUYỆT", callback_data=f"approve_{tx_id}"),
@@ -1385,7 +1385,7 @@ async def handle_withdraw_amount(
         f"🕒 *Thời gian:* `{get_now_str()}`"
     )
 
-    admin_msg_refs = []
+    msg_refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
 
     for admin_id in ADMIN_IDS:
         try:
@@ -1395,21 +1395,19 @@ async def handle_withdraw_amount(
                 reply_markup=InlineKeyboardMarkup(admin_buttons),
                 parse_mode="Markdown",
             )
-            admin_msg_refs.append((admin_id, sent_msg.message_id))
+            msg_refs.append({
+                "chat_id": admin_id,
+                "message_id": sent_msg.message_id,
+                "base_text": admin_msg
+            })
         except Exception as exc:
             logger.exception("Không gửi được yêu cầu rút cho admin %s: %s", admin_id, exc)
-
-    # Lưu vết các tin nhắn đã gửi cho Admin để đồng bộ trạng thái sau khi duyệt
-    context.bot_data[f"withdraw_{tx_id}"] = {
-        "msg_refs": admin_msg_refs,
-        "base_text": admin_msg
-    }
 
     return True
 
 
 # ============================================================
-# DUYỆT / TỪ CHỐI LỆNH RÚT (ĐỒNG BỘ TẤT CẢ ADMIN)
+# DUYỆT / TỪ CHỐI LỆNH RÚT (ĐỒNG BỘ TOÀN BỘ ADMIN)
 # ============================================================
 
 async def admin_withdraw_callback(
@@ -1460,20 +1458,20 @@ async def admin_withdraw_callback(
         return
 
     user_id, amount, status, bank_info = tx
+    admin_name_str = f"@{admin_user.username}" if admin_user.username else f"`{admin_user.id}`"
 
+    # KIỂM TRA ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ CHƯA
     if status != "Chờ duyệt":
         try:
-            await query.edit_message_text(f"{query.message.text}\n\n⚠️ *GIAO DỊCH ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ!*")
+            await query.answer("⚠️ Giao dịch này đã được xử lý trước đó!", show_alert=True)
+            status_text = "✅ ĐÃ DUYỆT" if status == "Thành công" else "❌ ĐÃ TỪ CHỐI"
+            await query.edit_message_text(
+                f"{query.message.text}\n\n⚠️ *GIAO DỊCH ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ!* ({status_text})",
+                parse_mode="Markdown"
+            )
         except Exception:
             pass
         return
-
-    # Lấy dữ liệu tin nhắn đã gửi đến các Admin
-    tx_data = context.bot_data.pop(f"withdraw_{tx_id}", None)
-    msg_refs = tx_data["msg_refs"] if tx_data else []
-    base_text = tx_data["base_text"] if tx_data else query.message.text
-
-    admin_name_str = f"@{admin_user.username}" if admin_user.username else f"`{admin_user.id}`"
 
     # DUYỆT
     if action == "approve":
@@ -1495,26 +1493,7 @@ async def admin_withdraw_callback(
             return
 
         if changed:
-            update_text = f"{base_text}\n\n✅ *TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN* (Bởi Admin {admin_name_str})"
-            
-            # Đồng bộ chỉnh sửa giao diện ở tất cả tin nhắn Admin
-            if msg_refs:
-                for a_id, m_id in msg_refs:
-                    try:
-                        await context.bot.edit_message_text(
-                            chat_id=a_id,
-                            message_id=m_id,
-                            text=update_text,
-                            parse_mode="Markdown"
-                        )
-                    except Exception:
-                        pass
-            else:
-                try:
-                    await query.edit_message_text(update_text, parse_mode="Markdown")
-                except Exception:
-                    pass
-
+            # Thông báo cho người dùng
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1523,6 +1502,33 @@ async def admin_withdraw_callback(
                 )
             except Exception:
                 pass
+
+            # Đồng bộ chỉnh sửa tất cả tin nhắn Admin (Xóa nút & cập nhật trạng thái)
+            refs = context.bot_data.pop(f"tx_msgs_{tx_id}", [])
+            query_edited = False
+
+            for ref in refs:
+                update_text = f"{ref['base_text']}\n\n✅ *TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN* (Bởi Admin {admin_name_str})"
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=ref["chat_id"],
+                        message_id=ref["message_id"],
+                        text=update_text,
+                        parse_mode="Markdown"
+                    )
+                    if ref["chat_id"] == query.message.chat_id and ref["message_id"] == query.message.message_id:
+                        query_edited = True
+                except Exception:
+                    pass
+
+            if not query_edited:
+                try:
+                    await query.edit_message_text(
+                        f"{query.message.text}\n\n✅ *TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN* (Bởi Admin {admin_name_str})",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
 
     # TỪ CHỐI
     elif action == "reject":
@@ -1555,26 +1561,7 @@ async def admin_withdraw_callback(
             return
 
         if changed:
-            update_text = f"{base_text}\n\n❌ *TRẠNG THÁI: ĐÃ TỪ CHỐI* (Bởi Admin {admin_name_str})"
-
-            # Đồng bộ chỉnh sửa giao diện ở tất cả tin nhắn Admin
-            if msg_refs:
-                for a_id, m_id in msg_refs:
-                    try:
-                        await context.bot.edit_message_text(
-                            chat_id=a_id,
-                            message_id=m_id,
-                            text=update_text,
-                            parse_mode="Markdown"
-                        )
-                    except Exception:
-                        pass
-            else:
-                try:
-                    await query.edit_message_text(update_text, parse_mode="Markdown")
-                except Exception:
-                    pass
-
+            # Thông báo cho người dùng
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1583,6 +1570,33 @@ async def admin_withdraw_callback(
                 )
             except Exception:
                 pass
+
+            # Đồng bộ chỉnh sửa tất cả tin nhắn Admin (Xóa nút & cập nhật trạng thái)
+            refs = context.bot_data.pop(f"tx_msgs_{tx_id}", [])
+            query_edited = False
+
+            for ref in refs:
+                update_text = f"{ref['base_text']}\n\n❌ *TRẠNG THÁI: ĐÃ TỪ CHỐI* (Bởi Admin {admin_name_str})"
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=ref["chat_id"],
+                        message_id=ref["message_id"],
+                        text=update_text,
+                        parse_mode="Markdown"
+                    )
+                    if ref["chat_id"] == query.message.chat_id and ref["message_id"] == query.message.message_id:
+                        query_edited = True
+                except Exception:
+                    pass
+
+            if not query_edited:
+                try:
+                    await query.edit_message_text(
+                        f"{query.message.text}\n\n❌ *TRẠNG THÁI: ĐÃ TỪ CHỐI* (Bởi Admin {admin_name_str})",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
 
 
 # ============================================================
@@ -1712,6 +1726,104 @@ async def admin_commands(
                 reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
                 parse_mode="Markdown",
             )
+
+        # /TONGRUT - TỔNG TẤT CẢ SỐ TIỀN ĐÃ RÚT THÀNH CÔNG
+        elif cmd == "/tongrut":
+            res = db_query(
+                """
+                SELECT COALESCE(SUM(amount), 0), COUNT(*)
+                FROM transactions
+                WHERE type='Rút Tiền' AND status='Thành công'
+                """,
+                fetchone=True,
+            )
+            total_amount, total_count = res[0], res[1]
+
+            msg = (
+                f"💸 *TỔNG TOÀN BỘ SỐ TIỀN ĐÃ RÚT THÀNH CÔNG*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💰 *Tổng số tiền đã rút:* `{total_amount:,}đ`\n"
+                f"📊 *Tổng số lệnh thành công:* `{total_count:,}` lệnh"
+            )
+            await message.reply_text(msg, parse_mode="Markdown")
+
+        # /RUTID [USER_ID] - KIỂM TRA SỐ LẦN RÚT & THÔNG TIN USER
+        elif cmd == "/rutid":
+            if len(args) < 1:
+                await message.reply_text("📌 *Cú pháp:* `/rutid USER_ID`", parse_mode="Markdown")
+                return
+
+            try:
+                target_id = int(args[0])
+            except (ValueError, TypeError):
+                await message.reply_text("❌ USER_ID không hợp lệ.")
+                return
+
+            u = db_query("SELECT * FROM users WHERE user_id=%s", (target_id,), fetchone=True)
+            if not u:
+                await message.reply_text("❌ Không tìm thấy user này.")
+                return
+
+            # Thống kê rút tiền
+            stats = db_query(
+                """
+                SELECT 
+                    COUNT(*),
+                    COALESCE(SUM(CASE WHEN status='Thành công' THEN amount ELSE 0 END), 0),
+                    COUNT(CASE WHEN status='Thành công' THEN 1 END),
+                    COUNT(CASE WHEN status='Chờ duyệt' THEN 1 END),
+                    COUNT(CASE WHEN status='Từ chối' THEN 1 END)
+                FROM transactions
+                WHERE user_id=%s AND type='Rút Tiền'
+                """,
+                (target_id,),
+                fetchone=True
+            )
+
+            total_attempts, success_amount, success_count, pending_count, reject_count = stats
+
+            username = f"@{u[1]}" if u[1] else "Chưa đặt"
+            bank = u[3] if u[3] else "Chưa liên kết"
+            referrer = u[4] if u[4] is not None else "Không có"
+
+            # Danh sách lịch sử rút gần đây
+            withdraw_txs = db_query(
+                """
+                SELECT id, amount, status, created_at
+                FROM transactions
+                WHERE user_id=%s AND type='Rút Tiền'
+                ORDER BY id DESC LIMIT 10
+                """,
+                (target_id,),
+                fetchall=True
+            )
+
+            msg = (
+                f"🔍 *THÔNG TIN RÚT TIỀN CỦA USER `{target_id}`*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 Username: {username}\n"
+                f"💰 Số dư hiện tại: `{u[2]:,}đ`\n"
+                f"🏦 Ngân hàng: `{bank}`\n"
+                f"🔗 Người giới thiệu: `{referrer}`\n"
+                f"🚫 Khóa TK: *{'CÓ' if u[5] else 'KHÔNG'}* | Cấm rút: *{'CÓ' if u[6] else 'KHÔNG'}*\n"
+                f"🕒 Ngày tham gia: `{u[7]}`\n\n"
+                f"📊 *THỐNG KÊ RÚT TIỀN:*\n"
+                f"• 💸 Tổng tiền đã rút thành công: `{success_amount:,}đ`\n"
+                f"• ✅ Số lần rút thành công: `{success_count}` lần\n"
+                f"• ⏳ Số lần đang chờ duyệt: `{pending_count}` lần\n"
+                f"• ❌ Số lần bị từ chối: `{reject_count}` lần\n"
+                f"• 🎯 Tổng số lần gửi yêu cầu rút: `{total_attempts}` lần\n\n"
+                f"📜 *LỊCH SỬ RÚT TIỀN GẦN ĐÂY:*\n"
+            )
+
+            if withdraw_txs:
+                for tx_id, amount, status, created_at in withdraw_txs:
+                    icon = "✅" if status == "Thành công" else ("❌" if status == "Từ chối" else "⏳")
+                    msg += f"{icon} #{tx_id} | `{amount:,}đ` | {status} | `{created_at}`\n"
+            else:
+                msg += "• Chưa có giao dịch rút tiền nào.\n"
+
+            await message.reply_text(msg, parse_mode="Markdown")
 
         # /TB - THÔNG BÁO
         elif cmd == "/tb":
@@ -1922,7 +2034,7 @@ async def admin_commands(
                     return
                 await message.reply_text(f"✅ Đã trừ *-{amount:,}đ* của ID `{target_id}`.", parse_mode="Markdown")
 
-        # /RUTLS
+        # /RUTLS - HIỂN THỊ DANH SÁCH RÚT CHỜ DUYỆT (ĐỒNG BỘ NÚT CHO TẤT CẢ ADMIN)
         elif cmd == "/rutls":
             txs = db_query(
                 """
@@ -1945,15 +2057,27 @@ async def admin_commands(
                         InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{tx_id}"),
                     ]
                 ]
-                await message.reply_text(
+                msg_text = (
                     f"🆔 *Lệnh:* #{tx_id}\n"
                     f"👤 *User:* `{target_id}`\n"
                     f"💵 *Số tiền:* `{amount:,}đ`\n"
                     f"🏦 *Bank:* `{details or 'N/A'}`\n"
-                    f"🕒 *Thời gian:* `{created_at}`",
+                    f"🕒 *Thời gian:* `{created_at}`"
+                )
+                
+                sent_msg = await message.reply_text(
+                    msg_text,
                     reply_markup=InlineKeyboardMarkup(btns),
                     parse_mode="Markdown",
                 )
+
+                # Lưu vết tin nhắn này để nếu ai bấm duyệt/từ chối thì tin nhắn này cũng được đồng bộ
+                refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
+                refs.append({
+                    "chat_id": message.chat_id,
+                    "message_id": sent_msg.message_id,
+                    "base_text": msg_text
+                })
 
         # /RUTTC
         elif cmd == "/ruttc":
@@ -2100,6 +2224,8 @@ def main():
     # COMMANDS ADMIN
     admin_cmds = [
         "tong",
+        "tongrut",
+        "rutid",
         "tb",
         "info",
         "bb",
