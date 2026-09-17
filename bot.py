@@ -1367,7 +1367,7 @@ async def handle_withdraw_amount(
         parse_mode="Markdown"
     )
 
-    # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN
+    # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN VÀ LƯU DẪN CHIẾU TIN NHẮN
     admin_buttons = [
         [
             InlineKeyboardButton("✅ DUYỆT", callback_data=f"approve_{tx_id}"),
@@ -1385,22 +1385,31 @@ async def handle_withdraw_amount(
         f"🕒 *Thời gian:* `{get_now_str()}`"
     )
 
+    admin_msg_refs = []
+
     for admin_id in ADMIN_IDS:
         try:
-            await context.bot.send_message(
+            sent_msg = await context.bot.send_message(
                 chat_id=admin_id,
                 text=admin_msg,
                 reply_markup=InlineKeyboardMarkup(admin_buttons),
                 parse_mode="Markdown",
             )
+            admin_msg_refs.append((admin_id, sent_msg.message_id))
         except Exception as exc:
             logger.exception("Không gửi được yêu cầu rút cho admin %s: %s", admin_id, exc)
+
+    # Lưu vết các tin nhắn đã gửi cho Admin để đồng bộ trạng thái sau khi duyệt
+    context.bot_data[f"withdraw_{tx_id}"] = {
+        "msg_refs": admin_msg_refs,
+        "base_text": admin_msg
+    }
 
     return True
 
 
 # ============================================================
-# DUYỆT / TỪ CHỐI LỆNH RÚT
+# DUYỆT / TỪ CHỐI LỆNH RÚT (ĐỒNG BỘ TẤT CẢ ADMIN)
 # ============================================================
 
 async def admin_withdraw_callback(
@@ -1411,7 +1420,9 @@ async def admin_withdraw_callback(
     if not query:
         return
 
-    if query.from_user.id not in ADMIN_IDS:
+    admin_user = query.from_user
+
+    if admin_user.id not in ADMIN_IDS:
         try:
             await query.answer("❌ Quyền truy cập bị từ chối.", show_alert=True)
         except Exception:
@@ -1452,10 +1463,17 @@ async def admin_withdraw_callback(
 
     if status != "Chờ duyệt":
         try:
-            await query.edit_message_text(f"{query.message.text}\n\n⚠️ *GIAO DỊCH ĐÃ XỬ LÝ TRƯỚC ĐÓ!*")
+            await query.edit_message_text(f"{query.message.text}\n\n⚠️ *GIAO DỊCH ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ!*")
         except Exception:
             pass
         return
+
+    # Lấy dữ liệu tin nhắn đã gửi đến các Admin
+    tx_data = context.bot_data.pop(f"withdraw_{tx_id}", None)
+    msg_refs = tx_data["msg_refs"] if tx_data else []
+    base_text = tx_data["base_text"] if tx_data else query.message.text
+
+    admin_name_str = f"@{admin_user.username}" if admin_user.username else f"`{admin_user.id}`"
 
     # DUYỆT
     if action == "approve":
@@ -1477,10 +1495,25 @@ async def admin_withdraw_callback(
             return
 
         if changed:
-            try:
-                await query.edit_message_text(f"{query.message.text}\n\n✅ *TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN*")
-            except Exception:
-                pass
+            update_text = f"{base_text}\n\n✅ *TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN* (Bởi Admin {admin_name_str})"
+            
+            # Đồng bộ chỉnh sửa giao diện ở tất cả tin nhắn Admin
+            if msg_refs:
+                for a_id, m_id in msg_refs:
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=a_id,
+                            message_id=m_id,
+                            text=update_text,
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+            else:
+                try:
+                    await query.edit_message_text(update_text, parse_mode="Markdown")
+                except Exception:
+                    pass
 
             try:
                 await context.bot.send_message(
@@ -1522,10 +1555,25 @@ async def admin_withdraw_callback(
             return
 
         if changed:
-            try:
-                await query.edit_message_text(f"{query.message.text}\n\n❌ *TRẠNG THÁI: ĐÃ TỪ CHỐI*")
-            except Exception:
-                pass
+            update_text = f"{base_text}\n\n❌ *TRẠNG THÁI: ĐÃ TỪ CHỐI* (Bởi Admin {admin_name_str})"
+
+            # Đồng bộ chỉnh sửa giao diện ở tất cả tin nhắn Admin
+            if msg_refs:
+                for a_id, m_id in msg_refs:
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=a_id,
+                            message_id=m_id,
+                            text=update_text,
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        pass
+            else:
+                try:
+                    await query.edit_message_text(update_text, parse_mode="Markdown")
+                except Exception:
+                    pass
 
             try:
                 await context.bot.send_message(
@@ -1576,6 +1624,12 @@ async def admin_userinfo_callback(
             pass
         return
 
+    invited_count = db_query(
+        "SELECT COUNT(*) FROM users WHERE referrer_id=%s",
+        (target_id,),
+        fetchone=True,
+    )[0]
+
     username = f"@{u[1]}" if u[1] else "Chưa đặt"
     bank = u[3] if u[3] else "Chưa liên kết"
     referrer = u[4] if u[4] is not None else "Không có"
@@ -1588,6 +1642,7 @@ async def admin_userinfo_callback(
         f"💰 Số dư: `{u[2]:,}đ`\n"
         f"🏦 Ngân hàng: `{bank}`\n"
         f"🔗 Khách giới thiệu: `{referrer}`\n"
+        f"👥 Tổng đã mời: `{invited_count}` người\n"
         f"🚫 Khóa TK: *{'CÓ' if u[5] else 'KHÔNG'}*\n"
         f"🚫 Cấm rút: *{'CÓ' if u[6] else 'KHÔNG'}*\n"
         f"🕒 Tham gia: `{u[7]}`"
@@ -1695,18 +1750,29 @@ async def admin_commands(
 
             await message.reply_text(f"✅ Đã phát thông báo tới *{count}* người dùng/nhóm.")
 
-        # /INFO
+        # /INFO [USER_ID]
         elif cmd == "/info":
             if len(args) < 1:
-                await message.reply_text("Cú pháp: `/info USER_ID`", parse_mode="Markdown")
+                await message.reply_text("📌 *Cú pháp:* `/info USER_ID`", parse_mode="Markdown")
                 return
 
-            target_id = int(args[0])
+            try:
+                target_id = int(args[0])
+            except (ValueError, TypeError):
+                await message.reply_text("❌ USER_ID không hợp lệ.")
+                return
+
             u = db_query("SELECT * FROM users WHERE user_id=%s", (target_id,), fetchone=True)
 
             if not u:
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
+
+            invited_count = db_query(
+                "SELECT COUNT(*) FROM users WHERE referrer_id=%s",
+                (target_id,),
+                fetchone=True,
+            )[0]
 
             username = f"@{u[1]}" if u[1] else "Chưa đặt"
             bank = u[3] if u[3] else "Chưa liên kết"
@@ -1720,10 +1786,42 @@ async def admin_commands(
                 f"💰 Số dư: `{u[2]:,}đ`\n"
                 f"🏦 Ngân hàng: `{bank}`\n"
                 f"🔗 Khách giới thiệu: `{referrer}`\n"
+                f"👥 Tổng đã mời: `{invited_count}` người\n"
                 f"🚫 Khóa TK: *{'CÓ' if u[5] else 'KHÔNG'}*\n"
                 f"🚫 Cấm rút: *{'CÓ' if u[6] else 'KHÔNG'}*\n"
                 f"🕒 Tham gia: `{u[7]}`"
             )
+            await message.reply_text(msg, parse_mode="Markdown")
+
+        # /BB [USER_ID] - CHECK BẠN BÈ ĐÃ MỜI
+        elif cmd == "/bb":
+            if len(args) < 1:
+                await message.reply_text("📌 *Cú pháp:* `/bb USER_ID`", parse_mode="Markdown")
+                return
+
+            try:
+                target_id = int(args[0])
+            except (ValueError, TypeError):
+                await message.reply_text("❌ USER_ID không hợp lệ.")
+                return
+
+            invited_users = db_query(
+                "SELECT user_id, username, joined_at FROM users WHERE referrer_id=%s ORDER BY joined_at DESC",
+                (target_id,),
+                fetchall=True,
+            )
+
+            total_invited = len(invited_users)
+
+            msg = f"👥 *DANH SÁCH BẠN BÈ MỜI CỦA USER `{target_id}`* (Tổng: `{total_invited}` người):\n━━━━━━━━━━━━━━━━━━\n\n"
+
+            if invited_users:
+                for invited_id, username, joined_at in invited_users:
+                    uname = f"@{username}" if username else "Chưa đặt username"
+                    msg += f"• ID: `{invited_id}` | Name: {uname} | Ngày: `{joined_at}`\n"
+            else:
+                msg += "❌ Người dùng này chưa mời được ai.\n"
+
             await message.reply_text(msg, parse_mode="Markdown")
 
         # /BAN
@@ -2004,6 +2102,7 @@ def main():
         "tong",
         "tb",
         "info",
+        "bb",
         "ban",
         "moban",
         "cam",
