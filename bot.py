@@ -34,17 +34,17 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-# Danh sách ID Admin (Đã thêm ID 7902882919)
+# Danh sách ID Admin
 ADMIN_IDS = [5633649201, 7902882919]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-REQUIRED_CHANNELS = [
-    "@hocviennghiencobac",
+# Kênh kiểm tra tham gia (Đã bỏ qua @hocviencbm theo yêu cầu)
+REQUIRED_CHECK_CHANNELS = [
     "@conmuamenmenl",
-    "@khuyenmaionline",
-    "@tbck2026",
-    "@chungnaomoidu",
+    "@sancode24",
+    "@xombao247",
+    "@thongbaohit88",
 ]
 
 SUPPORT_GROUP = "https://t.me/conmuamenmenl"
@@ -52,6 +52,63 @@ SUPPORT_GROUP = "https://t.me/conmuamenmenl"
 MIN_WITHDRAW = 5000
 MAX_WITHDRAW = 300000
 REFERRAL_REWARD = 1000
+
+
+# ============================================================
+# DANH SÁCH 50 PREMIUM CUSTOM EMOJI TAGS (HTML)
+# ============================================================
+E = {
+    "CROWN": '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji>',
+    "REFRESH": '<tg-emoji emoji-id="5375338737028841420">🔄</tg-emoji>',
+    "TOP": '<tg-emoji emoji-id="5415655814079723871">🔝</tg-emoji>',
+    "EYES": '<tg-emoji emoji-id="5210956306952758910">👀</tg-emoji>',
+    "LIGHTNING": '<tg-emoji emoji-id="5456140674028019486">⚡️</tg-emoji>',
+    "COMET": '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>',
+    "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔️</tg-emoji>',
+    "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
+    "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji>',
+    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
+    "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️</tg-emoji>',
+    "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
+    "ALERT1": '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>',
+    "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠️</tg-emoji>',
+    "CHART": '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>',
+    "UP": '<tg-emoji emoji-id="5449683594425410231">🔼</tg-emoji>',
+    "DOWN": '<tg-emoji emoji-id="5447183459602669338">🔽</tg-emoji>',
+    "MEDAL1": '<tg-emoji emoji-id="5440539497383087970">🥇</tg-emoji>',
+    "MEDAL2": '<tg-emoji emoji-id="5447203607294265305">🥈</tg-emoji>',
+    "MEDAL3": '<tg-emoji emoji-id="5453902265922376865">🥉</tg-emoji>',
+    "FREE": '<tg-emoji emoji-id="5406756500108501710">🆓</tg-emoji>',
+    "PENCIL": '<tg-emoji emoji-id="5395444784611480792">✏️</tg-emoji>',
+    "CALENDAR": '<tg-emoji emoji-id="5413879192267805083">🗓</tg-emoji>',
+    "DROP": '<tg-emoji emoji-id="5393512611968995988">💧</tg-emoji>',
+    "SNOW": '<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji>',
+    "SUN": '<tg-emoji emoji-id="5402477260982731644">☀️</tg-emoji>',
+    "ARROW_DOWN": '<tg-emoji emoji-id="5406745015365943482">⬇️</tg-emoji>',
+    "MAIL": '<tg-emoji emoji-id="5253742260054409879">✉️</tg-emoji>',
+    "LOCK": '<tg-emoji emoji-id="5296369303661067030">🔒</tg-emoji>',
+    "GAME": '<tg-emoji emoji-id="5361741454685256344">🎮</tg-emoji>',
+    "GEAR": '<tg-emoji emoji-id="5341715473882955310">⚙️</tg-emoji>',
+    "SURPRISE": '<tg-emoji emoji-id="5303479226882603449">😮</tg-emoji>',
+    "CLIP": '<tg-emoji emoji-id="5305265301917549162">📎</tg-emoji>',
+    "SPEAKER": '<tg-emoji emoji-id="5388632425314140043">🔈</tg-emoji>',
+    "LAUGH1": '<tg-emoji emoji-id="5406913184810409829">😂</tg-emoji>',
+    "SMILE1": '<tg-emoji emoji-id="5386587088873331829">😄</tg-emoji>',
+    "LAUGH2": '<tg-emoji emoji-id="5375135722514685501">😆</tg-emoji>',
+    "SMIRK": '<tg-emoji emoji-id="5375170473095077321">😏</tg-emoji>',
+    "SWEAT": '<tg-emoji emoji-id="5384209107215456745">😅</tg-emoji>',
+    "KISS": '<tg-emoji emoji-id="5368475679937534380">😘</tg-emoji>',
+    "CRAZY": '<tg-emoji emoji-id="5393197898240369117">🤪</tg-emoji>',
+    "THUMB": '<tg-emoji emoji-id="5219872564569972166">👍</tg-emoji>',
+    "YUM": '<tg-emoji emoji-id="5348205856661969976">😋</tg-emoji>',
+    "COOL": '<tg-emoji emoji-id="5368562433981947135">😎</tg-emoji>',
+    "CRY1": '<tg-emoji emoji-id="5416039998904345140">😭</tg-emoji>',
+    "CRY2": '<tg-emoji emoji-id="5400000868739193368">😭</tg-emoji>',
+    "NEUTRAL": '<tg-emoji emoji-id="5368376088235875736">😐</tg-emoji>',
+    "LOVE": '<tg-emoji emoji-id="5323470315370585285">😍</tg-emoji>',
+    "CRY3": '<tg-emoji emoji-id="5379656338802482888">😭</tg-emoji>',
+    "ROLL": '<tg-emoji emoji-id="5429300173559832620">🙄</tg-emoji>',
+}
 
 
 # ============================================================
@@ -319,11 +376,11 @@ def generate_captcha():
 
 
 # ============================================================
-# KIỂM TRA THAM GIA KÊNH
+# KIỂM TRA THAM GIA KÊNH (Bỏ qua @hocviencbm)
 # ============================================================
 
 async def check_channel_membership(bot, user_id):
-    for channel in REQUIRED_CHANNELS:
+    for channel in REQUIRED_CHECK_CHANNELS:
         try:
             member = await bot.get_chat_member(
                 chat_id=channel,
@@ -370,10 +427,10 @@ async def handle_anti_spam(
             seconds = remaining_seconds % 60
 
             await message.reply_text(
-                f"🚫 *BẠN ĐÃ BỊ TẠM CẤM!*\n\n"
-                f"⏳ Vui lòng chờ: *{minutes} phút {seconds} giây*\n"
-                f"⚠️ Lý do: *Spam tin nhắn quá nhanh.*",
-                parse_mode="Markdown"
+                f"{E['BAN']} <b>BẠN ĐÃ BỊ TẠM CẤM!</b>\n"
+                f"{E['CALENDAR']} Vui lòng chờ: <b>{minutes} phút {seconds} giây</b>\n"
+                f"{E['ALERT1']} Lý do: <b>Spam tin nhắn quá nhanh.</b>",
+                parse_mode="HTML"
             )
             return True
 
@@ -390,10 +447,10 @@ async def handle_anti_spam(
         user_msg_tracker[user.id].clear()
 
         await message.reply_text(
-            f"🚫 *CẢNH BÁO ANTI-SPAM*\n\n"
-            f"❌ Bạn đã bị cấm *{TEMP_BAN_MINUTES} phút*!\n"
-            f"⚠️ Lý do: Gửi quá *{SPAM_MAX_MESSAGES} tin nhắn* trong *{SPAM_WINDOW_SECONDS}s*.",
-            parse_mode="Markdown"
+            f"{E['BAN']} <b>CẢNH BÁO ANTI-SPAM</b>\n"
+            f"{E['STOP']} Bạn đã bị cấm <b>{TEMP_BAN_MINUTES} phút</b>!\n"
+            f"{E['ALERT1']} Lý do: Gửi quá <b>{SPAM_MAX_MESSAGES} tin nhắn</b> trong <b>{SPAM_WINDOW_SECONDS}s</b>.",
+            parse_mode="HTML"
         )
         return True
 
@@ -456,8 +513,8 @@ async def require_private_user(update: Update):
 
     if row and row[3] == 1:
         await update.effective_message.reply_text(
-            "🚫 *Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!*",
-            parse_mode="Markdown"
+            f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>",
+            parse_mode="HTML"
         )
         return False
 
@@ -511,9 +568,9 @@ async def start_command(
     # BẢO TRÌ
     if is_maintenance() and user.id not in ADMIN_IDS:
         await update.message.reply_text(
-            "🔴 *HỆ THỐNG ĐANG BẢO TRÌ*\n\n"
-            "🛠️ Bot đang thực hiện nâng cấp định kỳ, vui lòng quay lại sau!",
-            parse_mode="Markdown"
+            f"{E['STOP']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n"
+            f"{E['GEAR']} Bot đang thực hiện nâng cấp định kỳ, vui lòng quay lại sau!",
+            parse_mode="HTML"
         )
         return
 
@@ -530,8 +587,8 @@ async def start_command(
 
     if db_user and db_user[1] == 1:
         await update.message.reply_text(
-            "🚫 *Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!*",
-            parse_mode="Markdown"
+            f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>",
+            parse_mode="HTML"
         )
         return
 
@@ -586,8 +643,8 @@ async def start_command(
         buttons = [
             [
                 InlineKeyboardButton(
-                    "🎓 1. Học Viện Nghiện Cờ Bạc",
-                    url="https://t.me/hocviennghiencobac",
+                    "🎓 1. Học Viện CBM",
+                    url="https://t.me/hocviencbm",
                 )
             ],
             [
@@ -598,20 +655,20 @@ async def start_command(
             ],
             [
                 InlineKeyboardButton(
-                    "🛍️ 3. Săn Khuyến Mãi Online",
-                    url="https://t.me/khuyenmaionline",
+                    "🛍️ 3. Săn Code 24",
+                    url="https://t.me/sancode24",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "📈 4. TBCK 2026",
-                    url="https://t.me/tbck2026",
+                    "📈 4. Xóm Báo 247",
+                    url="https://t.me/xombao247",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "💎 5. Chừng Nào Mới Đủ",
-                    url="https://t.me/chungnaomoidu",
+                    "💎 5. Thông Báo Hit88",
+                    url="https://t.me/thongbaohit88",
                 )
             ],
             [
@@ -623,19 +680,19 @@ async def start_command(
         ]
 
         await update.message.reply_text(
-            "👑 *CHÀO MỪNG BẠN ĐẾN VỚI HỆ THỐNG*\n\n"
-            "📌 *Vui lòng tham gia đầy đủ 5 kênh đối tác bên dưới để tiếp tục:*",
+            f"{E['CROWN']} <b>CHÀO MỪNG BẠN ĐẾN VỚI HỆ THỐNG</b>\n"
+            f"{E['CLIP']} <b>Vui lòng tham gia đầy đủ 5 kênh đối tác bên dưới để tiếp tục:</b>",
             reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
 
     # CHÀO MỪNG
     await update.message.reply_text(
-        "✨ *CHÀO MỪNG BẠN TRỞ LẠI HỆ THỐNG!*\n\n"
-        "💎 Hãy chọn một tính năng trong menu bên dưới:",
+        f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỞ LẠI HỆ THỐNG!</b>\n"
+        f"{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
@@ -670,23 +727,23 @@ async def send_captcha_challenge(
 
     caption = (f"{message_text}\n\n" if message_text else "")
     caption += (
-        "🧩 *XÁC MINH CAPTCHA BẢO MẬT*\n\n"
-        "Vui lòng giải phép tính bên dưới để hoàn tất đăng ký:\n"
-        f"👉 *{a} + {b} = ?*"
+        f"{E['GAME']} <b>XÁC MINH CAPTCHA BẢO MẬT</b>\n"
+        f"{E['PENCIL']} Vui lòng giải phép tính bên dưới để hoàn tất đăng ký:\n"
+        f"{E['QUESTION']} <b>{a} + {b} = ?</b>"
     )
 
     if hasattr(update_or_query, "edit_message_text"):
         await update_or_query.edit_message_text(
             caption,
             reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
     else:
         await context.bot.send_message(
             chat_id=update_or_query.from_user.id,
             text=caption,
             reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
 
 
@@ -762,7 +819,7 @@ async def captcha_callback(
         await send_captcha_challenge(
             query,
             context,
-            message_text="❌ *Bạn đã chọn sai kết quả! Vui lòng tính lại.*",
+            message_text=f"{E['WARN1']} <b>Bạn đã chọn sai kết quả! Vui lòng tính lại.</b>",
         )
         return
 
@@ -840,11 +897,11 @@ async def captcha_callback(
                     await context.bot.send_message(
                         chat_id=ref_id,
                         text=(
-                            f"🎉 *THƯỞNG MỜI BẠN BÈ!*\n\n"
-                            f"💰 Bạn nhận được *+{REFERRAL_REWARD:,}đ*\n"
-                            f"👤 Từ người dùng: *{username_str}*"
+                            f"{E['LOVE']} <b>THƯỞNG MỜI BẠN BÈ!</b>\n"
+                            f"{E['UP']} Bạn nhận được <b>+{REFERRAL_REWARD:,}đ</b>\n"
+                            f"{E['EYES']} Từ người dùng: <b>{username_str}</b>"
                         ),
-                        parse_mode="Markdown"
+                        parse_mode="HTML"
                     )
                 except Exception as exc:
                     logger.warning("Không gửi được thông báo referrer: %s", exc)
@@ -861,11 +918,11 @@ async def captcha_callback(
     await context.bot.send_message(
         chat_id=user.id,
         text=(
-            "🎉 *XÁC MINH THÀNH CÔNG!*\n\n"
-            "👑 *Chào mừng bạn đã gia nhập hệ thống Bot VIP!*"
+            f"{E['LAUGH1']} <b>XÁC MINH THÀNH CÔNG!</b>\n"
+            f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>"
         ),
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -890,9 +947,9 @@ async def menu_handler(
 
     if is_maintenance() and user.id not in ADMIN_IDS:
         await message.reply_text(
-            "🔴 *HỆ THỐNG ĐANG BẢO TRÌ*\n\n"
-            "🛠️ Vui lòng quay lại sau!",
-            parse_mode="Markdown"
+            f"{E['STOP']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n"
+            f"{E['GEAR']} Vui lòng quay lại sau!",
+            parse_mode="HTML"
         )
         return
 
@@ -913,8 +970,8 @@ async def menu_handler(
 
     if not db_user or db_user[3] == 1:
         await message.reply_text(
-            "🚫 *Bạn không có quyền sử dụng bot này.*",
-            parse_mode="Markdown"
+            f"{E['BAN']} <b>Bạn không có quyền sử dụng bot này.</b>",
+            parse_mode="HTML"
         )
         return
 
@@ -922,9 +979,9 @@ async def menu_handler(
     if user.id not in ADMIN_IDS:
         if not await check_channel_membership(context.bot, user.id):
             await message.reply_text(
-                "⚠️ *Bạn chưa tham gia đủ các kênh bắt buộc!*\n"
-                "👉 Vui lòng gõ /start để nhận danh sách kênh.",
-                parse_mode="Markdown"
+                f"{E['ALERT1']} <b>Bạn chưa tham gia đủ các kênh bắt buộc!</b>\n"
+                f"{E['ARROW_DOWN']} Vui lòng gõ /start để nhận danh sách kênh.",
+                parse_mode="HTML"
             )
             return
 
@@ -956,15 +1013,15 @@ async def menu_handler(
         )[0]
 
         msg = (
-            "🏛️ *THÔNG TIN TÀI KHOẢN VIP*\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            f"👤 *ID:* `{user.id}`\n"
-            f"💵 *Số dư:* `{balance:,}đ`\n"
-            f"👥 *Đã mời:* `{invited_count}` người\n"
-            f"💸 *Đã rút:* `{total_withdraw:,}đ`"
+            f"{E['CROWN']} <b>THÔNG TIN TÀI KHOẢN VIP</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['EYES']} <b>ID:</b> <code>{user.id}</code>\n"
+            f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
+            f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người\n"
+            f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
         )
 
-        await message.reply_text(msg, parse_mode="Markdown")
+        await message.reply_text(msg, parse_mode="HTML")
 
     # MỜI BẠN
     elif text in ["Mời Bạn Bè", "🎁 Mời Bạn Bè"]:
@@ -983,24 +1040,24 @@ async def menu_handler(
         ref_link = f"https://t.me/{bot_username}?start={user.id}"
 
         msg = (
-            "🎁 *CHƯƠNG TRÌNH MỜI BẠN BÈ*\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "🔗 *Link giới thiệu của bạn:*\n"
-            f"`{ref_link}`\n\n"
-            "📜 *Thể lệ nhận thưởng:*\n"
-            f"• 🎯 Nhận ngay: *+{REFERRAL_REWARD:,}đ* / lượt mời thành công.\n"
-            "• 📌 Bạn bè phải tham gia đủ kênh & hoàn thành CAPTCHA.\n"
-            f"• 💳 Min rút: *{MIN_WITHDRAW:,}đ*\n"
-            f"• 🔝 Max rút: *{MAX_WITHDRAW:,}đ*"
+            f"{E['FREE']} <b>CHƯƠNG TRÌNH MỜI BẠN BÈ</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['CLIP']} <b>Link giới thiệu của bạn:</b>\n"
+            f"<code>{ref_link}</code>\n\n"
+            f"{E['CALENDAR']} <b>Thể lệ nhận thưởng:</b>\n"
+            f"• {E['LIGHTNING']} Nhận ngay: <b>+{REFERRAL_REWARD:,}đ</b> / lượt mời thành công.\n"
+            f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh & hoàn thành CAPTCHA.\n"
+            f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
+            f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
         )
 
-        await message.reply_text(msg, parse_mode="Markdown")
+        await message.reply_text(msg, parse_mode="HTML")
 
     # NHÓM HỖ TRỢ
     elif text in ["Nhóm Hỗ Trợ", "💬 Nhóm Hỗ Trợ"]:
         await message.reply_text(
-            f"💬 *NHÓM HỖ TRỢ CHÍNH THỨC:*\n👉 {SUPPORT_GROUP}",
-            parse_mode="Markdown",
+            f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}",
+            parse_mode="HTML",
         )
 
     # LỊCH SỬ
@@ -1022,37 +1079,37 @@ async def menu_handler(
         )
 
         if not txs:
-            await message.reply_text("📜 *Bạn chưa có giao dịch nào.*", parse_mode="Markdown")
+            await message.reply_text(f"{E['CALENDAR']} <b>Bạn chưa có giao dịch nào.</b>", parse_mode="HTML")
             return
 
-        msg = "📜 *LỊCH SỬ GIAO DỊCH GẦN ĐÂY*\n━━━━━━━━━━━━━━━━━━\n\n"
+        msg = f"{E['CHART']} <b>LỊCH SỬ GIAO DỊCH GẦN ĐÂY</b>\n━━━━━━━━━━━━━━━━━━\n\n"
 
         for tx_type, amount, status, created_at in txs:
-            icon = "✅" if status == "Thành công" else ("❌" if status == "Từ chối" else "⏳")
+            icon = E['THUMB'] if status == "Thành công" else (E['BAN'] if status == "Từ chối" else E['CALENDAR'])
             msg += (
-                f"{icon} *{tx_type}*: `{amount:,}đ`\n"
-                f"📊 Trạng thái: *{status}*\n"
-                f"🕒 Thời gian: `{created_at}`\n"
+                f"{icon} <b>{tx_type}</b>: <code>{amount:,}đ</code>\n"
+                f"{E['CHART']} Trạng thái: <b>{status}</b>\n"
+                f"{E['CALENDAR']} Thời gian: <code>{created_at}</code>\n"
                 "----------------------------------\n"
             )
 
-        await message.reply_text(msg, parse_mode="Markdown")
+        await message.reply_text(msg, parse_mode="HTML")
 
     # RÚT TIỀN
     elif text in ["Rút Tiền", "💳 Rút Tiền"]:
         if db_user[4] == 1:
-            await message.reply_text("🚫 *Tài khoản của bạn đã bị CẤM RÚT TIỀN!*", parse_mode="Markdown")
+            await message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị CẤM RÚT TIỀN!</b>", parse_mode="HTML")
             return
 
         bank_info = db_user[2]
 
         if not bank_info:
             await message.reply_text(
-                "⚠️ *BẠN CHƯA LIÊN KẾT NGÂN HÀNG*\n\n"
-                "👉 Vui lòng gửi lệnh liên kết theo cú pháp:\n"
-                "`/lk STK Tên_Ngân_Hàng Tên_Chủ_Thẻ`\n\n"
-                "💡 *Ví dụ:* `/lk 1068030300 VCB NGUYEN CA NGU`",
-                parse_mode="Markdown",
+                f"{E['ALERT1']} <b>BẠN CHƯA LIÊN KẾT NGÂN HÀNG</b>\n"
+                f"{E['ARROW_DOWN']} Vui lòng gửi lệnh liên kết theo cú pháp:\n"
+                f"<code>/lk STK Tên_Ngân_Hàng Tên_Chủ_Thẻ</code>\n\n"
+                f"{E['LIGHTNING']} <b>Ví dụ:</b> <code>/lk 1068030300 VCB NGUYEN CA NGU</code>",
+                parse_mode="HTML",
             )
         else:
             user_withdraw_state[user.id] = "WAITING_AMOUNT"
@@ -1066,15 +1123,15 @@ async def menu_handler(
             ])
 
             await message.reply_text(
-                "💳 *LỆNH RÚT TIỀN VIP*\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                f"🏦 *Tài khoản nhận:* `{bank_info}`\n"
-                f"💰 *Số dư hiện tại:* `{db_user[1]:,}đ`\n"
-                f"📌 *Hạn mức:* `{MIN_WITHDRAW:,}đ` - `{MAX_WITHDRAW:,}đ`\n\n"
-                "👉 *Vui lòng nhập số tiền bạn muốn rút:*\n"
-                "_(Nhập 'hủy' hoặc bấm nút bên dưới để thoát)_",
+                f"{E['TOP']} <b>LỆNH RÚT TIỀN VIP</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['LOCK']} <b>Tài khoản nhận:</b> <code>{bank_info}</code>\n"
+                f"{E['UP']} <b>Số dư hiện tại:</b> <code>{db_user[1]:,}đ</code>\n"
+                f"{E['CLIP']} <b>Hạn mức:</b> <code>{MIN_WITHDRAW:,}đ</code> - <code>{MAX_WITHDRAW:,}đ</code>\n\n"
+                f"{E['ARROW_DOWN']} <b>Vui lòng nhập số tiền bạn muốn rút:</b>\n"
+                f"<i>(Nhập 'hủy' hoặc bấm nút bên dưới để thoát)</i>",
                 reply_markup=cancel_btn,
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
 
 
@@ -1101,9 +1158,9 @@ async def cancel_withdraw_callback(
 
     await context.bot.send_message(
         chat_id=user.id,
-        text="❌ *Đã hủy thao tác rút tiền.*",
+        text=f"{E['BAN']} <b>Đã hủy thao tác rút tiền.</b>",
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -1124,15 +1181,15 @@ async def link_bank_command(
     user = update.effective_user
 
     if is_maintenance() and user.id not in ADMIN_IDS:
-        await update.message.reply_text("🔴 Hệ thống đang bảo trì, vui lòng quay lại sau!")
+        await update.message.reply_text(f"{E['STOP']} Hệ thống đang bảo trì, vui lòng quay lại sau!")
         return
 
     if not context.args or len(context.args) < 3:
         await update.message.reply_text(
-            "❌ *Sai cú pháp liên kết!*\n\n"
-            "👉 Ví dụ đúng:\n"
-            "`/lk 1068030300 VCB NGUYEN CA NGU`",
-            parse_mode="Markdown",
+            f"{E['BAN']} <b>Sai cú pháp liên kết!</b>\n"
+            f"{E['ARROW_DOWN']} Ví dụ đúng:\n"
+            f"<code>/lk 1068030300 VCB NGUYEN CA NGU</code>",
+            parse_mode="HTML",
         )
         return
 
@@ -1153,9 +1210,9 @@ async def link_bank_command(
     )
 
     await update.message.reply_text(
-        f"✅ *LIÊN KẾT THÀNH CÔNG!*\n\n"
-        f"🏦 Thông tin lưu trữ: `{bank_str}`",
-        parse_mode="Markdown",
+        f"{E['THUMB']} <b>LIÊN KẾT THÀNH CÔNG!</b>\n"
+        f"{E['LOCK']} Thông tin lưu trữ: <code>{bank_str}</code>",
+        parse_mode="HTML",
     )
 
 
@@ -1178,8 +1235,8 @@ async def reset_bank_command(
 
     if len(args) < 1:
         await message.reply_text(
-            "❌ *Sai cú pháp!*\nCú pháp: `/resetbank USER_ID`",
-            parse_mode="Markdown",
+            f"{E['BAN']} <b>Sai cú pháp!</b>\nCú pháp: <code>/resetbank USER_ID</code>",
+            parse_mode="HTML",
         )
         return
 
@@ -1200,7 +1257,7 @@ async def reset_bank_command(
     )
 
     if not user_exists:
-        await message.reply_text(f"❌ Không tìm thấy user `{target_id}`.", parse_mode="Markdown")
+        await message.reply_text(f"❌ Không tìm thấy user <code>{target_id}</code>.", parse_mode="HTML")
         return
 
     old_bank = user_exists[1]
@@ -1218,19 +1275,19 @@ async def reset_bank_command(
     user_withdraw_state.pop(target_id, None)
 
     await message.reply_text(
-        f"✅ *ĐÃ RESET NGÂN HÀNG CỦA USER:* `{target_id}`\n\n"
-        f"🏦 Bank cũ: `{old_bank or 'Chưa liên kết'}`",
-        parse_mode="Markdown",
+        f"{E['THUMB']} <b>ĐÃ RESET NGÂN HÀNG CỦA USER:</b> <code>{target_id}</code>\n"
+        f"{E['LOCK']} Bank cũ: <code>{old_bank or 'Chưa liên kết'}</code>",
+        parse_mode="HTML",
     )
 
     try:
         await context.bot.send_message(
             chat_id=target_id,
             text=(
-                "⚠️ *Thông tin ngân hàng của bạn đã được Admin reset.*\n\n"
-                "Vui lòng dùng `/lk STK NGAN_HANG TEN_CHU_TAI_KHOAN` để cài đặt lại."
+                f"{E['ALERT1']} <b>Thông tin ngân hàng của bạn đã được Admin reset.</b>\n"
+                f"{E['ARROW_DOWN']} Vui lòng dùng <code>/lk STK NGAN_HANG TEN_CHU_TAI_KHOAN</code> để cài đặt lại."
             ),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
     except Exception as exc:
         logger.warning("Không gửi được thông báo reset bank cho user %s: %s", target_id, exc)
@@ -1260,16 +1317,16 @@ async def handle_withdraw_amount(
     if text.lower() in ["hủy", "huy", "cancel", "❌ hủy", "❌ hủy rút tiền"]:
         user_withdraw_state.pop(user.id, None)
         await message.reply_text(
-            "❌ *Đã hủy thao tác rút tiền.*",
+            f"{E['BAN']} <b>Đã hủy thao tác rút tiền.</b>",
             reply_markup=get_main_keyboard(),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return True
 
     if not text.isdigit():
         await message.reply_text(
-            "❌ *Số tiền phải là số nguyên hợp lệ!*\nVui lòng nhập lại (hoặc nhập *hủy* để thoát):",
-            parse_mode="Markdown",
+            f"{E['BAN']} <b>Số tiền phải là số nguyên hợp lệ!</b>\nVui lòng nhập lại (hoặc nhập <b>hủy</b> để thoát):",
+            parse_mode="HTML",
         )
         return True
 
@@ -1313,8 +1370,8 @@ async def handle_withdraw_amount(
 
     if amount < MIN_WITHDRAW or amount > MAX_WITHDRAW:
         await message.reply_text(
-            f"❌ Số tiền rút phải từ *{MIN_WITHDRAW:,}đ* đến *{MAX_WITHDRAW:,}đ*!",
-            parse_mode="Markdown"
+            f"{E['BAN']} Số tiền rút phải từ <b>{MIN_WITHDRAW:,}đ</b> đến <b>{MAX_WITHDRAW:,}đ</b>!",
+            parse_mode="HTML"
         )
         return True
 
@@ -1361,10 +1418,10 @@ async def handle_withdraw_amount(
     user_withdraw_state.pop(user.id, None)
 
     await message.reply_text(
-        "⏳ *YÊU CẦU RÚT TIỀN ĐÃ ĐƯỢC GỬI!*\n\n"
-        "Vui lòng chờ Admin kiểm tra và duyệt tiền.",
+        f"{E['CALENDAR']} <b>YÊU CẦU RÚT TIỀN ĐÃ ĐƯỢC GỬI!</b>\n"
+        f"{E['GEAR']} Vui lòng chờ Admin kiểm tra và duyệt tiền.",
         reply_markup=get_main_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
     # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN VÀ TẠO BỘ LƯU VẾT
@@ -1377,12 +1434,12 @@ async def handle_withdraw_amount(
 
     username_str = f"@{user.username}" if user.username else str(user.id)
     admin_msg = (
-        f"🚨 *LỆNH RÚT TIỀN MỚI (# {tx_id})*\n"
+        f"{E['ALERT1']} <b>LỆNH RÚT TIỀN MỚI (# {tx_id})</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 *Khách hàng:* {username_str} (`{user.id}`)\n"
-        f"💵 *Số tiền:* `{amount:,}đ`\n"
-        f"🏦 *Ngân hàng:* `{bank_info}`\n"
-        f"🕒 *Thời gian:* `{get_now_str()}`"
+        f"{E['EYES']} <b>Khách hàng:</b> {username_str} (<code>{user.id}</code>)\n"
+        f"{E['UP']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n"
+        f"{E['LOCK']} <b>Ngân hàng:</b> <code>{bank_info}</code>\n"
+        f"{E['CALENDAR']} <b>Thời gian:</b> <code>{get_now_str()}</code>"
     )
 
     msg_refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
@@ -1393,7 +1450,7 @@ async def handle_withdraw_amount(
                 chat_id=admin_id,
                 text=admin_msg,
                 reply_markup=InlineKeyboardMarkup(admin_buttons),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
             msg_refs.append({
                 "chat_id": admin_id,
@@ -1458,7 +1515,7 @@ async def admin_withdraw_callback(
         return
 
     user_id, amount, status, bank_info = tx
-    admin_name_str = f"@{admin_user.username}" if admin_user.username else f"`{admin_user.id}`"
+    admin_name_str = f"@{admin_user.username}" if admin_user.username else f"<code>{admin_user.id}</code>"
 
     # KIỂM TRA ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ CHƯA
     if status != "Chờ duyệt":
@@ -1466,8 +1523,8 @@ async def admin_withdraw_callback(
             await query.answer("⚠️ Giao dịch này đã được xử lý trước đó!", show_alert=True)
             status_text = "✅ ĐÃ DUYỆT" if status == "Thành công" else "❌ ĐÃ TỪ CHỐI"
             await query.edit_message_text(
-                f"{query.message.text}\n\n⚠️ *GIAO DỊCH ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ!* ({status_text})",
-                parse_mode="Markdown"
+                f"{query.message.text}\n\n⚠️ <b>GIAO DỊCH ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ!</b> ({status_text})",
+                parse_mode="HTML"
             )
         except Exception:
             pass
@@ -1497,8 +1554,8 @@ async def admin_withdraw_callback(
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"🎉 *RÚT TIỀN THÀNH CÔNG!*\n\nAdmin đã duyệt yêu cầu rút *{amount:,}đ* của bạn.",
-                    parse_mode="Markdown",
+                    text=f"{E['LOVE']} <b>RÚT TIỀN THÀNH CÔNG!</b>\nAdmin đã duyệt yêu cầu rút <b>{amount:,}đ</b> của bạn.",
+                    parse_mode="HTML",
                 )
             except Exception:
                 pass
@@ -1508,13 +1565,13 @@ async def admin_withdraw_callback(
             query_edited = False
 
             for ref in refs:
-                update_text = f"{ref['base_text']}\n\n✅ *TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN* (Bởi Admin {admin_name_str})"
+                update_text = f"{ref['base_text']}\n\n{E['THUMB']} <b>TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN</b> (Bởi Admin {admin_name_str})"
                 try:
                     await context.bot.edit_message_text(
                         chat_id=ref["chat_id"],
                         message_id=ref["message_id"],
                         text=update_text,
-                        parse_mode="Markdown"
+                        parse_mode="HTML"
                     )
                     if ref["chat_id"] == query.message.chat_id and ref["message_id"] == query.message.message_id:
                         query_edited = True
@@ -1524,8 +1581,8 @@ async def admin_withdraw_callback(
             if not query_edited:
                 try:
                     await query.edit_message_text(
-                        f"{query.message.text}\n\n✅ *TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN* (Bởi Admin {admin_name_str})",
-                        parse_mode="Markdown"
+                        f"{query.message.text}\n\n{E['THUMB']} <b>TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN</b> (Bởi Admin {admin_name_str})",
+                        parse_mode="HTML"
                     )
                 except Exception:
                     pass
@@ -1565,8 +1622,8 @@ async def admin_withdraw_callback(
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"❌ *YÊU CẦU RÚT TIỀN BỊ TỪ CHỐI*\n\nSố tiền *{amount:,}đ* đã được hoàn trả lại số dư.",
-                    parse_mode="Markdown",
+                    text=f"{E['BAN']} <b>YÊU CẦU RÚT TIỀN BỊ TỪ CHỐI</b>\n\nSố tiền <b>{amount:,}đ</b> đã được hoàn trả lại số dư.",
+                    parse_mode="HTML",
                 )
             except Exception:
                 pass
@@ -1576,13 +1633,13 @@ async def admin_withdraw_callback(
             query_edited = False
 
             for ref in refs:
-                update_text = f"{ref['base_text']}\n\n❌ *TRẠNG THÁI: ĐÃ TỪ CHỐI* (Bởi Admin {admin_name_str})"
+                update_text = f"{ref['base_text']}\n\n{E['BAN']} <b>TRẠNG THÁI: ĐÃ TỪ CHỐI</b> (Bởi Admin {admin_name_str})"
                 try:
                     await context.bot.edit_message_text(
                         chat_id=ref["chat_id"],
                         message_id=ref["message_id"],
                         text=update_text,
-                        parse_mode="Markdown"
+                        parse_mode="HTML"
                     )
                     if ref["chat_id"] == query.message.chat_id and ref["message_id"] == query.message.message_id:
                         query_edited = True
@@ -1592,8 +1649,8 @@ async def admin_withdraw_callback(
             if not query_edited:
                 try:
                     await query.edit_message_text(
-                        f"{query.message.text}\n\n❌ *TRẠNG THÁI: ĐÃ TỪ CHỐI* (Bởi Admin {admin_name_str})",
-                        parse_mode="Markdown"
+                        f"{query.message.text}\n\n{E['BAN']} <b>TRẠNG THÁI: ĐÃ TỪ CHỐI</b> (Bởi Admin {admin_name_str})",
+                        parse_mode="HTML"
                     )
                 except Exception:
                     pass
@@ -1649,23 +1706,23 @@ async def admin_userinfo_callback(
     referrer = u[4] if u[4] is not None else "Không có"
 
     msg = (
-        f"🔍 *THÔNG TIN CHI TIẾT USER*\n"
+        f"{E['EYES']} <b>THÔNG TIN CHI TIẾT USER</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🆔 ID: `{u[0]}`\n"
-        f"👤 Username: {username}\n"
-        f"💰 Số dư: `{u[2]:,}đ`\n"
-        f"🏦 Ngân hàng: `{bank}`\n"
-        f"🔗 Khách giới thiệu: `{referrer}`\n"
-        f"👥 Tổng đã mời: `{invited_count}` người\n"
-        f"🚫 Khóa TK: *{'CÓ' if u[5] else 'KHÔNG'}*\n"
-        f"🚫 Cấm rút: *{'CÓ' if u[6] else 'KHÔNG'}*\n"
-        f"🕒 Tham gia: `{u[7]}`"
+        f"{E['EYES']} ID: <code>{u[0]}</code>\n"
+        f"{E['COOL']} Username: {username}\n"
+        f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
+        f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
+        f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
+        f"{E['COOL']} Tổng đã mời: <code>{invited_count}</code> người\n"
+        f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[5] else 'KHÔNG'}</b>\n"
+        f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[6] else 'KHÔNG'}</b>\n"
+        f"{E['CALENDAR']} Tham gia: <code>{u[7]}</code>"
     )
 
     await context.bot.send_message(
         chat_id=query.from_user.id,
         text=msg,
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -1698,10 +1755,10 @@ async def admin_commands(
             users = db_query("SELECT user_id, username FROM users ORDER BY joined_at DESC LIMIT 50", fetchall=True)
 
             msg = (
-                f"📊 *THỐNG KÊ TỔNG NGUỜI DÙNG*\n"
+                f"{E['CHART']} <b>THỐNG KÊ TỔNG NGUỜI DÙNG</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"👥 Tổng số người dùng trong hệ thống: *{total_users:,}*\n\n"
-                f"👇 *Bấm vào nút ID bên dưới để kiểm tra full thông tin:*"
+                f"{E['COOL']} Tổng số người dùng trong hệ thống: <b>{total_users:,}</b>\n\n"
+                f"{E['ARROW_DOWN']} <b>Bấm vào nút ID bên dưới để kiểm tra full thông tin:</b>"
             )
 
             buttons = []
@@ -1724,7 +1781,7 @@ async def admin_commands(
             await message.reply_text(
                 msg,
                 reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
 
         # /TONGRUT - TỔNG TẤT CẢ SỐ TIỀN ĐÃ RÚT THÀNH CÔNG
@@ -1740,17 +1797,17 @@ async def admin_commands(
             total_amount, total_count = res[0], res[1]
 
             msg = (
-                f"💸 *TỔNG TOÀN BỘ SỐ TIỀN ĐÃ RÚT THÀNH CÔNG*\n"
+                f"{E['DOWN']} <b>TỔNG TOÀN BỘ SỐ TIỀN ĐÃ RÚT THÀNH CÔNG</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"💰 *Tổng số tiền đã rút:* `{total_amount:,}đ`\n"
-                f"📊 *Tổng số lệnh thành công:* `{total_count:,}` lệnh"
+                f"{E['UP']} <b>Tổng số tiền đã rút:</b> <code>{total_amount:,}đ</code>\n"
+                f"{E['CHART']} <b>Tổng số lệnh thành công:</b> <code>{total_count:,}</code> lệnh"
             )
-            await message.reply_text(msg, parse_mode="Markdown")
+            await message.reply_text(msg, parse_mode="HTML")
 
         # /RUTID [USER_ID] - KIỂM TRA SỐ LẦN RÚT & THÔNG TIN USER
         elif cmd == "/rutid":
             if len(args) < 1:
-                await message.reply_text("📌 *Cú pháp:* `/rutid USER_ID`", parse_mode="Markdown")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/rutid USER_ID</code>", parse_mode="HTML")
                 return
 
             try:
@@ -1799,36 +1856,36 @@ async def admin_commands(
             )
 
             msg = (
-                f"🔍 *THÔNG TIN RÚT TIỀN CỦA USER `{target_id}`*\n"
+                f"{E['EYES']} <b>THÔNG TIN RÚT TIỀN CỦA USER <code>{target_id}</code></b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"👤 Username: {username}\n"
-                f"💰 Số dư hiện tại: `{u[2]:,}đ`\n"
-                f"🏦 Ngân hàng: `{bank}`\n"
-                f"🔗 Người giới thiệu: `{referrer}`\n"
-                f"🚫 Khóa TK: *{'CÓ' if u[5] else 'KHÔNG'}* | Cấm rút: *{'CÓ' if u[6] else 'KHÔNG'}*\n"
-                f"🕒 Ngày tham gia: `{u[7]}`\n\n"
-                f"📊 *THỐNG KÊ RÚT TIỀN:*\n"
-                f"• 💸 Tổng tiền đã rút thành công: `{success_amount:,}đ`\n"
-                f"• ✅ Số lần rút thành công: `{success_count}` lần\n"
-                f"• ⏳ Số lần đang chờ duyệt: `{pending_count}` lần\n"
-                f"• ❌ Số lần bị từ chối: `{reject_count}` lần\n"
-                f"• 🎯 Tổng số lần gửi yêu cầu rút: `{total_attempts}` lần\n\n"
-                f"📜 *LỊCH SỬ RÚT TIỀN GẦN ĐÂY:*\n"
+                f"{E['COOL']} Username: {username}\n"
+                f"{E['UP']} Số dư hiện tại: <code>{u[2]:,}đ</code>\n"
+                f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
+                f"{E['CLIP']} Người giới thiệu: <code>{referrer}</code>\n"
+                f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[5] else 'KHÔNG'}</b> | Cấm rút: <b>{'CÓ' if u[6] else 'KHÔNG'}</b>\n"
+                f"{E['CALENDAR']} Ngày tham gia: <code>{u[7]}</code>\n\n"
+                f"{E['CHART']} <b>THỐNG KÊ RÚT TIỀN:</b>\n"
+                f"• {E['DOWN']} Tổng tiền đã rút thành công: <code>{success_amount:,}đ</code>\n"
+                f"• {E['THUMB']} Số lần rút thành công: <code>{success_count}</code> lần\n"
+                f"• {E['CALENDAR']} Số lần đang chờ duyệt: <code>{pending_count}</code> lần\n"
+                f"• {E['BAN']} Số lần bị từ chối: <code>{reject_count}</code> lần\n"
+                f"• {E['LIGHTNING']} Tổng số lần gửi yêu cầu rút: <code>{total_attempts}</code> lần\n\n"
+                f"{E['CHART']} <b>LỊCH SỬ RÚT TIỀN GẦN ĐÂY:</b>\n"
             )
 
             if withdraw_txs:
                 for tx_id, amount, status, created_at in withdraw_txs:
-                    icon = "✅" if status == "Thành công" else ("❌" if status == "Từ chối" else "⏳")
-                    msg += f"{icon} #{tx_id} | `{amount:,}đ` | {status} | `{created_at}`\n"
+                    icon = E['THUMB'] if status == "Thành công" else (E['BAN'] if status == "Từ chối" else E['CALENDAR'])
+                    msg += f"{icon} #{tx_id} | <code>{amount:,}đ</code> | {status} | <code>{created_at}</code>\n"
             else:
                 msg += "• Chưa có giao dịch rút tiền nào.\n"
 
-            await message.reply_text(msg, parse_mode="Markdown")
+            await message.reply_text(msg, parse_mode="HTML")
 
         # /TB - THÔNG BÁO
         elif cmd == "/tb":
             if not args:
-                await message.reply_text("Cú pháp: `/tb Nội dung thông báo`", parse_mode="Markdown")
+                await message.reply_text(f"Cú pháp: <code>/tb Nội dung thông báo</code>", parse_mode="HTML")
                 return
 
             content = " ".join(args).strip()
@@ -1840,8 +1897,8 @@ async def admin_commands(
                 try:
                     await context.bot.send_message(
                         chat_id=target_id,
-                        text=f"📢 *THÔNG BÁO HỆ THỐNG*\n━━━━━━━━━━━━━━━━━━\n\n{content}",
-                        parse_mode="Markdown",
+                        text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}",
+                        parse_mode="HTML",
                     )
                     count += 1
                 except Exception:
@@ -1852,20 +1909,20 @@ async def admin_commands(
                 try:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=f"📢 *THÔNG BÁO HỆ THỐNG*\n━━━━━━━━━━━━━━━━━━\n\n{content}",
-                        parse_mode="Markdown",
+                        text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}",
+                        parse_mode="HTML",
                     )
                     count += 1
                 except Exception:
                     pass
                 await asyncio.sleep(0.05)
 
-            await message.reply_text(f"✅ Đã phát thông báo tới *{count}* người dùng/nhóm.")
+            await message.reply_text(f"{E['THUMB']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.", parse_mode="HTML")
 
         # /INFO [USER_ID]
         elif cmd == "/info":
             if len(args) < 1:
-                await message.reply_text("📌 *Cú pháp:* `/info USER_ID`", parse_mode="Markdown")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/info USER_ID</code>", parse_mode="HTML")
                 return
 
             try:
@@ -1891,24 +1948,24 @@ async def admin_commands(
             referrer = u[4] if u[4] is not None else "Không có"
 
             msg = (
-                f"🔍 *THÔNG TIN CHI TIẾT USER*\n"
+                f"{E['EYES']} <b>THÔNG TIN CHI TIẾT USER</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"🆔 ID: `{u[0]}`\n"
-                f"👤 Username: {username}\n"
-                f"💰 Số dư: `{u[2]:,}đ`\n"
-                f"🏦 Ngân hàng: `{bank}`\n"
-                f"🔗 Khách giới thiệu: `{referrer}`\n"
-                f"👥 Tổng đã mời: `{invited_count}` người\n"
-                f"🚫 Khóa TK: *{'CÓ' if u[5] else 'KHÔNG'}*\n"
-                f"🚫 Cấm rút: *{'CÓ' if u[6] else 'KHÔNG'}*\n"
-                f"🕒 Tham gia: `{u[7]}`"
+                f"{E['EYES']} ID: <code>{u[0]}</code>\n"
+                f"{E['COOL']} Username: {username}\n"
+                f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
+                f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
+                f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
+                f"{E['COOL']} Tổng đã mời: <code>{invited_count}</code> người\n"
+                f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[5] else 'KHÔNG'}</b>\n"
+                f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[6] else 'KHÔNG'}</b>\n"
+                f"{E['CALENDAR']} Tham gia: <code>{u[7]}</code>"
             )
-            await message.reply_text(msg, parse_mode="Markdown")
+            await message.reply_text(msg, parse_mode="HTML")
 
         # /BB [USER_ID] - CHECK BẠN BÈ ĐÃ MỜI
         elif cmd == "/bb":
             if len(args) < 1:
-                await message.reply_text("📌 *Cú pháp:* `/bb USER_ID`", parse_mode="Markdown")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/bb USER_ID</code>", parse_mode="HTML")
                 return
 
             try:
@@ -1925,63 +1982,63 @@ async def admin_commands(
 
             total_invited = len(invited_users)
 
-            msg = f"👥 *DANH SÁCH BẠN BÈ MỜI CỦA USER `{target_id}`* (Tổng: `{total_invited}` người):\n━━━━━━━━━━━━━━━━━━\n\n"
+            msg = f"{E['COOL']} <b>DANH SÁCH BẠN BÈ MỜI CỦA USER <code>{target_id}</code></b> (Tổng: <code>{total_invited}</code> người):\n━━━━━━━━━━━━━━━━━━\n\n"
 
             if invited_users:
                 for invited_id, username, joined_at in invited_users:
                     uname = f"@{username}" if username else "Chưa đặt username"
-                    msg += f"• ID: `{invited_id}` | Name: {uname} | Ngày: `{joined_at}`\n"
+                    msg += f"• ID: <code>{invited_id}</code> | Name: {uname} | Ngày: <code>{joined_at}</code>\n"
             else:
                 msg += "❌ Người dùng này chưa mời được ai.\n"
 
-            await message.reply_text(msg, parse_mode="Markdown")
+            await message.reply_text(msg, parse_mode="HTML")
 
         # /BAN
         elif cmd == "/ban":
             if len(args) < 1:
-                await message.reply_text("Cú pháp: `/ban USER_ID`", parse_mode="Markdown")
+                await message.reply_text("Cú pháp: <code>/ban USER_ID</code>", parse_mode="HTML")
                 return
 
             target_id = int(args[0])
             db_query("UPDATE users SET is_banned=1 WHERE user_id=%s", (target_id,), commit=True)
             user_withdraw_state.pop(target_id, None)
-            await message.reply_text(f"✅ Đã cấm vĩnh viễn user `{target_id}`.", parse_mode="Markdown")
+            await message.reply_text(f"{E['BAN']} Đã cấm vĩnh viễn user <code>{target_id}</code>.", parse_mode="HTML")
 
         # /MOBAN (MỞ BAN TÀI KHOẢN)
         elif cmd == "/moban":
             if len(args) < 1:
-                await message.reply_text("📌 *Cú pháp:* `/moban USER_ID`", parse_mode="Markdown")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/moban USER_ID</code>", parse_mode="HTML")
                 return
 
             target_id = int(args[0])
             db_query("UPDATE users SET is_banned=0 WHERE user_id=%s", (target_id,), commit=True)
-            await message.reply_text(f"✅ *Đã mở ban tài khoản cho ID:* `{target_id}`", parse_mode="Markdown")
+            await message.reply_text(f"{E['THUMB']} <b>Đã mở ban tài khoản cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
 
         # /CAM (CẤM RÚT TIỀN)
         elif cmd == "/cam":
             if len(args) < 1:
-                await message.reply_text("Cú pháp: `/cam USER_ID`", parse_mode="Markdown")
+                await message.reply_text("Cú pháp: <code>/cam USER_ID</code>", parse_mode="HTML")
                 return
 
             target_id = int(args[0])
             db_query("UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s", (target_id,), commit=True)
             user_withdraw_state.pop(target_id, None)
-            await message.reply_text(f"✅ Đã cấm rút tiền ID `{target_id}`.", parse_mode="Markdown")
+            await message.reply_text(f"{E['STOP']} Đã cấm rút tiền ID <code>{target_id}</code>.", parse_mode="HTML")
 
         # /MOCAM (MỞ CẤM RÚT TIỀN)
         elif cmd == "/mocam":
             if len(args) < 1:
-                await message.reply_text("📌 *Cú pháp:* `/mocam USER_ID`", parse_mode="Markdown")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/mocam USER_ID</code>", parse_mode="HTML")
                 return
 
             target_id = int(args[0])
             db_query("UPDATE users SET is_withdraw_banned=0 WHERE user_id=%s", (target_id,), commit=True)
-            await message.reply_text(f"✅ *Đã mở cấm rút tiền cho ID:* `{target_id}`", parse_mode="Markdown")
+            await message.reply_text(f"{E['THUMB']} <b>Đã mở cấm rút tiền cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
 
         # /NAP & /TRU
         elif cmd in ("/nap", "/tru"):
             if len(args) < 2:
-                await message.reply_text(f"Cú pháp: `{cmd} USER_ID SO_TIEN`", parse_mode="Markdown")
+                await message.reply_text(f"Cú pháp: <code>{cmd} USER_ID SO_TIEN</code>", parse_mode="HTML")
                 return
 
             target_id = int(args[0])
@@ -2009,7 +2066,7 @@ async def admin_commands(
                     return True
 
                 db_transaction(add_money)
-                await message.reply_text(f"✅ Đã cộng *+{amount:,}đ* cho ID `{target_id}`.", parse_mode="Markdown")
+                await message.reply_text(f"{E['THUMB']} Đã cộng <b>+{amount:,}đ</b> cho ID <code>{target_id}</code>.", parse_mode="HTML")
 
             else:
                 def deduct(cursor):
@@ -2032,9 +2089,9 @@ async def admin_commands(
                 if not ok:
                     await message.reply_text("❌ Số dư user không đủ để trừ.")
                     return
-                await message.reply_text(f"✅ Đã trừ *-{amount:,}đ* của ID `{target_id}`.", parse_mode="Markdown")
+                await message.reply_text(f"{E['BAN']} Đã trừ <b>-{amount:,}đ</b> của ID <code>{target_id}</code>.", parse_mode="HTML")
 
-        # /RUTLS - HIỂN THỊ DANH SÁCH RÚT CHỜ DUYỆT (ĐỒNG BỘ NÚT CHO TẤT CẢ ADMIN)
+        # /RUTLS - HIỂN THỊ DANH SÁCH RÚT CHỜ DUYỆT
         elif cmd == "/rutls":
             txs = db_query(
                 """
@@ -2047,7 +2104,7 @@ async def admin_commands(
             )
 
             if not txs:
-                await message.reply_text("🎉 Không có yêu cầu rút tiền nào đang chờ duyệt!")
+                await message.reply_text(f"{E['LOVE']} Không có yêu cầu rút tiền nào đang chờ duyệt!")
                 return
 
             for tx_id, target_id, amount, details, created_at in txs:
@@ -2058,20 +2115,20 @@ async def admin_commands(
                     ]
                 ]
                 msg_text = (
-                    f"🆔 *Lệnh:* #{tx_id}\n"
-                    f"👤 *User:* `{target_id}`\n"
-                    f"💵 *Số tiền:* `{amount:,}đ`\n"
-                    f"🏦 *Bank:* `{details or 'N/A'}`\n"
-                    f"🕒 *Thời gian:* `{created_at}`"
+                    f"{E['EYES']} <b>Lệnh:</b> #{tx_id}\n"
+                    f"{E['COOL']} <b>User:</b> <code>{target_id}</code>\n"
+                    f"{E['UP']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n"
+                    f"{E['LOCK']} <b>Bank:</b> <code>{details or 'N/A'}</code>\n"
+                    f"{E['CALENDAR']} <b>Thời gian:</b> <code>{created_at}</code>"
                 )
                 
                 sent_msg = await message.reply_text(
                     msg_text,
                     reply_markup=InlineKeyboardMarkup(btns),
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                 )
 
-                # Lưu vết tin nhắn này để nếu ai bấm duyệt/từ chối thì tin nhắn này cũng được đồng bộ
+                # Lưu vết tin nhắn
                 refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
                 refs.append({
                     "chat_id": message.chat_id,
@@ -2095,16 +2152,16 @@ async def admin_commands(
                 await message.reply_text("📜 Chưa có lệnh rút nào được duyệt.")
                 return
 
-            msg = "📜 *LỆNH RÚT ĐÃ DUYỆT GẦN ĐÂY:*\n\n"
+            msg = f"{E['CHART']} <b>LỆNH RÚT ĐÃ DUYỆT GẦN ĐÂY:</b>\n\n"
             for tx_id, target_id, amount, created_at in txs:
-                msg += f"✅ #{tx_id} | `{target_id}` | `{amount:,}đ` | `{created_at}`\n"
+                msg += f"{E['THUMB']} #{tx_id} | <code>{target_id}</code> | <code>{amount:,}đ</code> | <code>{created_at}</code>\n"
 
-            await message.reply_text(msg, parse_mode="Markdown")
+            await message.reply_text(msg, parse_mode="HTML")
 
         # /LSGD
         elif cmd == "/lsgd":
             if len(args) < 1:
-                await message.reply_text("Cú pháp: `/lsgd USER_ID`", parse_mode="Markdown")
+                await message.reply_text("Cú pháp: <code>/lsgd USER_ID</code>", parse_mode="HTML")
                 return
 
             target_id = int(args[0])
@@ -2114,11 +2171,11 @@ async def admin_commands(
                 fetchall=True,
             )
 
-            msg = f"👥 *DANH SÁCH MỜI CỦA USER `{target_id}`:*\n"
+            msg = f"{E['COOL']} <b>DANH SÁCH MỜI CỦA USER <code>{target_id}</code>:</b>\n"
             if invited_users:
                 for invited_id, username in invited_users:
                     uname = f"@{username}" if username else "N/A"
-                    msg += f"• `{invited_id}` ({uname})\n"
+                    msg += f"• <code>{invited_id}</code> ({uname})\n"
             else:
                 msg += "• Chưa mời được ai.\n"
 
@@ -2133,14 +2190,14 @@ async def admin_commands(
                 fetchall=True,
             )
 
-            msg += "\n📜 *LỊCH SỬ GIAO DỊCH:*\n"
+            msg += f"\n{E['CHART']} <b>LỊCH SỬ GIAO DỊCH:</b>\n"
             if txs:
                 for tx_type, amount, status, created_at in txs:
-                    msg += f"• {tx_type}: `{amount:,}đ` [{status}] - `{created_at}`\n"
+                    msg += f"• {tx_type}: <code>{amount:,}đ</code> [{status}] - <code>{created_at}</code>\n"
             else:
                 msg += "• Chưa có giao dịch.\n"
 
-            await message.reply_text(msg, parse_mode="Markdown")
+            await message.reply_text(msg, parse_mode="HTML")
 
         # /BAOTRI - TOGGLE BẢO TRÌ
         elif cmd == "/baotri":
@@ -2148,17 +2205,17 @@ async def admin_commands(
             new_val = "0" if curr else "1"
             db_query("UPDATE settings SET value=%s WHERE key='maintenance'", (new_val,), commit=True)
             status_str = "BẮT ĐẦU BẢO TRÌ 🔴" if new_val == "1" else "TẮT BẢO TRÌ 🟢"
-            await message.reply_text(f"⚙️ Trạng thái hệ thống: *{status_str}*", parse_mode="Markdown")
+            await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{status_str}</b>", parse_mode="HTML")
 
         # /BATBT - BẬT BẢO TRÌ
         elif cmd == "/batbt":
             db_query("UPDATE settings SET value='1' WHERE key='maintenance'", commit=True)
-            await message.reply_text("🔴 *ĐÃ BẬT CHẾ ĐỘ BẢO TRÌ HỆ THỐNG!*", parse_mode="Markdown")
+            await message.reply_text(f"{E['STOP']} <b>ĐÃ BẬT CHẾ ĐỘ BẢO TRÌ HỆ THỐNG!</b>", parse_mode="HTML")
 
         # /TATBT - TẮT BẢO TRÌ
         elif cmd == "/tatbt":
             db_query("UPDATE settings SET value='0' WHERE key='maintenance'", commit=True)
-            await message.reply_text("🟢 *ĐÃ TẮT BẢO TRÌ HỆ THỐNG!* Bot đã mở lại bình thường.", parse_mode="Markdown")
+            await message.reply_text(f"{E['LIGHTNING']} <b>ĐÃ TẮT BẢO TRÌ HỆ THỐNG!</b> Bot đã mở lại bình thường.", parse_mode="HTML")
 
     except Exception as exc:
         logger.exception("Lỗi admin command %s: %s", cmd, exc)
