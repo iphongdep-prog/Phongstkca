@@ -35,7 +35,7 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-# Danh sách ID Admin (Đã xoá ID cũ, chỉ giữ ID 5633649201)
+# Danh sách ID Admin (Đã giữ ID 5633649201)
 ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
@@ -56,7 +56,7 @@ REFERRAL_REWARD = 1000
 
 
 # ============================================================
-# DANH SÁCH 50 PREMIUM CUSTOM EMOJI TAGS (HTML)
+# DANH SÁCH EMOJI
 # ============================================================
 E = {
     "CROWN": '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji>',
@@ -409,11 +409,9 @@ async def chat_member_updated_handler(
     old_state = result.old_chat_member.status
     new_state = result.new_chat_member.status
 
-    # Người dùng rời kênh/nhóm
     if old_state in ("member", "administrator", "creator") and new_state in ("left", "kicked"):
         user = result.new_chat_member.user
 
-        # Lấy người giới thiệu của user rời nhóm
         user_info = db_query(
             "SELECT referrer_id FROM users WHERE user_id=%s",
             (user.id,),
@@ -423,7 +421,6 @@ async def chat_member_updated_handler(
         if user_info and user_info[0]:
             ref_id = user_info[0]
 
-            # Khóa tính năng rút tiền của người giới thiệu
             db_query(
                 "UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s",
                 (ref_id,),
@@ -432,7 +429,6 @@ async def chat_member_updated_handler(
 
             user_withdraw_state.pop(ref_id, None)
 
-            # 1. Thông báo cho người rời nhóm
             try:
                 await context.bot.send_message(
                     chat_id=user.id,
@@ -447,7 +443,6 @@ async def chat_member_updated_handler(
             except Exception as exc:
                 logger.warning("Không gửi được thông báo cho người rời nhóm %s: %s", user.id, exc)
 
-            # 2. Thông báo cho người giới thiệu
             username_str = f"@{user.username}" if user.username else str(user.id)
             try:
                 await context.bot.send_message(
@@ -524,9 +519,7 @@ async def handle_anti_spam(
 # ============================================================
 
 async def ensure_user_exists(update: Update):
-
     user = update.effective_user
-
     if not user:
         return None
 
@@ -557,17 +550,36 @@ async def ensure_user_exists(update: Update):
             (current_username, user.id),
             commit=True,
         )
+    else:
+        # TỰ ĐỘNG TẠO USER MỚI NẾU KHÔNG TỒN TẠI TRONG DB (SỬA LỖI SAU KHU RESETALL)
+        db_query(
+            """
+            INSERT INTO users
+                (user_id, username, balance, joined_at)
+            VALUES
+                (%s, %s, 0, %s)
+            ON CONFLICT (user_id) DO NOTHING
+            """,
+            (user.id, user.username or "", get_now_str()),
+            commit=True,
+        )
+        row = db_query(
+            """
+            SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id
+            FROM users WHERE user_id=%s
+            """,
+            (user.id,),
+            fetchone=True,
+        )
 
     return row
 
 
 async def require_private_user(update: Update):
-
     if not update.effective_chat or update.effective_chat.type != "private":
         return False
 
     user = update.effective_user
-
     if not user:
         return False
 
@@ -580,19 +592,6 @@ async def require_private_user(update: Update):
         )
         return False
 
-    if not row:
-        db_query(
-            """
-            INSERT INTO users
-                (user_id, username, balance, joined_at)
-            VALUES
-                (%s, %s, 0, %s)
-            ON CONFLICT (user_id) DO NOTHING
-            """,
-            (user.id, user.username or "", get_now_str()),
-            commit=True,
-        )
-
     return True
 
 
@@ -604,7 +603,6 @@ async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-
     if await handle_anti_spam(update, context):
         return
 
@@ -614,7 +612,6 @@ async def start_command(
     if not user or not chat:
         return
 
-    # GROUP
     if chat.type != "private":
         db_query(
             """
@@ -627,7 +624,6 @@ async def start_command(
         )
         return
 
-    # BẢO TRÌ
     if is_maintenance() and user.id not in ADMIN_IDS:
         await update.message.reply_text(
             f"{E['STOP']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n"
@@ -636,7 +632,6 @@ async def start_command(
         )
         return
 
-    # USER
     db_user = db_query(
         """
         SELECT user_id, is_banned, referrer_id
@@ -654,27 +649,16 @@ async def start_command(
         )
         return
 
-    # REFERRER
+    # MỜI BẠN BÈ
     referrer_id = None
     if context.args:
         try:
             ref_id = int(context.args[0])
             if ref_id != user.id:
-                ref_exists = db_query(
-                    """
-                    SELECT user_id
-                    FROM users
-                    WHERE user_id=%s
-                    """,
-                    (ref_id,),
-                    fetchone=True,
-                )
-                if ref_exists:
-                    referrer_id = ref_id
+                referrer_id = ref_id
         except (ValueError, TypeError):
             pass
 
-    # TẠO HOẶC CẬP NHẬT USER
     if not db_user:
         db_query(
             """
@@ -688,8 +672,8 @@ async def start_command(
             commit=True,
         )
     else:
-        # Nếu user đã tồn tại nhưng chưa có referrer_id và có referrer mới
-        if db_user[2] is None and referrer_id is not None:
+        # CHO PHÉP CẬP NHẬT LẠI NẾU ĐÃ RESET TÀI KHOẢN HOẶC CHƯA CÓ MỜI
+        if referrer_id is not None:
             db_query(
                 """
                 UPDATE users
@@ -710,7 +694,7 @@ async def start_command(
                 commit=True,
             )
 
-    # KIỂM TRA KÊNH
+    # CHECK JOIN KÊNH BẮT BUỘC
     is_joined = await check_channel_membership(context.bot, user.id)
 
     if not is_joined:
@@ -761,7 +745,6 @@ async def start_command(
         )
         return
 
-    # CHÀO MỪNG
     await update.message.reply_text(
         f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỞ LẠI HỆ THỐNG!</b>\n"
         f"{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
@@ -897,7 +880,6 @@ async def captcha_callback(
         )
         return
 
-    # CAPTCHA ĐÚNG
     context.user_data.pop("captcha_ans", None)
 
     try:
@@ -920,30 +902,9 @@ async def captcha_callback(
         ref_id = db_user[0]
         try:
             def reward_referrer(cursor):
-                cursor.execute(
-                    """
-                    SELECT user_id
-                    FROM users
-                    WHERE user_id=%s
-                    """,
-                    (ref_id,),
-                )
-                if not cursor.fetchone():
-                    return False
-
                 details = f"Mời {user.id}"
 
-                # Kiểm tra nếu đã được cộng trước đó
-                cursor.execute(
-                    """
-                    SELECT id FROM transactions 
-                    WHERE user_id=%s AND type='Thưởng Mời Bạn' AND details=%s
-                    """,
-                    (ref_id, details)
-                )
-                if cursor.fetchone():
-                    return False
-
+                # CỘNG TIỀN VÀO USER KHÔNG CẦN CHECK TỒN TẠI TRONG TRANSACTIONS KHI ĐÃ RESET ALL
                 cursor.execute(
                     """
                     INSERT INTO transactions
@@ -991,7 +952,6 @@ async def captcha_callback(
         except Exception as exc:
             logger.exception("Lỗi transaction thưởng giới thiệu: %s", exc)
 
-    # XÓA CAPTCHA & CHÀO MỪNG
     try:
         await query.delete_message()
     except Exception:
@@ -1025,6 +985,9 @@ async def menu_handler(
     if update.effective_chat.type != "private":
         return
 
+    # TỰ ĐỘNG ĐẢM BẢO USER LUÔN TỒN TẠI (SỬA LỖI SAU KHU DÙNG LỆNH RESETALL)
+    db_user = await ensure_user_exists(update)
+
     user_withdraw_state.pop(user.id, None)
 
     if is_maintenance() and user.id not in ADMIN_IDS:
@@ -1035,29 +998,13 @@ async def menu_handler(
         )
         return
 
-    db_user = db_query(
-        """
-        SELECT
-            user_id,
-            balance,
-            bank_info,
-            is_banned,
-            is_withdraw_banned
-        FROM users
-        WHERE user_id=%s
-        """,
-        (user.id,),
-        fetchone=True,
-    )
-
     if not db_user or db_user[3] == 1:
         await message.reply_text(
-            f"{E['BAN']} <b>Bạn không có quyền sử dụng bot này.</b>",
+            f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm khỏi hệ thống!</b>",
             parse_mode="HTML"
         )
         return
 
-    # KIỂM TRA KÊNH
     if user.id not in ADMIN_IDS:
         if not await check_channel_membership(context.bot, user.id):
             await message.reply_text(
@@ -1506,7 +1453,6 @@ async def handle_withdraw_amount(
         parse_mode="HTML"
     )
 
-    # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN
     admin_buttons = [
         [
             InlineKeyboardButton("✅ DUYỆT", callback_data=f"approve_{tx_id}"),
@@ -1611,7 +1557,6 @@ async def admin_withdraw_callback(
             pass
         return
 
-    # DUYỆT
     if action == "approve":
         try:
             def approve(cursor):
@@ -1666,7 +1611,6 @@ async def admin_withdraw_callback(
                 except Exception:
                     pass
 
-    # TỪ CHỐI
     elif action == "reject":
         try:
             def reject(cursor):
@@ -1734,7 +1678,7 @@ async def admin_withdraw_callback(
 
 
 # ============================================================
-# CALLBACK XEM FULL THÔNG TIN USER KHI BẤM NÚT ID (/TONG)
+# ADMIN USER INFO
 # ============================================================
 
 async def admin_userinfo_callback(
@@ -1826,20 +1770,31 @@ async def admin_commands(
     args = context.args or []
 
     try:
-        # /RESETALL - RESET TOÀN BỘ DỮ LIỆU USER & GIAO DỊCH
+        # /RESETALL - TỰ ĐỘNG TẠO LẠI DB VÀ ADMIN ĐỂ BOT KHÔNG BỊ KHÓA SỬ DỤNG
         if cmd == "/resetall":
             db_query("TRUNCATE TABLE users, transactions RESTART IDENTITY", commit=True)
             user_msg_tracker.clear()
             temp_bans.clear()
             user_withdraw_state.clear()
+
+            # Tự động lưu lại thông tin Admin vừa thực hiện lệnh vào DB
+            db_query(
+                """
+                INSERT INTO users (user_id, username, balance, joined_at)
+                VALUES (%s, %s, 0, %s)
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                (message.from_user.id, message.from_user.username or "", get_now_str()),
+                commit=True
+            )
+
             await message.reply_text(
                 f"{E['REFRESH']} <b>ĐÃ RESET TOÀN BỘ HỆ THỐNG!</b>\n"
                 f"• Toàn bộ người dùng & lịch sử giao dịch đã được xóa hoàn toàn.\n"
-                f"• Người dùng cũ có thể sử dụng lại link ref để mời lại bình thường.",
+                f"• Bạn và người dùng cũ giờ đây đã có thể ấn nút hoặc dùng lại link ref bình thường.",
                 parse_mode="HTML"
             )
 
-        # /TONG - TỔNG NGƯỜI DÙNG VÀ HIỂN THỊ NÚT ID
         elif cmd == "/tong":
             total_users = db_query("SELECT COUNT(*) FROM users", fetchone=True)[0]
             users = db_query("SELECT user_id, username FROM users ORDER BY joined_at DESC LIMIT 50", fetchall=True)
@@ -1874,7 +1829,6 @@ async def admin_commands(
                 parse_mode="HTML",
             )
 
-        # /TONGRUT - TỔNG TẤT CẢ SỐ TIỀN ĐÃ RÚT THÀNH CÔNG
         elif cmd == "/tongrut":
             res = db_query(
                 """
@@ -1894,7 +1848,6 @@ async def admin_commands(
             )
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /RUTID [USER_ID]
         elif cmd == "/rutid":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/rutid USER_ID</code>", parse_mode="HTML")
@@ -1970,7 +1923,6 @@ async def admin_commands(
 
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /TB - THÔNG BÁO
         elif cmd == "/tb":
             if not args:
                 await message.reply_text(f"Cú pháp: <code>/tb Nội dung thông báo</code>", parse_mode="HTML")
@@ -2007,7 +1959,6 @@ async def admin_commands(
 
             await message.reply_text(f"{E['THUMB']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.", parse_mode="HTML")
 
-        # /INFO [USER_ID]
         elif cmd == "/info":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/info USER_ID</code>", parse_mode="HTML")
@@ -2050,7 +2001,6 @@ async def admin_commands(
             )
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /BB [USER_ID]
         elif cmd == "/bb":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/bb USER_ID</code>", parse_mode="HTML")
@@ -2081,7 +2031,6 @@ async def admin_commands(
 
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /BAN
         elif cmd == "/ban":
             if len(args) < 1:
                 await message.reply_text("Cú pháp: <code>/ban USER_ID</code>", parse_mode="HTML")
@@ -2092,7 +2041,6 @@ async def admin_commands(
             user_withdraw_state.pop(target_id, None)
             await message.reply_text(f"{E['BAN']} Đã cấm vĩnh viễn user <code>{target_id}</code>.", parse_mode="HTML")
 
-        # /MOBAN
         elif cmd == "/moban":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/moban USER_ID</code>", parse_mode="HTML")
@@ -2102,7 +2050,6 @@ async def admin_commands(
             db_query("UPDATE users SET is_banned=0 WHERE user_id=%s", (target_id,), commit=True)
             await message.reply_text(f"{E['THUMB']} <b>Đã mở ban tài khoản cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
 
-        # /CAM
         elif cmd == "/cam":
             if len(args) < 1:
                 await message.reply_text("Cú pháp: <code>/cam USER_ID</code>", parse_mode="HTML")
@@ -2113,7 +2060,6 @@ async def admin_commands(
             user_withdraw_state.pop(target_id, None)
             await message.reply_text(f"{E['STOP']} Đã cấm rút tiền ID <code>{target_id}</code>.", parse_mode="HTML")
 
-        # /MOCAM
         elif cmd == "/mocam":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/mocam USER_ID</code>", parse_mode="HTML")
@@ -2123,7 +2069,6 @@ async def admin_commands(
             db_query("UPDATE users SET is_withdraw_banned=0 WHERE user_id=%s", (target_id,), commit=True)
             await message.reply_text(f"{E['THUMB']} <b>Đã mở cấm rút tiền cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
 
-        # /NAP & /TRU
         elif cmd in ("/nap", "/tru"):
             if len(args) < 2:
                 await message.reply_text(f"Cú pháp: <code>{cmd} USER_ID SO_TIEN</code>", parse_mode="HTML")
@@ -2179,7 +2124,6 @@ async def admin_commands(
                     return
                 await message.reply_text(f"{E['BAN']} Đã trừ <b>-{amount:,}đ</b> của ID <code>{target_id}</code>.", parse_mode="HTML")
 
-        # /RUTLS
         elif cmd == "/rutls":
             txs = db_query(
                 """
@@ -2223,7 +2167,6 @@ async def admin_commands(
                     "base_text": msg_text
                 })
 
-        # /RUTTC
         elif cmd == "/ruttc":
             txs = db_query(
                 """
@@ -2245,7 +2188,6 @@ async def admin_commands(
 
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /LSGD
         elif cmd == "/lsgd":
             if len(args) < 1:
                 await message.reply_text("Cú pháp: <code>/lsgd USER_ID</code>", parse_mode="HTML")
@@ -2286,7 +2228,6 @@ async def admin_commands(
 
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /BAOTRI
         elif cmd == "/baotri":
             curr = is_maintenance()
             new_val = "0" if curr else "1"
@@ -2294,12 +2235,10 @@ async def admin_commands(
             status_str = "BẮT ĐẦU BẢO TRÌ 🔴" if new_val == "1" else "TẮT BẢO TRÌ 🟢"
             await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{status_str}</b>", parse_mode="HTML")
 
-        # /BATBT
         elif cmd == "/batbt":
             db_query("UPDATE settings SET value='1' WHERE key='maintenance'", commit=True)
             await message.reply_text(f"{E['STOP']} <b>ĐÃ BẬT CHẾ ĐỘ BẢO TRÌ HỆ THỐNG!</b>", parse_mode="HTML")
 
-        # /TATBT
         elif cmd == "/tatbt":
             db_query("UPDATE settings SET value='0' WHERE key='maintenance'", commit=True)
             await message.reply_text(f"{E['LIGHTNING']} <b>ĐÃ TẮT BẢO TRÌ HỆ THỐNG!</b> Bot đã mở lại bình thường.", parse_mode="HTML")
@@ -2365,7 +2304,7 @@ def main():
     app.add_handler(CallbackQueryHandler(cancel_withdraw_callback, pattern=r"^cancel_withdraw$"))
     app.add_handler(CallbackQueryHandler(admin_withdraw_callback, pattern=r"^(approve|reject)_\d+$"))
     
-    # CALLBACK DÀNH CHO XEM THÔNG TIN USER KHI BẤM NÚT TỪ LỆNH /TONG
+    # CALLBACK XEM THÔNG TIN USER TỪ LỆNH /TONG
     app.add_handler(CallbackQueryHandler(admin_userinfo_callback, pattern=r"^userinfo_\d+$"))
 
     # COMMANDS ADMIN
