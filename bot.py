@@ -23,6 +23,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    ChatMemberHandler,
     filters,
 )
 
@@ -34,12 +35,12 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-# Danh sách ID Admin
-ADMIN_IDS = [5633649201, 7902882919]
+# Danh sách ID Admin (Đã xoá ID cũ, chỉ giữ ID 5633649201)
+ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh kiểm tra tham gia (Đã đổi @sancode24 -> @sancode22, bỏ qua @hocviencbm theo yêu cầu)
+# Kênh kiểm tra tham gia
 REQUIRED_CHECK_CHANNELS = [
     "@conmuamenmenl",
     "@sancode22",
@@ -376,7 +377,7 @@ def generate_captcha():
 
 
 # ============================================================
-# KIỂM TRA THAM GIA KÊNH (Bỏ qua @hocviencbm & Fix lỗi kẹt nút)
+# KIỂM TRA THAM GIA KÊNH
 # ============================================================
 
 async def check_channel_membership(bot, user_id):
@@ -397,11 +398,79 @@ async def check_channel_membership(bot, user_id):
                 channel,
                 exc,
             )
-            # Nếu Bot không có quyền admin hoặc không lấy được thông tin chat,
-            # cho qua để không làm tắc nghẽn trải nghiệm người dùng
             continue
 
     return True
+
+
+# ============================================================
+# XỬ LÝ KHI NGƯỜI DÙNG RỜI NHÓM/KÊNH
+# ============================================================
+
+async def chat_member_updated_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    result = update.chat_member or update.my_chat_member
+    if not result:
+        return
+
+    old_state = result.old_chat_member.status
+    new_state = result.new_chat_member.status
+
+    # Người dùng rời kênh/nhóm
+    if old_state in ("member", "administrator", "creator") and new_state in ("left", "kicked"):
+        user = result.new_chat_member.user
+
+        # Lấy người giới thiệu của user rời nhóm
+        user_info = db_query(
+            "SELECT referrer_id FROM users WHERE user_id=%s",
+            (user.id,),
+            fetchone=True,
+        )
+
+        if user_info and user_info[0]:
+            ref_id = user_info[0]
+
+            # Khóa tính năng rút tiền của người giới thiệu
+            db_query(
+                "UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s",
+                (ref_id,),
+                commit=True,
+            )
+
+            user_withdraw_state.pop(ref_id, None)
+
+            # 1. Thông báo cho người rời nhóm
+            try:
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text=(
+                        f"{E['BAN']} <b>THÔNG BÁO TỪ HỆ THỐNG</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"{E['STOP']} Bạn đã rời khỏi nhóm/kênh đối tác bắt buộc.\n"
+                        f"{E['ALERT1']} Tài khoản của bạn và người giới thiệu bạn đã bị hạn chế các tính năng rút tiền!"
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception as exc:
+                logger.warning("Không gửi được thông báo cho người rời nhóm %s: %s", user.id, exc)
+
+            # 2. Thông báo cho người giới thiệu (Nội dung cũ theo yêu cầu)
+            username_str = f"@{user.username}" if user.username else str(user.id)
+            try:
+                await context.bot.send_message(
+                    chat_id=ref_id,
+                    text=(
+                        f"{E['BAN']} <b>CẢNH BÁO KHÓA RÚT TIỀN!</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"{E['STOP']} Thành viên được bạn mời (<b>{username_str}</b> - <code>{user.id}</code>) đã rời khỏi nhóm/kênh đối tác.\n"
+                        f"{E['ALERT1']} <b>Lý do bị khóa:</b> Người được bạn mời đã rời nhóm nên hệ thống tiến hành khoá tính năng rút tiền của bạn!"
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception as exc:
+                logger.warning("Không gửi được thông báo khóa rút tiền cho referrer %s: %s", ref_id, exc)
 
 
 # ============================================================
@@ -750,7 +819,7 @@ async def send_captcha_challenge(
 
 
 # ============================================================
-# VERIFY JOIN (SỬA LỖI NÚT XÁC NHẬN)
+# VERIFY JOIN
 # ============================================================
 
 async def verify_join_callback(
@@ -1426,7 +1495,7 @@ async def handle_withdraw_amount(
         parse_mode="HTML"
     )
 
-    # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN VÀ TẠO BỘ LƯU VẾT
+    # GỬI CẢNH BÁO CHO TOÀN BỘ ADMIN
     admin_buttons = [
         [
             InlineKeyboardButton("✅ DUYỆT", callback_data=f"approve_{tx_id}"),
@@ -1466,7 +1535,7 @@ async def handle_withdraw_amount(
 
 
 # ============================================================
-# DUYỆT / TỪ CHỐI LỆNH RÚT (ĐỒNG BỘ TOÀN BỘ ADMIN)
+# DUYỆT / TỪ CHỐI LỆNH RÚT
 # ============================================================
 
 async def admin_withdraw_callback(
@@ -1519,7 +1588,6 @@ async def admin_withdraw_callback(
     user_id, amount, status, bank_info = tx
     admin_name_str = f"@{admin_user.username}" if admin_user.username else f"<code>{admin_user.id}</code>"
 
-    # KIỂM TRA ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ CHƯA
     if status != "Chờ duyệt":
         try:
             await query.answer("⚠️ Giao dịch này đã được xử lý trước đó!", show_alert=True)
@@ -1552,7 +1620,6 @@ async def admin_withdraw_callback(
             return
 
         if changed:
-            # Thông báo cho người dùng
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1562,7 +1629,6 @@ async def admin_withdraw_callback(
             except Exception:
                 pass
 
-            # Đồng bộ chỉnh sửa tất cả tin nhắn Admin (Xóa nút & cập nhật trạng thái)
             refs = context.bot_data.pop(f"tx_msgs_{tx_id}", [])
             query_edited = False
 
@@ -1620,7 +1686,6 @@ async def admin_withdraw_callback(
             return
 
         if changed:
-            # Thông báo cho người dùng
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -1630,7 +1695,6 @@ async def admin_withdraw_callback(
             except Exception:
                 pass
 
-            # Đồng bộ chỉnh sửa tất cả tin nhắn Admin (Xóa nút & cập nhật trạng thái)
             refs = context.bot_data.pop(f"tx_msgs_{tx_id}", [])
             query_edited = False
 
@@ -1806,7 +1870,7 @@ async def admin_commands(
             )
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /RUTID [USER_ID] - KIỂM TRA SỐ LẦN RÚT & THÔNG TIN USER
+        # /RUTID [USER_ID]
         elif cmd == "/rutid":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/rutid USER_ID</code>", parse_mode="HTML")
@@ -1823,7 +1887,6 @@ async def admin_commands(
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
 
-            # Thống kê rút tiền
             stats = db_query(
                 """
                 SELECT 
@@ -1845,7 +1908,6 @@ async def admin_commands(
             bank = u[3] if u[3] else "Chưa liên kết"
             referrer = u[4] if u[4] is not None else "Không có"
 
-            # Danh sách lịch sử rút gần đây
             withdraw_txs = db_query(
                 """
                 SELECT id, amount, status, created_at
@@ -1964,7 +2026,7 @@ async def admin_commands(
             )
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /BB [USER_ID] - CHECK BẠN BÈ ĐÃ MỜI
+        # /BB [USER_ID]
         elif cmd == "/bb":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/bb USER_ID</code>", parse_mode="HTML")
@@ -2006,7 +2068,7 @@ async def admin_commands(
             user_withdraw_state.pop(target_id, None)
             await message.reply_text(f"{E['BAN']} Đã cấm vĩnh viễn user <code>{target_id}</code>.", parse_mode="HTML")
 
-        # /MOBAN (MỞ BAN TÀI KHOẢN)
+        # /MOBAN
         elif cmd == "/moban":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/moban USER_ID</code>", parse_mode="HTML")
@@ -2016,7 +2078,7 @@ async def admin_commands(
             db_query("UPDATE users SET is_banned=0 WHERE user_id=%s", (target_id,), commit=True)
             await message.reply_text(f"{E['THUMB']} <b>Đã mở ban tài khoản cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
 
-        # /CAM (CẤM RÚT TIỀN)
+        # /CAM
         elif cmd == "/cam":
             if len(args) < 1:
                 await message.reply_text("Cú pháp: <code>/cam USER_ID</code>", parse_mode="HTML")
@@ -2027,7 +2089,7 @@ async def admin_commands(
             user_withdraw_state.pop(target_id, None)
             await message.reply_text(f"{E['STOP']} Đã cấm rút tiền ID <code>{target_id}</code>.", parse_mode="HTML")
 
-        # /MOCAM (MỞ CẤM RÚT TIỀN)
+        # /MOCAM
         elif cmd == "/mocam":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/mocam USER_ID</code>", parse_mode="HTML")
@@ -2093,7 +2155,7 @@ async def admin_commands(
                     return
                 await message.reply_text(f"{E['BAN']} Đã trừ <b>-{amount:,}đ</b> của ID <code>{target_id}</code>.", parse_mode="HTML")
 
-        # /RUTLS - HIỂN THỊ DANH SÁCH RÚT CHỜ DUYỆT
+        # /RUTLS
         elif cmd == "/rutls":
             txs = db_query(
                 """
@@ -2130,7 +2192,6 @@ async def admin_commands(
                     parse_mode="HTML",
                 )
 
-                # Lưu vết tin nhắn
                 refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
                 refs.append({
                     "chat_id": message.chat_id,
@@ -2201,7 +2262,7 @@ async def admin_commands(
 
             await message.reply_text(msg, parse_mode="HTML")
 
-        # /BAOTRI - TOGGLE BẢO TRÌ
+        # /BAOTRI
         elif cmd == "/baotri":
             curr = is_maintenance()
             new_val = "0" if curr else "1"
@@ -2209,12 +2270,12 @@ async def admin_commands(
             status_str = "BẮT ĐẦU BẢO TRÌ 🔴" if new_val == "1" else "TẮT BẢO TRÌ 🟢"
             await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{status_str}</b>", parse_mode="HTML")
 
-        # /BATBT - BẬT BẢO TRÌ
+        # /BATBT
         elif cmd == "/batbt":
             db_query("UPDATE settings SET value='1' WHERE key='maintenance'", commit=True)
             await message.reply_text(f"{E['STOP']} <b>ĐÃ BẬT CHẾ ĐỘ BẢO TRÌ HỆ THỐNG!</b>", parse_mode="HTML")
 
-        # /TATBT - TẮT BẢO TRÌ
+        # /TATBT
         elif cmd == "/tatbt":
             db_query("UPDATE settings SET value='0' WHERE key='maintenance'", commit=True)
             await message.reply_text(f"{E['LIGHTNING']} <b>ĐÃ TẮT BẢO TRÌ HỆ THỐNG!</b> Bot đã mở lại bình thường.", parse_mode="HTML")
@@ -2270,6 +2331,9 @@ def main():
     # COMMANDS USER
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("lk", link_bank_command))
+
+    # HANDLER KIỂM TRA THÀNH VIÊN RỜI NHÓM/KÊNH
+    app.add_handler(ChatMemberHandler(chat_member_updated_handler, ChatMemberHandler.CHAT_MEMBER))
 
     # CALLBACKS USER & DUYỆT RÚT
     app.add_handler(CallbackQueryHandler(verify_join_callback, pattern=r"^verify_join$"))
