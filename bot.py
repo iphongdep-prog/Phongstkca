@@ -39,10 +39,10 @@ ADMIN_IDS = [5633649201, 7902882919]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh kiểm tra tham gia (Đã bỏ qua @hocviencbm theo yêu cầu)
+# Kênh kiểm tra tham gia (Đã đổi @sancode24 -> @sancode22, bỏ qua @hocviencbm theo yêu cầu)
 REQUIRED_CHECK_CHANNELS = [
     "@conmuamenmenl",
-    "@sancode24",
+    "@sancode22",
     "@xombao247",
     "@thongbaohit88",
 ]
@@ -376,7 +376,7 @@ def generate_captcha():
 
 
 # ============================================================
-# KIỂM TRA THAM GIA KÊNH (Bỏ qua @hocviencbm)
+# KIỂM TRA THAM GIA KÊNH (Bỏ qua @hocviencbm & Fix lỗi kẹt nút)
 # ============================================================
 
 async def check_channel_membership(bot, user_id):
@@ -392,12 +392,14 @@ async def check_channel_membership(bot, user_id):
 
         except Exception as exc:
             logger.warning(
-                "Không kiểm tra được user %s trong %s: %s",
+                "Không thể kiểm tra user %s trong %s (Lỗi: %s). Bỏ qua kiểm tra kênh này.",
                 user_id,
                 channel,
                 exc,
             )
-            return False
+            # Nếu Bot không có quyền admin hoặc không lấy được thông tin chat,
+            # cho qua để không làm tắc nghẽn trải nghiệm người dùng
+            continue
 
     return True
 
@@ -655,8 +657,8 @@ async def start_command(
             ],
             [
                 InlineKeyboardButton(
-                    "🛍️ 3. Săn Code 24",
-                    url="https://t.me/sancode24",
+                    "🛍️ 3. Săn Code 22",
+                    url="https://t.me/sancode22",
                 )
             ],
             [
@@ -748,7 +750,7 @@ async def send_captcha_challenge(
 
 
 # ============================================================
-# VERIFY JOIN
+# VERIFY JOIN (SỬA LỖI NÚT XÁC NHẬN)
 # ============================================================
 
 async def verify_join_callback(
