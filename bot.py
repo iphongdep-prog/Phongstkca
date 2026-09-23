@@ -238,15 +238,6 @@ def init_db():
             """
         )
 
-        cursor.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS
-            idx_unique_referral_reward
-            ON transactions(user_id, type, details)
-            WHERE type = 'Thưởng Mời Bạn'
-            """
-        )
-
         conn.commit()
         logger.info("Database PostgreSQL đã sẵn sàng.")
 
@@ -456,7 +447,7 @@ async def chat_member_updated_handler(
             except Exception as exc:
                 logger.warning("Không gửi được thông báo cho người rời nhóm %s: %s", user.id, exc)
 
-            # 2. Thông báo cho người giới thiệu (Nội dung cũ theo yêu cầu)
+            # 2. Thông báo cho người giới thiệu
             username_str = f"@{user.username}" if user.username else str(user.id)
             try:
                 await context.bot.send_message(
@@ -648,7 +639,7 @@ async def start_command(
     # USER
     db_user = db_query(
         """
-        SELECT user_id, is_banned
+        SELECT user_id, is_banned, referrer_id
         FROM users
         WHERE user_id=%s
         """,
@@ -683,7 +674,7 @@ async def start_command(
         except (ValueError, TypeError):
             pass
 
-    # TẠO USER
+    # TẠO HOẶC CẬP NHẬT USER
     if not db_user:
         db_query(
             """
@@ -697,15 +688,27 @@ async def start_command(
             commit=True,
         )
     else:
-        db_query(
-            """
-            UPDATE users
-            SET username=%s
-            WHERE user_id=%s
-            """,
-            (user.username or "", user.id),
-            commit=True,
-        )
+        # Nếu user đã tồn tại nhưng chưa có referrer_id và có referrer mới
+        if db_user[2] is None and referrer_id is not None:
+            db_query(
+                """
+                UPDATE users
+                SET username=%s, referrer_id=%s
+                WHERE user_id=%s
+                """,
+                (user.username or "", referrer_id, user.id),
+                commit=True,
+            )
+        else:
+            db_query(
+                """
+                UPDATE users
+                SET username=%s
+                WHERE user_id=%s
+                """,
+                (user.username or "", user.id),
+                commit=True,
+            )
 
     # KIỂM TRA KÊNH
     is_joined = await check_channel_membership(context.bot, user.id)
@@ -929,13 +932,24 @@ async def captcha_callback(
                     return False
 
                 details = f"Mời {user.id}"
+
+                # Kiểm tra nếu đã được cộng trước đó
+                cursor.execute(
+                    """
+                    SELECT id FROM transactions 
+                    WHERE user_id=%s AND type='Thưởng Mời Bạn' AND details=%s
+                    """,
+                    (ref_id, details)
+                )
+                if cursor.fetchone():
+                    return False
+
                 cursor.execute(
                     """
                     INSERT INTO transactions
                         (user_id, type, amount, status, created_at, details)
                     VALUES
                         (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING
                     """,
                     (
                         ref_id,
@@ -946,9 +960,6 @@ async def captcha_callback(
                         details,
                     ),
                 )
-
-                if cursor.rowcount != 1:
-                    return False
 
                 cursor.execute(
                     """
@@ -1815,8 +1826,21 @@ async def admin_commands(
     args = context.args or []
 
     try:
+        # /RESETALL - RESET TOÀN BỘ DỮ LIỆU USER & GIAO DỊCH
+        if cmd == "/resetall":
+            db_query("TRUNCATE TABLE users, transactions RESTART IDENTITY", commit=True)
+            user_msg_tracker.clear()
+            temp_bans.clear()
+            user_withdraw_state.clear()
+            await message.reply_text(
+                f"{E['REFRESH']} <b>ĐÃ RESET TOÀN BỘ HỆ THỐNG!</b>\n"
+                f"• Toàn bộ người dùng & lịch sử giao dịch đã được xóa hoàn toàn.\n"
+                f"• Người dùng cũ có thể sử dụng lại link ref để mời lại bình thường.",
+                parse_mode="HTML"
+            )
+
         # /TONG - TỔNG NGƯỜI DÙNG VÀ HIỂN THỊ NÚT ID
-        if cmd == "/tong":
+        elif cmd == "/tong":
             total_users = db_query("SELECT COUNT(*) FROM users", fetchone=True)[0]
             users = db_query("SELECT user_id, username FROM users ORDER BY joined_at DESC LIMIT 50", fetchall=True)
 
@@ -2346,6 +2370,7 @@ def main():
 
     # COMMANDS ADMIN
     admin_cmds = [
+        "resetall",
         "tong",
         "tongrut",
         "rutid",
