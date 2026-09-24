@@ -40,12 +40,13 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh/Nhóm kiểm tra tham gia (Đã xóa @khuyenmaionline và @chungnaomoidu)
+# Kênh/Nhóm kiểm tra tham gia (Đã thêm @sancodehit88 vào danh sách)
 REQUIRED_CHECK_CHANNELS = [
     "@sanhugame",
     "@sancode22",
     "@xombao247",
     "@thongbaohit88",
+    "@sancodehit88",
 ]
 
 # Kênh hiển thị thêm nhưng không kiểm tra tham gia
