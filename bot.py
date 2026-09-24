@@ -463,14 +463,21 @@ async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFA
 
 
 # ============================================================
-# ANTI SPAM
+# ANTI SPAM (CHỈ BẮT KHI CHAT RIÊNG VỚI BOT)
 # ============================================================
 
 async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
     user = update.effective_user
     message = update.effective_message
+
+    # Chỉ áp dụng Anti-Spam khi chat riêng (Private Chat)
+    if not chat or chat.type != "private":
+        return False
+
     if not user or user.id in ADMIN_IDS or not message:
         return False
+
     now = datetime.now()
     ban_until = temp_bans.get(user.id)
     if ban_until:
@@ -486,10 +493,12 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
             return True
         temp_bans.pop(user.id, None)
+
     times = user_msg_tracker[user.id]
     times.append(now)
     cutoff = now - timedelta(seconds=SPAM_WINDOW_SECONDS)
     user_msg_tracker[user.id] = [t for t in times if t >= cutoff]
+
     if len(user_msg_tracker[user.id]) >= SPAM_MAX_MESSAGES:
         temp_bans[user.id] = now + timedelta(minutes=TEMP_BAN_MINUTES)
         user_msg_tracker[user.id].clear()
@@ -500,6 +509,7 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             parse_mode="HTML"
         )
         return True
+
     return False
 
 
