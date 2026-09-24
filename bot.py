@@ -395,7 +395,7 @@ async def check_channel_membership(bot, user_id):
 
 
 # ============================================================
-# XỬ LÝ KHI NGƯỜI DÙNG RỜI NHÓM/KÊNH
+# XỬ LÝ KHI NGƯỜI DÙNG RỜI HOẶC THAM GIA LAỊ NHÓM/KÊNH
 # ============================================================
 
 async def chat_member_updated_handler(
@@ -409,54 +409,100 @@ async def chat_member_updated_handler(
     old_state = result.old_chat_member.status
     new_state = result.new_chat_member.status
 
-    if old_state in ("member", "administrator", "creator") and new_state in ("left", "kicked"):
-        user = result.new_chat_member.user
+    user = result.new_chat_member.user
 
-        user_info = db_query(
-            "SELECT referrer_id FROM users WHERE user_id=%s",
-            (user.id,),
-            fetchone=True,
+    # Lấy thông tin referrer_id của người dùng này
+    user_info = db_query(
+        "SELECT referrer_id FROM users WHERE user_id=%s",
+        (user.id,),
+        fetchone=True,
+    )
+
+    if not user_info or not user_info[0]:
+        return
+
+    ref_id = user_info[0]
+    username_str = f"@{user.username}" if user.username else str(user.id)
+
+    # TH1: BẠN BÈ RỜI KÊNH/NHÓM
+    if old_state in ("member", "administrator", "creator") and new_state in ("left", "kicked"):
+        db_query(
+            "UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s",
+            (ref_id,),
+            commit=True,
         )
 
-        if user_info and user_info[0]:
-            ref_id = user_info[0]
+        user_withdraw_state.pop(ref_id, None)
 
-            db_query(
-                "UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s",
+        try:
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=(
+                    f"{E['BAN']} <b>THÔNG BÁO TỪ HỆ THỐNG</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"{E['STOP']} Bạn đã rời khỏi nhóm/kênh đối tác bắt buộc.\n"
+                    f"{E['ALERT1']} Tài khoản của bạn và người giới thiệu bạn đã bị hạn chế các tính năng rút tiền!"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Không gửi được thông báo cho người rời nhóm %s: %s", user.id, exc)
+
+        try:
+            await context.bot.send_message(
+                chat_id=ref_id,
+                text=(
+                    f"{E['BAN']} <b>CẢNH BÁO KHÓA RÚT TIỀN!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"{E['STOP']} Thành viên được bạn mời (<b>{username_str}</b> - <code>{user.id}</code>) đã rời khỏi nhóm/kênh đối tác.\n"
+                    f"{E['ALERT1']} <b>Lý do bị khóa:</b> Người được bạn mời đã rời nhóm nên hệ thống tiến hành khoá tính năng rút tiền của bạn!"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Không gửi được thông báo khóa rút tiền cho referrer %s: %s", ref_id, exc)
+
+    # TH2: BẠN BÈ THAM GIA LẠI KÊNH/NHÓM
+    elif old_state in ("left", "kicked") and new_state in ("member", "administrator", "creator"):
+        # Kiểm tra xem người dùng đã tham gia đủ tất cả kênh bắt buộc chưa
+        is_fully_joined = await check_channel_membership(context.bot, user.id)
+
+        if is_fully_joined:
+            # Kiểm tra xem những người dùng khác mà ref_id này từng mời có ai còn đang rời kênh không
+            invited_users = db_query(
+                "SELECT user_id FROM users WHERE referrer_id=%s",
                 (ref_id,),
-                commit=True,
+                fetchall=True,
             )
 
-            user_withdraw_state.pop(ref_id, None)
+            all_friends_joined = True
+            if invited_users:
+                for (inv_id,) in invited_users:
+                    if not await check_channel_membership(context.bot, inv_id):
+                        all_friends_joined = False
+                        break
 
-            try:
-                await context.bot.send_message(
-                    chat_id=user.id,
-                    text=(
-                        f"{E['BAN']} <b>THÔNG BÁO TỪ HỆ THỐNG</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"{E['STOP']} Bạn đã rời khỏi nhóm/kênh đối tác bắt buộc.\n"
-                        f"{E['ALERT1']} Tài khoản của bạn và người giới thiệu bạn đã bị hạn chế các tính năng rút tiền!"
-                    ),
-                    parse_mode="HTML",
+            # Nếu tất cả những người được mời đã tham gia đủ kênh -> Mở khóa rút tiền
+            if all_friends_joined:
+                db_query(
+                    "UPDATE users SET is_withdraw_banned=0 WHERE user_id=%s",
+                    (ref_id,),
+                    commit=True,
                 )
-            except Exception as exc:
-                logger.warning("Không gửi được thông báo cho người rời nhóm %s: %s", user.id, exc)
 
-            username_str = f"@{user.username}" if user.username else str(user.id)
-            try:
-                await context.bot.send_message(
-                    chat_id=ref_id,
-                    text=(
-                        f"{E['BAN']} <b>CẢNH BÁO KHÓA RÚT TIỀN!</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"{E['STOP']} Thành viên được bạn mời (<b>{username_str}</b> - <code>{user.id}</code>) đã rời khỏi nhóm/kênh đối tác.\n"
-                        f"{E['ALERT1']} <b>Lý do bị khóa:</b> Người được bạn mời đã rời nhóm nên hệ thống tiến hành khoá tính năng rút tiền của bạn!"
-                    ),
-                    parse_mode="HTML",
-                )
-            except Exception as exc:
-                logger.warning("Không gửi được thông báo khóa rút tiền cho referrer %s: %s", ref_id, exc)
+                try:
+                    await context.bot.send_message(
+                        chat_id=ref_id,
+                        text=(
+                            f"{E['THUMB']} <b>THÔNG BÁO MỞ KHÓA RÚT TIỀN!</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━\n"
+                            f"{E['LIGHTNING']} Thành viên được bạn mời (<b>{username_str}</b> - <code>{user.id}</code>) đã tham gia lại nhóm/kênh đối tác.\n"
+                            f"{E['UP']} <b>Hệ thống đã tự động mở khóa tính năng rút tiền cho bạn!</b>"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception as exc:
+                    logger.warning("Không gửi được thông báo mở khóa rút tiền cho referrer %s: %s", ref_id, exc)
 
 
 # ============================================================
@@ -746,7 +792,7 @@ async def start_command(
         return
 
     await update.message.reply_text(
-        f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỞ LẠI HỆ THỐNG!</b>\n"
+        f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỜ LẠI HỆ THỐNG!</b>\n"
         f"{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
         reply_markup=get_main_keyboard(),
         parse_mode="HTML"
@@ -2295,7 +2341,7 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("lk", link_bank_command))
 
-    # HANDLER KIỂM TRA THÀNH VIÊN RỜI NHÓM/KÊNH
+    # HANDLER KIỂM TRA THÀNH VIÊN RỜI/THAM GIA LAỊ NHÓM/KÊNH
     app.add_handler(ChatMemberHandler(chat_member_updated_handler, ChatMemberHandler.CHAT_MEMBER))
 
     # CALLBACKS USER & DUYỆT RÚT
