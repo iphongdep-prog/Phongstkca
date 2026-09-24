@@ -40,8 +40,9 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh kiểm tra tham gia (Đã cập nhật theo yêu cầu)
+# Kênh/Nhóm kiểm tra tham gia (Đã thêm @sanhugame)
 REQUIRED_CHECK_CHANNELS = [
+    "@sanhugame",
     "@chungnaomoidu",
     "@khuyenmaionline",
     "@sancode22",
@@ -598,7 +599,7 @@ async def ensure_user_exists(update: Update):
             commit=True,
         )
     else:
-        # TỰ ĐỘNG TẠO USER MỚI NẾU KHÔNG TỒN TẠI TRONG DB (SỬA LỖI SAU KHU RESETALL)
+        # TỰ ĐỘNG TẠO USER MỚI NẾU KHÔNG TỒN TẠI TRONG DB
         db_query(
             """
             INSERT INTO users
@@ -748,31 +749,37 @@ async def start_command(
         buttons = [
             [
                 InlineKeyboardButton(
-                    "🎓 1. Chừng Nào Mới Đủ",
+                    "🎮 1. Săn Hũ Game",
+                    url="https://t.me/sanhugame",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "🎓 2. Chừng Nào Mới Đủ",
                     url="https://t.me/chungnaomoidu",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🌧️ 2. Khuyến Mãi Online",
+                    "🌧️ 3. Khuyến Mãi Online",
                     url="https://t.me/khuyenmaionline",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🛍️ 3. Săn Code 22",
+                    "🛍️ 4. Săn Code 22",
                     url="https://t.me/sancode22",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "📈 4. Xóm Báo 247",
+                    "📈 5. Xóm Báo 247",
                     url="https://t.me/xombao247",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "💎 5. Thông Báo Hit88",
+                    "💎 6. Thông Báo Hit88",
                     url="https://t.me/thongbaohit88",
                 )
             ],
@@ -786,7 +793,7 @@ async def start_command(
 
         await update.message.reply_text(
             f"{E['CROWN']} <b>CHÀO MỪNG BẠN ĐẾN VỚI HỆ THỐNG</b>\n"
-            f"{E['CLIP']} <b>Vui lòng tham gia đầy đủ 5 kênh đối tác bên dưới để tiếp tục:</b>",
+            f"{E['CLIP']} <b>Vui lòng tham gia đầy đủ các kênh/nhóm đối tác bên dưới để tiếp tục:</b>",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="HTML",
         )
@@ -951,7 +958,6 @@ async def captcha_callback(
             def reward_referrer(cursor):
                 details = f"Mời {user.id}"
 
-                # CỘNG TIỀN VÀO USER KHÔNG CẦN CHECK TỒN TẠI TRONG TRANSACTIONS KHI ĐÃ RESET ALL
                 cursor.execute(
                     """
                     INSERT INTO transactions
@@ -1032,7 +1038,6 @@ async def menu_handler(
     if update.effective_chat.type != "private":
         return
 
-    # TỰ ĐỘNG ĐẢM BẢO USER LUÔN TỒN TẠI (SỬA LỖI SAU KHU DÙNG LỆNH RESETALL)
     db_user = await ensure_user_exists(update)
 
     user_withdraw_state.pop(user.id, None)
@@ -1817,14 +1822,12 @@ async def admin_commands(
     args = context.args or []
 
     try:
-        # /RESETALL - TỰ ĐỘNG TẠO LẠI DB VÀ ADMIN ĐỂ BOT KHÔNG BỊ KHÓA SỬ DỤNG
         if cmd == "/resetall":
             db_query("TRUNCATE TABLE users, transactions RESTART IDENTITY", commit=True)
             user_msg_tracker.clear()
             temp_bans.clear()
             user_withdraw_state.clear()
 
-            # Tự động lưu lại thông tin Admin vừa thực hiện lệnh vào DB
             db_query(
                 """
                 INSERT INTO users (user_id, username, balance, joined_at)
