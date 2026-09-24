@@ -40,7 +40,7 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh/Nhóm kiểm tra tham gia (Đã thêm @sanhugame)
+# Kênh/Nhóm kiểm tra tham gia
 REQUIRED_CHECK_CHANNELS = [
     "@sanhugame",
     "@chungnaomoidu",
@@ -370,10 +370,12 @@ def generate_captcha():
 
 
 # ============================================================
-# KIỂM TRA THAM GIA KÊNH
+# KIỂM TRA THAM GIA KÊNH (TRẢ VỀ DANH SÁCH CHƯA JOIN)
 # ============================================================
 
-async def check_channel_membership(bot, user_id):
+async def get_missing_channels(bot, user_id):
+    """Trả về danh sách các kênh mà user chưa tham gia"""
+    missing_channels = []
     for channel in REQUIRED_CHECK_CHANNELS:
         try:
             member = await bot.get_chat_member(
@@ -382,18 +384,24 @@ async def check_channel_membership(bot, user_id):
             )
 
             if member.status in ("left", "kicked"):
-                return False
+                missing_channels.append(channel)
 
         except Exception as exc:
             logger.warning(
-                "Không thể kiểm tra user %s trong %s (Lỗi: %s). Bỏ qua kiểm tra kênh này.",
+                "Không thể kiểm tra user %s trong %s (Lỗi: %s). Tạm thời coi như chưa tham gia.",
                 user_id,
                 channel,
                 exc,
             )
-            continue
+            missing_channels.append(channel)
 
-    return True
+    return missing_channels
+
+
+async def check_channel_membership(bot, user_id):
+    """Kiểm tra xem user đã tham gia đủ tất cả các kênh chưa"""
+    missing = await get_missing_channels(bot, user_id)
+    return len(missing) == 0
 
 
 # ============================================================
@@ -743,57 +751,34 @@ async def start_command(
             )
 
     # CHECK JOIN KÊNH BẮT BUỘC
-    is_joined = await check_channel_membership(context.bot, user.id)
+    missing_channels = await get_missing_channels(context.bot, user.id)
 
-    if not is_joined:
-        buttons = [
-            [
+    if missing_channels:
+        buttons = []
+        for ch in missing_channels:
+            channel_url = f"https://t.me/{ch.replace('@', '')}"
+            buttons.append([
                 InlineKeyboardButton(
-                    "🎮 1. Săn Hũ Game",
-                    url="https://t.me/sanhugame",
+                    f"👉 Tham gia: {ch}",
+                    url=channel_url
                 )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🎓 2. Chừng Nào Mới Đủ",
-                    url="https://t.me/chungnaomoidu",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🌧️ 3. Khuyến Mãi Online",
-                    url="https://t.me/khuyenmaionline",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🛍️ 4. Săn Code 22",
-                    url="https://t.me/sancode22",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "📈 5. Xóm Báo 247",
-                    url="https://t.me/xombao247",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "💎 6. Thông Báo Hit88",
-                    url="https://t.me/thongbaohit88",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
-                    callback_data="verify_join",
-                )
-            ],
-        ]
+            ])
+        
+        buttons.append([
+            InlineKeyboardButton(
+                "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
+                callback_data="verify_join",
+            )
+        ])
+
+        missing_text = "\n".join([f"• <b>{ch}</b>" for ch in missing_channels])
 
         await update.message.reply_text(
-            f"{E['CROWN']} <b>CHÀO MỪNG BẠN ĐẾN VỚI HỆ THỐNG</b>\n"
-            f"{E['CLIP']} <b>Vui lòng tham gia đầy đủ các kênh/nhóm đối tác bên dưới để tiếp tục:</b>",
+            f"{E['ALERT1']} <b>BẠN CHƯA THAM GIA ĐỦ CÁC KÊNH/NHÓM!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['STOP']} Bạn còn thiếu <b>{len(missing_channels)}</b> kênh/nhóm sau:\n\n"
+            f"{missing_text}\n\n"
+            f"{E['CLIP']} Vui lòng tham gia đầy đủ rồi bấm nút <b>XÁC NHẬN ĐÃ THAM GIA</b> bên dưới!",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="HTML",
         )
@@ -884,13 +869,37 @@ async def verify_join_callback(
             pass
         return
 
-    is_joined = await check_channel_membership(context.bot, user.id)
+    missing_channels = await get_missing_channels(context.bot, user.id)
 
-    if not is_joined:
+    if missing_channels:
+        buttons = []
+        for ch in missing_channels:
+            channel_url = f"https://t.me/{ch.replace('@', '')}"
+            buttons.append([
+                InlineKeyboardButton(
+                    f"👉 Tham gia: {ch}",
+                    url=channel_url
+                )
+            ])
+        
+        buttons.append([
+            InlineKeyboardButton(
+                "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
+                callback_data="verify_join",
+            )
+        ])
+
+        missing_text = "\n".join([f"• <b>{ch}</b>" for ch in missing_channels])
+
         try:
-            await query.answer(
-                "❌ Bạn chưa tham gia đầy đủ các kênh bắt buộc! Vui lòng kiểm tra lại.",
-                show_alert=True,
+            await query.edit_message_text(
+                f"{E['ALERT1']} <b>BẠN CHƯA THAM GIA ĐỦ CÁC KÊNH/NHÓM!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['STOP']} Bạn vẫn chưa tham gia đủ <b>{len(missing_channels)}</b> kênh/nhóm sau:\n\n"
+                f"{missing_text}\n\n"
+                f"{E['CLIP']} Vui lòng tham gia đầy đủ rồi bấm nút bên dưới để xác nhận lại!",
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode="HTML",
             )
         except Exception:
             pass
@@ -1058,10 +1067,34 @@ async def menu_handler(
         return
 
     if user.id not in ADMIN_IDS:
-        if not await check_channel_membership(context.bot, user.id):
+        missing_channels = await get_missing_channels(context.bot, user.id)
+        if missing_channels:
+            buttons = []
+            for ch in missing_channels:
+                channel_url = f"https://t.me/{ch.replace('@', '')}"
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"👉 Tham gia: {ch}",
+                        url=channel_url
+                    )
+                ])
+            
+            buttons.append([
+                InlineKeyboardButton(
+                    "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
+                    callback_data="verify_join",
+                )
+            ])
+
+            missing_text = "\n".join([f"• <b>{ch}</b>" for ch in missing_channels])
+
             await message.reply_text(
-                f"{E['ALERT1']} <b>Bạn chưa tham gia đủ các kênh bắt buộc!</b>\n"
-                f"{E['ARROW_DOWN']} Vui lòng gõ /start để nhận danh sách kênh.",
+                f"{E['ALERT1']} <b>BẠN CHƯA THAM GIA ĐỦ CÁC KÊNH/NHÓM!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['STOP']} Bạn còn thiếu <b>{len(missing_channels)}</b> kênh/nhóm sau:\n\n"
+                f"{missing_text}\n\n"
+                f"{E['CLIP']} Vui lòng tham gia đầy đủ rồi bấm nút bên dưới để tiếp tục!",
+                reply_markup=InlineKeyboardMarkup(buttons),
                 parse_mode="HTML"
             )
             return
