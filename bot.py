@@ -41,13 +41,15 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh/Nhóm kiểm tra tham gia
+# Kênh/Nhóm kiểm tra tham gia (Đã thêm 2 nhóm mới)
 REQUIRED_CHECK_CHANNELS = [
     "@sanhugame",
     "@sancode22",
     "@xombao247",
     "@thongbaohit88",
     "@sancodehit88",
+    "@chungnaomoidu",
+    "@khuyenmaionline",
 ]
 
 # Kênh hiển thị thêm nhưng không kiểm tra tham gia
@@ -116,6 +118,7 @@ E = {
     "LOVE": '<tg-emoji emoji-id="5323470315370585285">😍</tg-emoji>',
     "CRY3": '<tg-emoji emoji-id="5379656338802482888">😭</tg-emoji>',
     "ROLL": '<tg-emoji emoji-id="5429300173559832620">🙄</tg-emoji>',
+    "SIX": '<tg-emoji emoji-id="5305642863902604489">6️⃣</tg-emoji>',
 }
 
 
@@ -880,7 +883,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(msg, parse_mode="HTML")
     elif text in ["Nhóm Hỗ Trợ", "💬 Nhóm Hỗ Trợ"]:
         await message.reply_text(
-            f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}",
+            f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}\n\n"
+            f"{E['SIX']} <b>ADMIN:</b> @echcutodz",
             parse_mode="HTML",
         )
     elif text in ["Lịch Sử", "Lịch Sử Giao Dịch", "📜 Lịch Sử Giao Dịch"]:
