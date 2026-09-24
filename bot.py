@@ -578,17 +578,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         return
+
     db_user = await db_query(
         "SELECT user_id, is_banned, referrer_id FROM users WHERE user_id=%s",
         (user.id,),
         fetchone=True,
     )
+
     if db_user and db_user[1] == 1:
         await update.message.reply_text(
             f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>",
             parse_mode="HTML"
         )
         return
+
     referrer_id = None
     if context.args:
         try:
@@ -597,25 +600,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 referrer_id = ref_id
         except (ValueError, TypeError):
             pass
+
     if not db_user:
+        # Lần đầu tiên user start bot -> Ghi nhận người giới thiệu (nếu có)
         await db_query(
             "INSERT INTO users (user_id, username, balance, referrer_id, joined_at) VALUES (%s, %s, 0, %s, %s) ON CONFLICT (user_id) DO NOTHING",
             (user.id, user.username or "", referrer_id, get_now_str()),
             commit=True,
         )
     else:
-        if referrer_id is not None:
-            await db_query(
-                "UPDATE users SET username=%s, referrer_id=%s WHERE user_id=%s",
-                (user.username or "", referrer_id, user.id),
-                commit=True,
-            )
-        else:
-            await db_query(
-                "UPDATE users SET username=%s WHERE user_id=%s",
-                (user.username or "", user.id),
-                commit=True,
-            )
+        # Nếu đã từng start bot -> Chỉ cập nhật username, GIỮ NGUYÊN referrer_id không cho sửa đổi nữa
+        await db_query(
+            "UPDATE users SET username=%s WHERE user_id=%s",
+            (user.username or "", user.id),
+            commit=True,
+        )
+
     missing_channels = await get_missing_channels(context.bot, user.id)
     if missing_channels:
         buttons = build_channel_buttons(missing_channels)
