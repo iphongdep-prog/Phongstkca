@@ -40,14 +40,17 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh/Nhóm kiểm tra tham gia
+# Kênh/Nhóm kiểm tra tham gia (Đã xóa @khuyenmaionline và @chungnaomoidu)
 REQUIRED_CHECK_CHANNELS = [
     "@sanhugame",
-    "@chungnaomoidu",
-    "@khuyenmaionline",
     "@sancode22",
     "@xombao247",
     "@thongbaohit88",
+]
+
+# Kênh hiển thị thêm nhưng không kiểm tra tham gia
+OPTIONAL_DISPLAY_CHANNELS = [
+    "@hocviencbm",
 ]
 
 SUPPORT_GROUP = "https://t.me/conmuamenmenl"
@@ -374,7 +377,7 @@ def generate_captcha():
 # ============================================================
 
 async def get_missing_channels(bot, user_id):
-    """Trả về danh sách các kênh mà user chưa tham gia"""
+    """Trả về danh sách các kênh trong REQUIRED_CHECK_CHANNELS mà user chưa tham gia"""
     missing_channels = []
     for channel in REQUIRED_CHECK_CHANNELS:
         try:
@@ -399,9 +402,42 @@ async def get_missing_channels(bot, user_id):
 
 
 async def check_channel_membership(bot, user_id):
-    """Kiểm tra xem user đã tham gia đủ tất cả các kênh chưa"""
+    """Kiểm tra xem user đã tham gia đủ tất cả các kênh bắt buộc chưa"""
     missing = await get_missing_channels(bot, user_id)
     return len(missing) == 0
+
+
+def build_channel_buttons(missing_channels):
+    """Tạo các nút bấm dẫn link cho kênh thiếu + kênh hiển thị thêm (không bắt buộc check)"""
+    buttons = []
+    
+    # Thêm các kênh bắt buộc còn thiếu
+    for ch in missing_channels:
+        channel_url = f"https://t.me/{ch.replace('@', '')}"
+        buttons.append([
+            InlineKeyboardButton(
+                f"👉 Tham gia: {ch}",
+                url=channel_url
+            )
+        ])
+    
+    # Thêm kênh giới thiệu bổ sung (không kiểm tra tham gia)
+    for ch in OPTIONAL_DISPLAY_CHANNELS:
+        channel_url = f"https://t.me/{ch.replace('@', '')}"
+        buttons.append([
+            InlineKeyboardButton(
+                f"🌟 Tham gia: {ch} (Tham khảo)",
+                url=channel_url
+            )
+        ])
+    
+    buttons.append([
+        InlineKeyboardButton(
+            "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
+            callback_data="verify_join",
+        )
+    ])
+    return buttons
 
 
 # ============================================================
@@ -754,23 +790,7 @@ async def start_command(
     missing_channels = await get_missing_channels(context.bot, user.id)
 
     if missing_channels:
-        buttons = []
-        for ch in missing_channels:
-            channel_url = f"https://t.me/{ch.replace('@', '')}"
-            buttons.append([
-                InlineKeyboardButton(
-                    f"👉 Tham gia: {ch}",
-                    url=channel_url
-                )
-            ])
-        
-        buttons.append([
-            InlineKeyboardButton(
-                "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
-                callback_data="verify_join",
-            )
-        ])
-
+        buttons = build_channel_buttons(missing_channels)
         missing_text = "\n".join([f"• <b>{ch}</b>" for ch in missing_channels])
 
         await update.message.reply_text(
@@ -872,23 +892,7 @@ async def verify_join_callback(
     missing_channels = await get_missing_channels(context.bot, user.id)
 
     if missing_channels:
-        buttons = []
-        for ch in missing_channels:
-            channel_url = f"https://t.me/{ch.replace('@', '')}"
-            buttons.append([
-                InlineKeyboardButton(
-                    f"👉 Tham gia: {ch}",
-                    url=channel_url
-                )
-            ])
-        
-        buttons.append([
-            InlineKeyboardButton(
-                "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
-                callback_data="verify_join",
-            )
-        ])
-
+        buttons = build_channel_buttons(missing_channels)
         missing_text = "\n".join([f"• <b>{ch}</b>" for ch in missing_channels])
 
         try:
@@ -1069,23 +1073,7 @@ async def menu_handler(
     if user.id not in ADMIN_IDS:
         missing_channels = await get_missing_channels(context.bot, user.id)
         if missing_channels:
-            buttons = []
-            for ch in missing_channels:
-                channel_url = f"https://t.me/{ch.replace('@', '')}"
-                buttons.append([
-                    InlineKeyboardButton(
-                        f"👉 Tham gia: {ch}",
-                        url=channel_url
-                    )
-                ])
-            
-            buttons.append([
-                InlineKeyboardButton(
-                    "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
-                    callback_data="verify_join",
-                )
-            ])
-
+            buttons = build_channel_buttons(missing_channels)
             missing_text = "\n".join([f"• <b>{ch}</b>" for ch in missing_channels])
 
             await message.reply_text(
