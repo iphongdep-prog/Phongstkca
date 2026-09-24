@@ -40,9 +40,10 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh kiểm tra tham gia
+# Kênh kiểm tra tham gia (Đã cập nhật theo yêu cầu)
 REQUIRED_CHECK_CHANNELS = [
-    "@conmuamenmenl",
+    "@chungnaomoidu",
+    "@khuyenmaionline",
     "@sancode22",
     "@xombao247",
     "@thongbaohit88",
@@ -395,7 +396,7 @@ async def check_channel_membership(bot, user_id):
 
 
 # ============================================================
-# XỬ LÝ KHI NGƯỜI DÙNG RỜI HOẶC THAM GIA LAỊ NHÓM/KÊNH
+# XỬ LÝ KHI NGƯỜI DÙNG RỜI HOẶC THAM GIA LẠI NHÓM/KÊNH
 # ============================================================
 
 async def chat_member_updated_handler(
@@ -747,14 +748,14 @@ async def start_command(
         buttons = [
             [
                 InlineKeyboardButton(
-                    "🎓 1. Học Viện CBM",
-                    url="https://t.me/hocviencbm",
+                    "🎓 1. Chừng Nào Mới Đủ",
+                    url="https://t.me/chungnaomoidu",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🌧️ 2. Cơn Mưa Mèn Mén",
-                    url="https://t.me/conmuamenmenl",
+                    "🌧️ 2. Khuyến Mãi Online",
+                    url="https://t.me/khuyenmaionline",
                 )
             ],
             [
@@ -2341,7 +2342,7 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("lk", link_bank_command))
 
-    # HANDLER KIỂM TRA THÀNH VIÊN RỜI/THAM GIA LAỊ NHÓM/KÊNH
+    # HANDLER KIỂM TRA THÀNH VIÊN RỜI/THAM GIA LẠI NHÓM/KÊNH
     app.add_handler(ChatMemberHandler(chat_member_updated_handler, ChatMemberHandler.CHAT_MEMBER))
 
     # CALLBACKS USER & DUYỆT RÚT
