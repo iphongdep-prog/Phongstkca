@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 import psycopg
 from psycopg.rows import tuple_row
+from psycopg_pool import ConnectionPool  # Thêm thư viện Pool
 import pytz
 
 from telegram import (
@@ -144,163 +145,140 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# DATABASE POSTGRESQL (ASYNC-SAFE WRAPPERS)
+# DATABASE POSTGRESQL (CONNECTION POOL)
 # ============================================================
 
-def get_db():
-    if not DATABASE_URL:
-        raise RuntimeError("Chưa cấu hình DATABASE_URL trên Railway.")
+db_pool = None
 
-    return psycopg.connect(
-        DATABASE_URL,
-        row_factory=tuple_row,
-        connect_timeout=15,
-    )
-
-
-def init_db():
-    conn = get_db()
-
-    try:
-        cursor = conn.cursor()
-
-        # USERS
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                username TEXT,
-                balance BIGINT NOT NULL DEFAULT 0,
-                bank_info TEXT,
-                referrer_id BIGINT,
-                is_banned INTEGER NOT NULL DEFAULT 0,
-                is_withdraw_banned INTEGER NOT NULL DEFAULT 0,
-                joined_at TEXT
-            )
-            """
+def get_pool():
+    """Khởi tạo Connection Pool toàn cục"""
+    global db_pool
+    if db_pool is None:
+        if not DATABASE_URL:
+            raise RuntimeError("Chưa cấu hình DATABASE_URL trên Railway.")
+        # min_size=1, max_size=10 là đủ cho bot vừa và nhỏ, giúp tái sử dụng kết nối
+        db_pool = ConnectionPool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=10,
+            kwargs={"row_factory": tuple_row},
+            open=True
         )
-
-        # TRANSACTIONS
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS transactions (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                type TEXT NOT NULL,
-                amount BIGINT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                details TEXT
-            )
-            """
-        )
-
-        # GROUPS
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS groups (
-                chat_id BIGINT PRIMARY KEY
-            )
-            """
-        )
-
-        # SETTINGS
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-            """
-        )
-
-        cursor.execute(
-            """
-            INSERT INTO settings (key, value)
-            VALUES ('maintenance', '0')
-            ON CONFLICT (key) DO NOTHING
-            """
-        )
-
-        # INDEXES
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_transactions_user
-            ON transactions(user_id, id DESC)
-            """
-        )
-
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_transactions_withdraw
-            ON transactions(type, status, id)
-            """
-        )
-
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_users_referrer
-            ON users(referrer_id)
-            """
-        )
-
-        conn.commit()
-        logger.info("Database PostgreSQL đã sẵn sàng.")
-
-    except Exception:
-        conn.rollback()
-        raise
-
-    finally:
-        conn.close()
+    return db_pool
 
 
 def _db_query_sync(query, params=(), fetchone=False, fetchall=False, commit=False):
-    conn = get_db()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-
-        if fetchone:
-            return cursor.fetchone()
-        if fetchall:
-            return cursor.fetchall()
-        if commit:
-            conn.commit()
-
-        return None
-    except Exception:
-        if commit:
-            conn.rollback()
-        raise
-    finally:
-        conn.close()
+    """Truy vấn DB đồng bộ sử dụng Pool (chạy trong thread riêng)"""
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(query, params)
+            if fetchone:
+                return cursor.fetchone()
+            if fetchall:
+                return cursor.fetchall()
+            if commit:
+                conn.commit()
+            return None
 
 
 async def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
-    """Bọc truy vấn DB vào thread riêng để không block Event Loop làm bot lag"""
+    """Bọc truy vấn DB vào thread riêng để không block Event Loop"""
     return await asyncio.to_thread(
         _db_query_sync, query, params, fetchone, fetchall, commit
     )
 
 
 def _db_transaction_sync(callback):
-    conn = get_db()
-    try:
-        cursor = conn.cursor()
-        result = callback(cursor)
-        conn.commit()
-        return result
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    """Transaction đồng bộ sử dụng Pool"""
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cursor:
+            result = callback(cursor)
+            conn.commit()
+            return result
 
 
 async def db_transaction(callback):
     """Bọc transaction DB vào thread riêng"""
     return await asyncio.to_thread(_db_transaction_sync, callback)
+
+
+def _init_db_sync():
+    """Khởi tạo DB đồng bộ (chạy trong thread riêng)"""
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cursor:
+            # USERS
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    balance BIGINT NOT NULL DEFAULT 0,
+                    bank_info TEXT,
+                    referrer_id BIGINT,
+                    is_banned INTEGER NOT NULL DEFAULT 0,
+                    is_withdraw_banned INTEGER NOT NULL DEFAULT 0,
+                    joined_at TEXT
+                )
+                """
+            )
+            # TRANSACTIONS
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    type TEXT NOT NULL,
+                    amount BIGINT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    details TEXT
+                )
+                """
+            )
+            # GROUPS
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS groups (
+                    chat_id BIGINT PRIMARY KEY
+                )
+                """
+            )
+            # SETTINGS
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                """
+                INSERT INTO settings (key, value)
+                VALUES ('maintenance', '0')
+                ON CONFLICT (key) DO NOTHING
+                """
+            )
+            # INDEXES
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id, id DESC)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transactions_withdraw ON transactions(type, status, id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_referrer ON users(referrer_id)"
+            )
+        conn.commit()
+        logger.info("Database PostgreSQL đã sẵn sàng.")
+
+
+async def init_db():
+    """Khởi tạo DB bất đồng bộ"""
+    await asyncio.to_thread(_init_db_sync)
 
 
 def get_now_str():
@@ -338,14 +316,9 @@ def get_main_keyboard():
 
 async def is_maintenance():
     res = await db_query(
-        """
-        SELECT value
-        FROM settings
-        WHERE key='maintenance'
-        """,
+        "SELECT value FROM settings WHERE key='maintenance'",
         fetchone=True,
     )
-
     return bool(res and res[0] == "1")
 
 
@@ -372,31 +345,24 @@ def generate_captcha():
 
 
 # ============================================================
-# KIỂM TRA THAM GIA KÊNH
+# KIỂM TRA THAM GIA KÊNH (ĐÃ TỐI ƯU SONG SONG)
 # ============================================================
 
 async def get_missing_channels(bot, user_id):
-    missing_channels = []
-    for channel in REQUIRED_CHECK_CHANNELS:
+    """Kiểm tra song song tất cả các kênh bắt buộc để giảm độ trễ"""
+    async def check_one(channel):
         try:
-            member = await bot.get_chat_member(
-                chat_id=channel,
-                user_id=user_id,
-            )
-
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
             if member.status in ("left", "kicked"):
-                missing_channels.append(channel)
-
+                return channel
         except Exception as exc:
-            logger.warning(
-                "Không thể kiểm tra user %s trong %s (Lỗi: %s). Tạm thời coi như chưa tham gia.",
-                user_id,
-                channel,
-                exc,
-            )
-            missing_channels.append(channel)
+            logger.warning(f"Lỗi check kênh {channel} cho user {user_id}: {exc}")
+            return channel  # Nếu lỗi thì coi như chưa tham gia
+        return None
 
-    return missing_channels
+    tasks = [check_one(ch) for ch in REQUIRED_CHECK_CHANNELS]
+    results = await asyncio.gather(*tasks)
+    return [ch for ch in results if ch is not None]
 
 
 async def check_channel_membership(bot, user_id):
@@ -410,26 +376,17 @@ def build_channel_buttons(missing_channels):
     for ch in missing_channels:
         channel_url = f"https://t.me/{ch.replace('@', '')}"
         buttons.append([
-            InlineKeyboardButton(
-                f"👉 Tham gia: {ch}",
-                url=channel_url
-            )
+            InlineKeyboardButton(f"👉 Tham gia: {ch}", url=channel_url)
         ])
     
     for ch in OPTIONAL_DISPLAY_CHANNELS:
         channel_url = f"https://t.me/{ch.replace('@', '')}"
         buttons.append([
-            InlineKeyboardButton(
-                f"🌟 Tham gia: {ch} (Tham khảo)",
-                url=channel_url
-            )
+            InlineKeyboardButton(f"🌟 Tham gia: {ch} (Tham khảo)", url=channel_url)
         ])
     
     buttons.append([
-        InlineKeyboardButton(
-            "❇️ XÁC NHẬN ĐÃ THAM GIA ❇️",
-            callback_data="verify_join",
-        )
+        InlineKeyboardButton("❇️ XÁC NHẬN ĐÃ THAM GIA ❇️", callback_data="verify_join")
     ])
     return buttons
 
@@ -438,17 +395,13 @@ def build_channel_buttons(missing_channels):
 # XỬ LÝ KHI NGƯỜI DÙNG RỜI HOẶC THAM GIA LẠI NHÓM/KÊNH
 # ============================================================
 
-async def chat_member_updated_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member or update.my_chat_member
     if not result:
         return
 
     old_state = result.old_chat_member.status
     new_state = result.new_chat_member.status
-
     user = result.new_chat_member.user
 
     user_info = await db_query(
@@ -470,7 +423,6 @@ async def chat_member_updated_handler(
             (ref_id,),
             commit=True,
         )
-
         user_withdraw_state.pop(ref_id, None)
 
         try:
@@ -514,10 +466,14 @@ async def chat_member_updated_handler(
 
             all_friends_joined = True
             if invited_users:
-                for (inv_id,) in invited_users:
-                    if not await check_channel_membership(context.bot, inv_id):
-                        all_friends_joined = False
-                        break
+                # Tối ưu: Kiểm tra song song tất cả bạn bè
+                async def check_friend(inv_id):
+                    return await check_channel_membership(context.bot, inv_id)
+                
+                tasks = [check_friend(inv_id) for (inv_id,) in invited_users]
+                results = await asyncio.gather(*tasks)
+                if not all(results):
+                    all_friends_joined = False
 
             if all_friends_joined:
                 await db_query(
@@ -545,11 +501,7 @@ async def chat_member_updated_handler(
 # ANTI SPAM
 # ============================================================
 
-async def handle_anti_spam(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> bool:
-
+async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
     message = update.effective_message
 
@@ -572,12 +524,10 @@ async def handle_anti_spam(
                 parse_mode="HTML"
             )
             return True
-
         temp_bans.pop(user.id, None)
 
     times = user_msg_tracker[user.id]
     times.append(now)
-
     cutoff = now - timedelta(seconds=SPAM_WINDOW_SECONDS)
     user_msg_tracker[user.id] = [t for t in times if t >= cutoff]
 
@@ -606,17 +556,7 @@ async def ensure_user_exists(update: Update):
         return None
 
     row = await db_query(
-        """
-        SELECT
-            user_id,
-            balance,
-            bank_info,
-            is_banned,
-            is_withdraw_banned,
-            referrer_id
-        FROM users
-        WHERE user_id=%s
-        """,
+        "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id FROM users WHERE user_id=%s",
         (user.id,),
         fetchone=True,
     )
@@ -624,31 +564,18 @@ async def ensure_user_exists(update: Update):
     if row:
         current_username = user.username or ""
         await db_query(
-            """
-            UPDATE users
-            SET username=%s
-            WHERE user_id=%s
-            """,
+            "UPDATE users SET username=%s WHERE user_id=%s",
             (current_username, user.id),
             commit=True,
         )
     else:
         await db_query(
-            """
-            INSERT INTO users
-                (user_id, username, balance, joined_at)
-            VALUES
-                (%s, %s, 0, %s)
-            ON CONFLICT (user_id) DO NOTHING
-            """,
+            "INSERT INTO users (user_id, username, balance, joined_at) VALUES (%s, %s, 0, %s) ON CONFLICT (user_id) DO NOTHING",
             (user.id, user.username or "", get_now_str()),
             commit=True,
         )
         row = await db_query(
-            """
-            SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id
-            FROM users WHERE user_id=%s
-            """,
+            "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id FROM users WHERE user_id=%s",
             (user.id,),
             fetchone=True,
         )
@@ -680,10 +607,7 @@ async def require_private_user(update: Update):
 # START
 # ============================================================
 
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await handle_anti_spam(update, context):
         return
 
@@ -695,11 +619,7 @@ async def start_command(
 
     if chat.type != "private":
         await db_query(
-            """
-            INSERT INTO groups(chat_id)
-            VALUES(%s)
-            ON CONFLICT (chat_id) DO NOTHING
-            """,
+            "INSERT INTO groups(chat_id) VALUES(%s) ON CONFLICT (chat_id) DO NOTHING",
             (chat.id,),
             commit=True,
         )
@@ -714,11 +634,7 @@ async def start_command(
         return
 
     db_user = await db_query(
-        """
-        SELECT user_id, is_banned, referrer_id
-        FROM users
-        WHERE user_id=%s
-        """,
+        "SELECT user_id, is_banned, referrer_id FROM users WHERE user_id=%s",
         (user.id,),
         fetchone=True,
     )
@@ -741,34 +657,20 @@ async def start_command(
 
     if not db_user:
         await db_query(
-            """
-            INSERT INTO users
-                (user_id, username, balance, referrer_id, joined_at)
-            VALUES
-                (%s, %s, 0, %s, %s)
-            ON CONFLICT (user_id) DO NOTHING
-            """,
+            "INSERT INTO users (user_id, username, balance, referrer_id, joined_at) VALUES (%s, %s, 0, %s, %s) ON CONFLICT (user_id) DO NOTHING",
             (user.id, user.username or "", referrer_id, get_now_str()),
             commit=True,
         )
     else:
         if referrer_id is not None:
             await db_query(
-                """
-                UPDATE users
-                SET username=%s, referrer_id=%s
-                WHERE user_id=%s
-                """,
+                "UPDATE users SET username=%s, referrer_id=%s WHERE user_id=%s",
                 (user.username or "", referrer_id, user.id),
                 commit=True,
             )
         else:
             await db_query(
-                """
-                UPDATE users
-                SET username=%s
-                WHERE user_id=%s
-                """,
+                "UPDATE users SET username=%s WHERE user_id=%s",
                 (user.username or "", user.id),
                 commit=True,
             )
@@ -802,28 +704,17 @@ async def start_command(
 # GỬI CAPTCHA
 # ============================================================
 
-async def send_captcha_challenge(
-    update_or_query,
-    context: ContextTypes.DEFAULT_TYPE,
-    message_text="",
-):
+async def send_captcha_challenge(update_or_query, context: ContextTypes.DEFAULT_TYPE, message_text=""):
     a, b, correct_ans, options = generate_captcha()
     context.user_data["captcha_ans"] = correct_ans
 
     buttons = []
     row = []
-
     for opt in options:
-        row.append(
-            InlineKeyboardButton(
-                f"🔹 {opt}",
-                callback_data=f"captcha_{opt}",
-            )
-        )
+        row.append(InlineKeyboardButton(f"🔹 {opt}", callback_data=f"captcha_{opt}"))
         if len(row) == 2:
             buttons.append(row)
             row = []
-
     if row:
         buttons.append(row)
 
@@ -853,16 +744,12 @@ async def send_captcha_challenge(
 # VERIFY JOIN
 # ============================================================
 
-async def verify_join_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
 
     user = query.from_user
-
     try:
         await query.answer()
     except Exception:
@@ -902,10 +789,7 @@ async def verify_join_callback(
 # CAPTCHA CALLBACK
 # ============================================================
 
-async def captcha_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
@@ -941,11 +825,7 @@ async def captcha_callback(
         pass
 
     db_user = await db_query(
-        """
-        SELECT referrer_id
-        FROM users
-        WHERE user_id=%s
-        """,
+        "SELECT referrer_id FROM users WHERE user_id=%s",
         (user.id,),
         fetchone=True,
     )
@@ -955,30 +835,12 @@ async def captcha_callback(
         try:
             def reward_referrer(cursor):
                 details = f"Mời {user.id}"
-
                 cursor.execute(
-                    """
-                    INSERT INTO transactions
-                        (user_id, type, amount, status, created_at, details)
-                    VALUES
-                        (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        ref_id,
-                        "Thưởng Mời Bạn",
-                        REFERRAL_REWARD,
-                        "Thành công",
-                        get_now_str(),
-                        details,
-                    ),
+                    "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (ref_id, "Thưởng Mời Bạn", REFERRAL_REWARD, "Thành công", get_now_str(), details),
                 )
-
                 cursor.execute(
-                    """
-                    UPDATE users
-                    SET balance = balance + %s
-                    WHERE user_id=%s
-                    """,
+                    "UPDATE users SET balance = balance + %s WHERE user_id=%s",
                     (REFERRAL_REWARD, ref_id),
                 )
                 return True
@@ -1023,10 +885,7 @@ async def captcha_callback(
 # MENU
 # ============================================================
 
-async def menu_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     user = update.effective_user
 
@@ -1037,7 +896,6 @@ async def menu_handler(
         return
 
     db_user = await ensure_user_exists(update)
-
     user_withdraw_state.pop(user.id, None)
 
     if await is_maintenance() and user.id not in ADMIN_IDS:
@@ -1077,25 +935,11 @@ async def menu_handler(
     # TÀI KHOẢN
     if text in ["Tài Khoản", "👤 Tài Khoản"]:
         balance = db_user[1]
-        res = await db_query(
-            """
-            SELECT COUNT(*)
-            FROM users
-            WHERE referrer_id=%s
-            """,
-            (user.id,),
-            fetchone=True,
-        )
+        res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (user.id,), fetchone=True)
         invited_count = res[0]
 
         res_withdraw = await db_query(
-            """
-            SELECT COALESCE(SUM(amount), 0)
-            FROM transactions
-            WHERE user_id=%s
-            AND type='Rút Tiền'
-            AND status='Thành công'
-            """,
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'",
             (user.id,),
             fetchone=True,
         )
@@ -1109,7 +953,6 @@ async def menu_handler(
             f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người\n"
             f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
         )
-
         await message.reply_text(msg, parse_mode="HTML")
 
     # MỜI BẠN
@@ -1139,7 +982,6 @@ async def menu_handler(
             f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
             f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
         )
-
         await message.reply_text(msg, parse_mode="HTML")
 
     # NHÓM HỖ TRỢ
@@ -1152,17 +994,7 @@ async def menu_handler(
     # LỊCH SỬ
     elif text in ["Lịch Sử", "Lịch Sử Giao Dịch", "📜 Lịch Sử Giao Dịch"]:
         txs = await db_query(
-            """
-            SELECT
-                type,
-                amount,
-                status,
-                created_at
-            FROM transactions
-            WHERE user_id=%s
-            ORDER BY id DESC
-            LIMIT 10
-            """,
+            "SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10",
             (user.id,),
             fetchall=True,
         )
@@ -1181,7 +1013,6 @@ async def menu_handler(
                 f"{E['CALENDAR']} Thời gian: <code>{created_at}</code>\n"
                 "----------------------------------\n"
             )
-
         await message.reply_text(msg, parse_mode="HTML")
 
     # RÚT TIỀN
@@ -1203,12 +1034,7 @@ async def menu_handler(
         else:
             user_withdraw_state[user.id] = "WAITING_AMOUNT"
             cancel_btn = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "❌ HỦY THAO TÁC",
-                        callback_data="cancel_withdraw",
-                    )
-                ]
+                [InlineKeyboardButton("❌ HỦY THAO TÁC", callback_data="cancel_withdraw")]
             ])
 
             await message.reply_text(
@@ -1228,10 +1054,7 @@ async def menu_handler(
 # HỦY RÚT
 # ============================================================
 
-async def cancel_withdraw_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def cancel_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
@@ -1257,10 +1080,7 @@ async def cancel_withdraw_callback(
 # LIÊN KẾT NGÂN HÀNG
 # ============================================================
 
-async def link_bank_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def link_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await handle_anti_spam(update, context):
         return
 
@@ -1289,11 +1109,7 @@ async def link_bank_command(
         return
 
     await db_query(
-        """
-        UPDATE users
-        SET bank_info=%s
-        WHERE user_id=%s
-        """,
+        "UPDATE users SET bank_info=%s WHERE user_id=%s",
         (bank_str, user.id),
         commit=True,
     )
@@ -1309,10 +1125,7 @@ async def link_bank_command(
 # RESET BANK - ADMIN
 # ============================================================
 
-async def reset_bank_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def reset_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
 
@@ -1336,11 +1149,7 @@ async def reset_bank_command(
         return
 
     user_exists = await db_query(
-        """
-        SELECT user_id, bank_info
-        FROM users
-        WHERE user_id=%s
-        """,
+        "SELECT user_id, bank_info FROM users WHERE user_id=%s",
         (target_id,),
         fetchone=True,
     )
@@ -1352,11 +1161,7 @@ async def reset_bank_command(
     old_bank = user_exists[1]
 
     await db_query(
-        """
-        UPDATE users
-        SET bank_info=NULL
-        WHERE user_id=%s
-        """,
+        "UPDATE users SET bank_info=NULL WHERE user_id=%s",
         (target_id,),
         commit=True,
     )
@@ -1386,11 +1191,7 @@ async def reset_bank_command(
 # RÚT TIỀN (SỐ TIỀN)
 # ============================================================
 
-async def handle_withdraw_amount(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> bool:
-
+async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
     message = update.effective_message
 
@@ -1426,11 +1227,7 @@ async def handle_withdraw_amount(
         return True
 
     db_user = await db_query(
-        """
-        SELECT balance, bank_info, is_banned, is_withdraw_banned
-        FROM users
-        WHERE user_id=%s
-        """,
+        "SELECT balance, bank_info, is_banned, is_withdraw_banned FROM users WHERE user_id=%s",
         (user.id,),
         fetchone=True,
     )
@@ -1467,28 +1264,13 @@ async def handle_withdraw_amount(
     try:
         def create_withdraw(cursor):
             cursor.execute(
-                """
-                UPDATE users
-                SET balance = balance - %s
-                WHERE user_id=%s
-                AND balance >= %s
-                AND is_banned=0
-                AND is_withdraw_banned=0
-                """,
+                "UPDATE users SET balance = balance - %s WHERE user_id=%s AND balance >= %s AND is_banned=0 AND is_withdraw_banned=0",
                 (amount, user.id, amount),
             )
-
             if cursor.rowcount != 1:
                 return None
-
             cursor.execute(
-                """
-                INSERT INTO transactions
-                    (user_id, type, amount, status, created_at, details)
-                VALUES
-                    (%s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
+                "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
                 (user.id, "Rút Tiền", amount, "Chờ duyệt", get_now_str(), bank_info),
             )
             return cursor.fetchone()[0]
@@ -1555,10 +1337,7 @@ async def handle_withdraw_amount(
 # DUYỆT / TỪ CHỐI LỆNH RÚT
 # ============================================================
 
-async def admin_withdraw_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
@@ -1586,11 +1365,7 @@ async def admin_withdraw_callback(
         return
 
     tx = await db_query(
-        """
-        SELECT user_id, amount, status, details
-        FROM transactions
-        WHERE id=%s AND type='Rút Tiền'
-        """,
+        "SELECT user_id, amount, status, details FROM transactions WHERE id=%s AND type='Rút Tiền'",
         (tx_id,),
         fetchone=True,
     )
@@ -1621,11 +1396,7 @@ async def admin_withdraw_callback(
         try:
             def approve(cursor):
                 cursor.execute(
-                    """
-                    UPDATE transactions
-                    SET status='Thành công'
-                    WHERE id=%s AND status='Chờ duyệt'
-                    """,
+                    "UPDATE transactions SET status='Thành công' WHERE id=%s AND status='Chờ duyệt'",
                     (tx_id,),
                 )
                 return cursor.rowcount == 1
@@ -1675,22 +1446,13 @@ async def admin_withdraw_callback(
         try:
             def reject(cursor):
                 cursor.execute(
-                    """
-                    UPDATE transactions
-                    SET status='Từ chối'
-                    WHERE id=%s AND status='Chờ duyệt'
-                    """,
+                    "UPDATE transactions SET status='Từ chối' WHERE id=%s AND status='Chờ duyệt'",
                     (tx_id,),
                 )
                 if cursor.rowcount != 1:
                     return False
-
                 cursor.execute(
-                    """
-                    UPDATE users
-                    SET balance = balance + %s
-                    WHERE user_id=%s
-                    """,
+                    "UPDATE users SET balance = balance + %s WHERE user_id=%s",
                     (amount, user_id),
                 )
                 return True
@@ -1741,10 +1503,7 @@ async def admin_withdraw_callback(
 # ADMIN USER INFO
 # ============================================================
 
-async def admin_userinfo_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
@@ -1776,11 +1535,7 @@ async def admin_userinfo_callback(
             pass
         return
 
-    res = await db_query(
-        "SELECT COUNT(*) FROM users WHERE referrer_id=%s",
-        (target_id,),
-        fetchone=True,
-    )
+    res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
     invited_count = res[0]
 
     username = f"@{u[1]}" if u[1] else "Chưa đặt"
@@ -1816,10 +1571,7 @@ def is_admin(update: Update):
     return bool(update.effective_user and update.effective_user.id in ADMIN_IDS)
 
 
-async def admin_commands(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
 
@@ -1838,11 +1590,7 @@ async def admin_commands(
             user_withdraw_state.clear()
 
             await db_query(
-                """
-                INSERT INTO users (user_id, username, balance, joined_at)
-                VALUES (%s, %s, 0, %s)
-                ON CONFLICT (user_id) DO NOTHING
-                """,
+                "INSERT INTO users (user_id, username, balance, joined_at) VALUES (%s, %s, 0, %s) ON CONFLICT (user_id) DO NOTHING",
                 (message.from_user.id, message.from_user.username or "", get_now_str()),
                 commit=True
             )
@@ -1873,9 +1621,7 @@ async def admin_commands(
                 btn_text = f"🆔 {u_id}"
                 if u_name:
                     btn_text += f" (@{u_name})"
-                
                 row.append(InlineKeyboardButton(btn_text, callback_data=f"userinfo_{u_id}"))
-
                 if len(row) == 2:
                     buttons.append(row)
                     row = []
@@ -1891,11 +1637,7 @@ async def admin_commands(
 
         elif cmd == "/tongrut":
             res = await db_query(
-                """
-                SELECT COALESCE(SUM(amount), 0), COUNT(*)
-                FROM transactions
-                WHERE type='Rút Tiền' AND status='Thành công'
-                """,
+                "SELECT COALESCE(SUM(amount), 0), COUNT(*) FROM transactions WHERE type='Rút Tiền' AND status='Thành công'",
                 fetchone=True,
             )
             total_amount, total_count = res[0], res[1]
@@ -1909,8 +1651,10 @@ async def admin_commands(
             await message.reply_text(msg, parse_mode="HTML")
 
         elif cmd == "/rutid":
-            if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/rutid USER_ID</code>", parse_mode="HTML")
+            if len(args) <")
+
+        1:
+                await elif message.reply_text(f"{ cmdE['CLIP']} <b>Cú pháp:</b> <code>/rutid USER_ID</code>", parse_mode="HTML")
                 return
 
             try:
@@ -1940,18 +1684,12 @@ async def admin_commands(
             )
 
             total_attempts, success_amount, success_count, pending_count, reject_count = stats
-
             username = f"@{u[1]}" if u[1] else "Chưa đặt"
             bank = u[3] if u[3] else "Chưa liên kết"
             referrer = u[4] if u[4] is not None else "Không có"
 
             withdraw_txs = await db_query(
-                """
-                SELECT id, amount, status, created_at
-                FROM transactions
-                WHERE user_id=%s AND type='Rút Tiền'
-                ORDER BY id DESC LIMIT 10
-                """,
+                "SELECT id, amount, status, created_at FROM transactions WHERE user_id=%s AND type='Rút Tiền' ORDER BY id DESC LIMIT 10",
                 (target_id,),
                 fetchall=True
             )
@@ -2031,16 +1769,11 @@ async def admin_commands(
                 return
 
             u = await db_query("SELECT * FROM users WHERE user_id=%s", (target_id,), fetchone=True)
-
             if not u:
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
 
-            res = await db_query(
-                "SELECT COUNT(*) FROM users WHERE referrer_id=%s",
-                (target_id,),
-                fetchone=True,
-            )
+            res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
             invited_count = res[0]
 
             username = f"@{u[1]}" if u[1] else "Chưa đặt"
@@ -2080,7 +1813,6 @@ async def admin_commands(
             )
 
             total_invited = len(invited_users)
-
             msg = f"{E['COOL']} <b>DANH SÁCH BẠN BÈ MỜI CỦA USER <code>{target_id}</code></b> (Tổng: <code>{total_invited}</code> người):\n━━━━━━━━━━━━━━━━━━\n\n"
 
             if invited_users:
@@ -2109,9 +1841,7 @@ async def admin_commands(
 
             target_id = int(args[0])
             await db_query("UPDATE users SET is_banned=0 WHERE user_id=%s", (target_id,), commit=True)
-            await message.reply_text(f"{E['THUMB']} <b>Đã mở ban tài khoản cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
-
-        elif cmd == "/cam":
+            await message.reply_text(f"{E['THUMB']} <b>Đã mở ban tài khoản cho ID:</b> <code>{target_id}</code>", parse_mode="HTML == "/cam":
             if len(args) < 1:
                 await message.reply_text("Cú pháp: <code>/cam USER_ID</code>", parse_mode="HTML")
                 return
@@ -2151,34 +1881,22 @@ async def admin_commands(
                 def add_money(cursor):
                     cursor.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, target_id))
                     cursor.execute(
-                        """
-                        INSERT INTO transactions (user_id, type, amount, status, created_at, details)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        """,
+                        "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
                         (target_id, "Nạp Tiền (Admin)", amount, "Thành công", get_now_str(), "Cộng từ Admin"),
                     )
                     return True
-
                 await db_transaction(add_money)
                 await message.reply_text(f"{E['THUMB']} Đã cộng <b>+{amount:,}đ</b> cho ID <code>{target_id}</code>.", parse_mode="HTML")
-
             else:
                 def deduct(cursor):
-                    cursor.execute(
-                        "UPDATE users SET balance=balance-%s WHERE user_id=%s AND balance>=%s",
-                        (amount, target_id, amount),
-                    )
+                    cursor.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s AND balance>=%s", (amount, target_id, amount))
                     if cursor.rowcount != 1:
                         return False
                     cursor.execute(
-                        """
-                        INSERT INTO transactions (user_id, type, amount, status, created_at, details)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        """,
+                        "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
                         (target_id, "Trừ Tiền (Admin)", amount, "Thành công", get_now_str(), "Trừ từ Admin"),
                     )
                     return True
-
                 ok = await db_transaction(deduct)
                 if not ok:
                     await message.reply_text("❌ Số dư user không đủ để trừ.")
@@ -2187,12 +1905,7 @@ async def admin_commands(
 
         elif cmd == "/rutls":
             txs = await db_query(
-                """
-                SELECT id, user_id, amount, details, created_at
-                FROM transactions
-                WHERE type='Rút Tiền' AND status='Chờ duyệt'
-                ORDER BY id ASC
-                """,
+                "SELECT id, user_id, amount, details, created_at FROM transactions WHERE type='Rút Tiền' AND status='Chờ duyệt' ORDER BY id ASC",
                 fetchall=True,
             )
 
@@ -2230,12 +1943,7 @@ async def admin_commands(
 
         elif cmd == "/ruttc":
             txs = await db_query(
-                """
-                SELECT id, user_id, amount, created_at
-                FROM transactions
-                WHERE type='Rút Tiền' AND status='Thành công'
-                ORDER BY id DESC LIMIT 15
-                """,
+                "SELECT id, user_id, amount, created_at FROM transactions WHERE type='Rút Tiền' AND status='Thành công' ORDER BY id DESC LIMIT 15",
                 fetchall=True,
             )
 
@@ -2270,12 +1978,7 @@ async def admin_commands(
                 msg += "• Chưa mời được ai.\n"
 
             txs = await db_query(
-                """
-                SELECT type, amount, status, created_at
-                FROM transactions
-                WHERE user_id=%s
-                ORDER BY id DESC LIMIT 10
-                """,
+                "SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10",
                 (target_id,),
                 fetchall=True,
             )
@@ -2313,10 +2016,7 @@ async def admin_commands(
 # DISPATCHER
 # ============================================================
 
-async def text_message_dispatcher(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def text_message_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message:
         return
 
@@ -2330,10 +2030,7 @@ async def text_message_dispatcher(
     await menu_handler(update, context)
 
 
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception khi xử lý update: %s", context.error, exc_info=context.error)
 
 
@@ -2341,16 +2038,17 @@ async def error_handler(
 # MAIN
 # ============================================================
 
+async def post_init(application: Application) -> None:
+    """Khởi tạo DB sau khi bot khởi động (không chặn event loop)"""
+    await init_db()
+
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("Chưa cấu hình BOT_TOKEN.")
-
     if not DATABASE_URL:
         raise RuntimeError("Chưa cấu hình DATABASE_URL.")
 
-    init_db()
-
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # COMMANDS USER
     app.add_handler(CommandHandler("start", start_command))
@@ -2370,26 +2068,9 @@ def main():
 
     # COMMANDS ADMIN
     admin_cmds = [
-        "resetall",
-        "tong",
-        "tongrut",
-        "rutid",
-        "tb",
-        "info",
-        "bb",
-        "ban",
-        "moban",
-        "cam",
-        "mocam",
-        "rutls",
-        "ruttc",
-        "nap",
-        "tru",
-        "lsgd",
-        "baotri",
-        "batbt",
-        "tatbt",
-        "resetbank",
+        "resetall", "tong", "tongrut", "rutid", "tb", "info", "bb", "ban", "moban",
+        "cam", "mocam", "rutls", "ruttc", "nap", "tru", "lsgd", "baotri", "batbt",
+        "tatbt", "resetbank",
     ]
 
     for command in admin_cmds:
