@@ -41,7 +41,7 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh/Nhóm kiểm tra tham gia (Đã thêm 2 nhóm mới)
+# Kênh/Nhóm BẮT BUỘC kiểm tra tham gia
 REQUIRED_CHECK_CHANNELS = [
     "@sanhugame",
     "@sancode22",
@@ -52,14 +52,14 @@ REQUIRED_CHECK_CHANNELS = [
     "@khuyenmaionline",
 ]
 
-# Kênh hiển thị thêm nhưng không kiểm tra tham gia
+# Kênh hiển thị thêm KHÔNG kiểm tra tham gia (Chỉ hiện nút để click)
 OPTIONAL_DISPLAY_CHANNELS = [
     "@hocviencbm",
 ]
 
 SUPPORT_GROUP = "https://t.me/conmuamenmenl"
 
-MIN_WITHDRAW = 5000
+MIN_WITHDRAW = 15000  # Đã điều chỉnh min rút lên 15,000đ
 MAX_WITHDRAW = 300000
 REFERRAL_REWARD = 1000
 
@@ -353,11 +353,13 @@ async def check_channel_membership(bot, user_id):
 
 def build_channel_buttons(missing_channels):
     buttons = []
+    # Nút cho các kênh bắt buộc kiểm tra
     for ch in missing_channels:
         channel_url = f"https://t.me/{ch.replace('@', '')}"
         buttons.append([
             InlineKeyboardButton(f"👉 Tham gia: {ch}", url=channel_url)
         ])
+    # Nút cho các kênh hiển thị phụ (không bị check khi ấn xác nhận)
     for ch in OPTIONAL_DISPLAY_CHANNELS:
         channel_url = f"https://t.me/{ch.replace('@', '')}"
         buttons.append([
@@ -471,7 +473,6 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user = update.effective_user
     message = update.effective_message
 
-    # Chỉ áp dụng Anti-Spam khi chat riêng (Private Chat)
     if not chat or chat.type != "private":
         return False
 
@@ -612,14 +613,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     if not db_user:
-        # Lần đầu tiên user start bot -> Ghi nhận người giới thiệu (nếu có)
         await db_query(
             "INSERT INTO users (user_id, username, balance, referrer_id, joined_at) VALUES (%s, %s, 0, %s, %s) ON CONFLICT (user_id) DO NOTHING",
             (user.id, user.username or "", referrer_id, get_now_str()),
             commit=True,
         )
     else:
-        # Nếu đã từng start bot -> Chỉ cập nhật username, GIỮ NGUYÊN referrer_id không cho sửa đổi nữa
         await db_query(
             "UPDATE users SET username=%s WHERE user_id=%s",
             (user.username or "", user.id),
@@ -1756,6 +1755,8 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif cmd == "/tatbt":
             await db_query("UPDATE settings SET value='0' WHERE key='maintenance'", commit=True)
             await message.reply_text(f"{E['LIGHTNING']} <b>ĐÃ TẮT BẢO TRÌ HỆ THỐNG!</b> Bot đã mở lại bình thường.", parse_mode="HTML")
+        elif cmd == "/resetbank":
+            await reset_bank_command(update, context)
     except Exception as exc:
         logger.exception("Lỗi admin command %s: %s", cmd, exc)
         await message.reply_text("❌ Đã xảy ra lỗi khi xử lý lệnh.")
