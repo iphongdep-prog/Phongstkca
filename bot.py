@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import random
+import re
+import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -41,15 +43,15 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh/Nhóm BẮT BUỘC kiểm tra tham gia (Đã thêm @hocviencbm)
+# Kênh/Nhóm BẮT BUỘC kiểm tra tham gia (Đã cập nhật theo yêu cầu)
 REQUIRED_CHECK_CHANNELS = [
     "@sanhugame",
     "@sancode22",
     "@xombao247",
     "@thongbaohit88",
     "@sancodehit88",
-    "@chungnaomoidu",
-    "@khuyenmaionline",
+    "@vtc345",
+    "@vtc567",
     "@hocviencbm",
 ]
 
@@ -273,6 +275,60 @@ async def init_db():
 
 def get_now_str():
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ============================================================
+# UTILS & VIETQR BUILDER
+# ============================================================
+
+def generate_vietqr_url(bank_info: str, amount: int, memo: str = "lixi trung thu") -> str:
+    """
+    Trích xuất STK và Mã Ngân Hàng từ bank_info để sinh đường dẫn VietQR.
+    Hỗ trợ định dạng: STK TÊN_NGÂN_HÀNG TÊN_CHỦ_THẺ
+    """
+    if not bank_info:
+        return ""
+    parts = bank_info.strip().split()
+    if len(parts) < 2:
+        return ""
+    
+    stk = parts[0]
+    bank_code = parts[1].upper()
+    
+    # Map tên viết tắt ngân hàng thông dụng nếu cần
+    bank_mapping = {
+        "VCB": "vietcombank",
+        "VIETCOMBANK": "vietcombank",
+        "TCB": "techcombank",
+        "TECHCOMBANK": "techcombank",
+        "MB": "mbbank",
+        "MBBANK": "mbbank",
+        "STB": "sacombank",
+        "SACOMBANK": "sacombank",
+        "ACB": "acb",
+        "VPB": "vpbank",
+        "VPBANK": "vpbank",
+        "TPB": "tpbank",
+        "TPBANK": "tpbank",
+        "BIDV": "bidv",
+        "CTG": "vietinbank",
+        "VIETINBANK": "vietinbank",
+        "AGRIBANK": "agribank",
+        "VIB": "vib",
+        "SHB": "shb",
+        "MSB": "msb",
+        "LPB": "lienvietpostbank",
+        "LPBANK": "lienvietpostbank",
+        "OCB": "ocb",
+        "HDB": "hdbank",
+        "HDBANK": "hdbank",
+    }
+    
+    code = bank_mapping.get(bank_code, bank_code.lower())
+    encoded_memo = urllib.parse.quote(memo)
+    
+    # Tạo URL VietQR (sử dụng template compact2)
+    return f"https://img.vietqr.io/image/{code}-{stk}-compact2.png?amount={amount}&addInfo={encoded_memo}"
 
 
 # ============================================================
@@ -912,7 +968,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for idx, (top_id, top_username, ref_count) in enumerate(top_users, start=1):
             name_str = f"@{top_username}" if top_username else f"User {top_id}"
             
-            # Chọn icon tương ứng cho từng vị trí
             if idx == 1:
                 icon = E['MEDAL1']
             elif idx == 2:
@@ -1097,7 +1152,7 @@ async def reset_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ============================================================
-# RÚT TIỀN (SỐ TIỀN)
+# RÚT TIỀN (SỐ TIỀN & GỬI VIETQR CHO ADMIN)
 # ============================================================
 
 async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -1194,23 +1249,38 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
         f"{E['ALERT1']} <b>LỆNH RÚT TIỀN MỚI (# {tx_id})</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{E['EYES']} <b>Khách hàng:</b> {username_str} (<code>{user.id}</code>)\n"
-        f"{E['UP']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n"
+        f"{E['UP']} <b>Số tiền rút:</b> <code>{amount:,}đ</code>\n"
         f"{E['LOCK']} <b>Ngân hàng:</b> <code>{bank_info}</code>\n"
+        f"{E['MAIL']} <b>Nội dung chuyển:</b> <code>lixi trung thu</code>\n"
         f"{E['CALENDAR']} <b>Thời gian:</b> <code>{get_now_str()}</code>"
     )
+    
+    qr_url = generate_vietqr_url(bank_info, amount, memo="lixi trung thu")
     msg_refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
+    
     for admin_id in ADMIN_IDS:
         try:
-            sent_msg = await context.bot.send_message(
-                chat_id=admin_id,
-                text=admin_msg,
-                reply_markup=InlineKeyboardMarkup(admin_buttons),
-                parse_mode="HTML",
-            )
+            if qr_url:
+                # Gửi kèm ảnh QR tự động nếu trích xuất thông tin ngân hàng thành công
+                sent_msg = await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=qr_url,
+                    caption=admin_msg,
+                    reply_markup=InlineKeyboardMarkup(admin_buttons),
+                    parse_mode="HTML",
+                )
+            else:
+                sent_msg = await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_msg,
+                    reply_markup=InlineKeyboardMarkup(admin_buttons),
+                    parse_mode="HTML",
+                )
             msg_refs.append({
                 "chat_id": admin_id,
                 "message_id": sent_msg.message_id,
-                "base_text": admin_msg
+                "base_text": admin_msg,
+                "has_photo": bool(qr_url)
             })
         except Exception as exc:
             logger.exception("Không gửi được yêu cầu rút cho admin %s: %s", admin_id, exc)
@@ -1258,14 +1328,29 @@ async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
     if status != "Chờ duyệt":
         try:
             await query.answer("⚠️ Giao dịch này đã được xử lý trước đó!", show_alert=True)
-            status_text = "✅ ĐÃ DUYỆT" if status == "Thành công" else "❌ ĐÃ TỪ CHỐI"
-            await query.edit_message_text(
-                f"{query.message.text}\n\n⚠️ <b>GIAO DỊCH ĐÃ ĐƯỢC XỬ LÝ TRƯỚC ĐÓ!</b> ({status_text})",
-                parse_mode="HTML"
-            )
         except Exception:
             pass
         return
+
+    async def update_admin_message(ref, new_text):
+        try:
+            if ref.get("has_photo"):
+                await context.bot.edit_message_caption(
+                    chat_id=ref["chat_id"],
+                    message_id=ref["message_id"],
+                    caption=new_text,
+                    parse_mode="HTML"
+                )
+            else:
+                await context.bot.edit_message_text(
+                    chat_id=ref["chat_id"],
+                    message_id=ref["message_id"],
+                    text=new_text,
+                    parse_mode="HTML"
+                )
+        except Exception:
+            pass
+
     if action == "approve":
         try:
             def approve(cursor):
@@ -1288,28 +1373,10 @@ async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
             except Exception:
                 pass
             refs = context.bot_data.pop(f"tx_msgs_{tx_id}", [])
-            query_edited = False
             for ref in refs:
                 update_text = f"{ref['base_text']}\n\n{E['THUMB']} <b>TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN</b> (Bởi Admin {admin_name_str})"
-                try:
-                    await context.bot.edit_message_text(
-                        chat_id=ref["chat_id"],
-                        message_id=ref["message_id"],
-                        text=update_text,
-                        parse_mode="HTML"
-                    )
-                    if ref["chat_id"] == query.message.chat_id and ref["message_id"] == query.message.message_id:
-                        query_edited = True
-                except Exception:
-                    pass
-            if not query_edited:
-                try:
-                    await query.edit_message_text(
-                        f"{query.message.text}\n\n{E['THUMB']} <b>TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN</b> (Bởi Admin {admin_name_str})",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
+                await update_admin_message(ref, update_text)
+
     elif action == "reject":
         try:
             def reject(cursor):
@@ -1338,28 +1405,9 @@ async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
             except Exception:
                 pass
             refs = context.bot_data.pop(f"tx_msgs_{tx_id}", [])
-            query_edited = False
             for ref in refs:
                 update_text = f"{ref['base_text']}\n\n{E['BAN']} <b>TRẠNG THÁI: ĐÃ TỪ CHỐI</b> (Bởi Admin {admin_name_str})"
-                try:
-                    await context.bot.edit_message_text(
-                        chat_id=ref["chat_id"],
-                        message_id=ref["message_id"],
-                        text=update_text,
-                        parse_mode="HTML"
-                    )
-                    if ref["chat_id"] == query.message.chat_id and ref["message_id"] == query.message.message_id:
-                        query_edited = True
-                except Exception:
-                    pass
-            if not query_edited:
-                try:
-                    await query.edit_message_text(
-                        f"{query.message.text}\n\n{E['BAN']} <b>TRẠNG THÁI: ĐÃ TỪ CHỐI</b> (Bởi Admin {admin_name_str})",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
+                await update_admin_message(ref, update_text)
 
 
 # ============================================================
@@ -1724,18 +1772,29 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"{E['COOL']} <b>User:</b> <code>{target_id}</code>\n"
                     f"{E['UP']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n"
                     f"{E['LOCK']} <b>Bank:</b> <code>{details or 'N/A'}</code>\n"
+                    f"{E['MAIL']} <b>Nội dung:</b> <code>lixi trung thu</code>\n"
                     f"{E['CALENDAR']} <b>Thời gian:</b> <code>{created_at}</code>"
                 )
-                sent_msg = await message.reply_text(
-                    msg_text,
-                    reply_markup=InlineKeyboardMarkup(btns),
-                    parse_mode="HTML",
-                )
+                qr_url = generate_vietqr_url(details, amount, memo="lixi trung thu")
+                if qr_url:
+                    sent_msg = await message.reply_photo(
+                        photo=qr_url,
+                        caption=msg_text,
+                        reply_markup=InlineKeyboardMarkup(btns),
+                        parse_mode="HTML"
+                    )
+                else:
+                    sent_msg = await message.reply_text(
+                        msg_text,
+                        reply_markup=InlineKeyboardMarkup(btns),
+                        parse_mode="HTML",
+                    )
                 refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
                 refs.append({
                     "chat_id": message.chat_id,
                     "message_id": sent_msg.message_id,
-                    "base_text": msg_text
+                    "base_text": msg_text,
+                    "has_photo": bool(qr_url)
                 })
         elif cmd == "/ruttc":
             txs = await db_query(
