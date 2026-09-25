@@ -41,7 +41,7 @@ ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-# Kênh/Nhóm BẮT BUỘC kiểm tra tham gia
+# Kênh/Nhóm BẮT BUỘC kiểm tra tham gia (Đã thêm @hocviencbm)
 REQUIRED_CHECK_CHANNELS = [
     "@sanhugame",
     "@sancode22",
@@ -50,16 +50,15 @@ REQUIRED_CHECK_CHANNELS = [
     "@sancodehit88",
     "@chungnaomoidu",
     "@khuyenmaionline",
-]
-
-# Kênh hiển thị thêm KHÔNG kiểm tra tham gia (Chỉ hiện nút để click)
-OPTIONAL_DISPLAY_CHANNELS = [
     "@hocviencbm",
 ]
 
+# Kênh hiển thị thêm KHÔNG kiểm tra tham gia
+OPTIONAL_DISPLAY_CHANNELS = []
+
 SUPPORT_GROUP = "https://t.me/conmuamenmenl"
 
-MIN_WITHDRAW = 15000  # Đã điều chỉnh min rút lên 15,000đ
+MIN_WITHDRAW = 15000  # Min rút 15,000đ
 MAX_WITHDRAW = 300000
 REFERRAL_REWARD = 1000
 
@@ -88,6 +87,7 @@ E = {
     "MEDAL1": '<tg-emoji emoji-id="5440539497383087970">🥇</tg-emoji>',
     "MEDAL2": '<tg-emoji emoji-id="5447203607294265305">🥈</tg-emoji>',
     "MEDAL3": '<tg-emoji emoji-id="5453902265922376865">🥉</tg-emoji>',
+    "CHECK_ANIMATED": '<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>',
     "FREE": '<tg-emoji emoji-id="5406756500108501710">🆓</tg-emoji>',
     "PENCIL": '<tg-emoji emoji-id="5395444784611480792">✏️</tg-emoji>',
     "CALENDAR": '<tg-emoji emoji-id="5413879192267805083">🗓</tg-emoji>',
@@ -287,9 +287,10 @@ def get_main_keyboard():
         ],
         [
             KeyboardButton("💳 Rút Tiền"),
-            KeyboardButton("💬 Nhóm Hỗ Trợ"),
+            KeyboardButton("🔝 Top"),
         ],
         [
+            KeyboardButton("💬 Nhóm Hỗ Trợ"),
             KeyboardButton("📜 Lịch Sử Giao Dịch"),
         ],
     ]
@@ -359,7 +360,7 @@ def build_channel_buttons(missing_channels):
         buttons.append([
             InlineKeyboardButton(f"👉 Tham gia: {ch}", url=channel_url)
         ])
-    # Nút cho các kênh hiển thị phụ (không bị check khi ấn xác nhận)
+    # Nút cho các kênh hiển thị phụ (nếu có)
     for ch in OPTIONAL_DISPLAY_CHANNELS:
         channel_url = f"https://t.me/{ch.replace('@', '')}"
         buttons.append([
@@ -889,6 +890,40 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
             f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
         )
+        await message.reply_text(msg, parse_mode="HTML")
+    elif text in ["Top", "🔝 Top"]:
+        top_users = await db_query(
+            """
+            SELECT u.user_id, u.username, COUNT(r.user_id) AS ref_count
+            FROM users u
+            JOIN users r ON r.referrer_id = u.user_id
+            WHERE u.is_banned = 0
+            GROUP BY u.user_id, u.username
+            ORDER BY ref_count DESC
+            LIMIT 10
+            """,
+            fetchall=True
+        )
+        if not top_users:
+            await message.reply_text(f"{E['CHART']} <b>Hiện chưa có ai trong bảng xếp hạng Top tuyển ref!</b>", parse_mode="HTML")
+            return
+        
+        msg = f"{E['TOP']} <b>TOP 10 THÀNH VIÊN TUYỂN REF NHIỀU NHẤT</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        for idx, (top_id, top_username, ref_count) in enumerate(top_users, start=1):
+            name_str = f"@{top_username}" if top_username else f"User {top_id}"
+            
+            # Chọn icon tương ứng cho từng vị trí
+            if idx == 1:
+                icon = E['MEDAL1']
+            elif idx == 2:
+                icon = E['MEDAL2']
+            elif idx == 3:
+                icon = E['MEDAL3']
+            else:
+                icon = E['CHECK_ANIMATED']
+                
+            msg += f"{icon} <b>Top {idx}:</b> {name_str} — <code>{ref_count:,}</code> bạn bè\n"
+            
         await message.reply_text(msg, parse_mode="HTML")
     elif text in ["Nhóm Hỗ Trợ", "💬 Nhóm Hỗ Trợ"]:
         await message.reply_text(
