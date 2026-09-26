@@ -207,6 +207,7 @@ def _init_db_sync():
                     phone_number TEXT,
                     ref_rewarded INTEGER NOT NULL DEFAULT 0,
                     is_captcha_passed INTEGER NOT NULL DEFAULT 0,
+                    is_phone_verified INTEGER NOT NULL DEFAULT 0,
                     is_banned INTEGER NOT NULL DEFAULT 0,
                     is_withdraw_banned INTEGER NOT NULL DEFAULT 0,
                     joined_at TEXT
@@ -216,6 +217,7 @@ def _init_db_sync():
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_rewarded INTEGER NOT NULL DEFAULT 0;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_captcha_passed INTEGER NOT NULL DEFAULT 0;")
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_phone_verified INTEGER NOT NULL DEFAULT 0;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_withdraw_banned INTEGER NOT NULL DEFAULT 0;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_info TEXT;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT;")
@@ -340,6 +342,12 @@ def get_main_keyboard():
         ],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_phone_request_keyboard():
+    keyboard = [
+        [KeyboardButton(f"📱 XÁC MINH SỐ ĐIỆN THOẠI", request_contact=True)]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 # ============================================================
 # MAINTENANCE
@@ -558,7 +566,7 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 USER_SELECT_QUERY = (
     "SELECT user_id, username, balance, bank_info, referrer_id, "
     "phone_number, ref_rewarded, is_captcha_passed, is_banned, "
-    "is_withdraw_banned, joined_at "
+    "is_withdraw_banned, joined_at, is_phone_verified "
     "FROM users WHERE user_id=%s"
 )
 
@@ -676,6 +684,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_captcha_challenge(
             update, context,
             message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục xác minh:</b>"
+        )
+        return
+
+    # Bước 3: XÁC MINH SỐ ĐIỆN THOẠI
+    if not db_user[11]:
+        await update.message.reply_text(
+            f"{E['PHONE']} <b>YÊU CẦU XÁC MINH SỐ ĐIỆN THOẠI!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['ALERT1']} Để bảo mật tài khoản và chống Buff Ref ảo, bạn vui lòng nhấn vào nút bên dưới để chia sẻ Số Điện Thoại xác minh tài khoản.",
+            reply_markup=get_phone_request_keyboard(),
+            parse_mode="HTML"
         )
         return
 
@@ -813,7 +832,69 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # XỬ LÝ THƯỞNG CHO NGƯỜI GIỚI THIỆU NGAY KHI GIẢI XONG CAPTCHA
+    db_user = await get_fresh_user(user.id)
+    if db_user and not db_user[11]:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                f"{E['PHONE']} <b>BƯỚC CUỐI: XÁC MINH SỐ ĐIỆN THOẠI!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['ALERT1']} Để chống buff ref ảo và tiếp tục sử dụng Bot, bạn hãy bấm vào nút bên dưới để gửi Số Điện Thoại Telegram của bạn:"
+            ),
+            reply_markup=get_phone_request_keyboard(),
+            parse_mode="HTML",
+        )
+    else:
+        await context.bot.send_message(
+            chat_id=user.id,
+            text=(
+                f"{E['LAUGH1']} <b>XÁC MINH THÀNH CÔNG!</b>\n"
+                f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>"
+            ),
+            reply_markup=get_main_keyboard(),
+            parse_mode="HTML",
+        )
+
+# ============================================================
+# CONTACT HANDLER (XÁC MINH SỐ ĐIỆN THOẠI)
+# ============================================================
+
+async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user or not message.contact:
+        return
+
+    contact = message.contact
+
+    # Chống giả mạo / gửi sđt của người khác
+    if contact.user_id != user.id:
+        await message.reply_text(
+            f"{E['BAN']} <b>SỐ ĐIỆN THOẠI KHÔNG HỢP LỆ!</b>\n"
+            f"Vui lòng sử dụng chính nút bấm <b>📱 XÁC MINH SỐ ĐIỆN THOẠI</b> bên dưới để chia sẻ số điện thoại của chính tài khoản này!",
+            reply_markup=get_phone_request_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    phone = contact.phone_number
+    if not phone.startswith("+"):
+        phone = "+" + phone
+
+    await db_query(
+        "UPDATE users SET phone_number=%s, is_phone_verified=1 WHERE user_id=%s",
+        (phone, user.id),
+        commit=True
+    )
+
+    await message.reply_text(
+        f"{E['CHECK_ANIMATED']} <b>XÁC MINH SỐ ĐIỆN THOẠI THÀNH CÔNG!</b>\n"
+        f"📱 Số điện thoại: <code>{phone}</code>",
+        parse_mode="HTML",
+        reply_markup=get_main_keyboard()
+    )
+
+    # XỬ LÝ THƯỞNG CHO NGƯỜI GIỚI THIỆU SAU KHI ĐÃ HOÀN THÀNH ĐỦ MỌI BƯỚC (BAO GỒM SĐT)
     db_user = await get_fresh_user(user.id)
     if db_user:
         referrer_id = db_user[4]
@@ -860,16 +941,6 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         logger.warning("Không gửi được thông báo referrer: %s", exc)
             except Exception as exc:
                 logger.exception("Lỗi transaction thưởng giới thiệu: %s", exc)
-
-    await context.bot.send_message(
-        chat_id=user.id,
-        text=(
-            f"{E['LAUGH1']} <b>XÁC MINH THÀNH CÔNG!</b>\n"
-            f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>"
-        ),
-        reply_markup=get_main_keyboard(),
-        parse_mode="HTML",
-    )
 
 # ============================================================
 # MENU HANDLER
@@ -930,6 +1001,16 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        if not db_user[11]:
+            await message.reply_text(
+                f"{E['PHONE']} <b>VUI LÒNG XÁC MINH SỐ ĐIỆN THOẠI ĐỂ SỬ DỤNG BOT!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['ALERT1']} Bạn cần xác minh số điện thoại để mở khóa các tính năng của bot.",
+                reply_markup=get_phone_request_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
     raw_text = (message.text or "").strip()
     clean_text = clean_menu_text(raw_text).lower()
 
@@ -950,6 +1031,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['CROWN']} <b>THÔNG TIN TÀI KHOẢN VIP</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"{E['EYES']} <b>ID:</b> <code>{user.id}</code>\n"
+            f"{E['PHONE']} <b>SĐT:</b> <code>{db_user[5] or 'Đã xác minh'}</code>\n"
             f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
             f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người hợp lệ\n"
             f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
@@ -976,7 +1058,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<code>{ref_link}</code>\n\n"
             f"{E['CALENDAR']} <b>Thể lệ nhận thưởng:</b>\n"
             f"• {E['LIGHTNING']} Nhận ngay: <b>+{REFERRAL_REWARD:,}đ</b> / lượt mời thành công.\n"
-            f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh & giải CAPTCHA.\n"
+            f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh, giải CAPTCHA & xác minh SĐT.\n"
             f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
             f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
         )
@@ -988,7 +1070,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """
             SELECT u.user_id, u.username, COUNT(r.user_id) AS ref_count
             FROM users u
-            LEFT JOIN users r ON r.referrer_id = u.user_id
+            LEFT JOIN users r ON r.referrer_id = u.user_id AND r.ref_rewarded = 1
             WHERE u.is_banned = 0
             GROUP BY u.user_id, u.username
             HAVING COUNT(r.user_id) > 0
@@ -1489,6 +1571,7 @@ async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{E['EYES']} ID: <code>{u[0]}</code>\n"
         f"{E['COOL']} Username: {username}\n"
+        f"{E['PHONE']} SĐT: <code>{u[5] or 'Chưa xác minh'}</code>\n"
         f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
         f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
         f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
@@ -1615,6 +1698,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['EYES']} <b>THÔNG TIN RÚT TIỀN CỦA USER <code>{target_id}</code></b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"{E['COOL']} Username: {username}\n"
+                f"{E['PHONE']} SĐT: <code>{u[5] or 'Chưa xác minh'}</code>\n"
                 f"{E['UP']} Số dư hiện tại: <code>{u[2]:,}đ</code>\n"
                 f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
                 f"{E['CLIP']} Người giới thiệu: <code>{referrer}</code>\n"
@@ -1689,6 +1773,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"{E['EYES']} ID: <code>{u[0]}</code>\n"
                 f"{E['COOL']} Username: {username}\n"
+                f"{E['PHONE']} SĐT: <code>{u[5] or 'Chưa xác minh'}</code>\n"
                 f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
                 f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
                 f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
@@ -1708,16 +1793,21 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("❌ USER_ID không hợp lệ.")
                 return
             invited_users = await db_query(
-                "SELECT user_id, username, joined_at, ref_rewarded FROM users WHERE referrer_id=%s ORDER BY joined_at DESC",
+                "SELECT user_id, username, joined_at, ref_rewarded, is_phone_verified FROM users WHERE referrer_id=%s ORDER BY joined_at DESC",
                 (target_id,),
                 fetchall=True,
             )
             total_invited = len(invited_users)
             msg = f"{E['COOL']} <b>DANH SÁCH BẠN BÈ MỜI CỦA USER <code>{target_id}</code></b> (Tổng: <code>{total_invited}</code> người):\n━━━━━━━━━━━━━━━━━━\n\n"
             if invited_users:
-                for invited_id, username, joined_at, ref_rewarded in invited_users:
+                for invited_id, username, joined_at, ref_rewarded, is_phone_verified in invited_users:
                     uname = f"@{username}" if username else "Chưa đặt username"
-                    status = "✅ Hợp lệ" if ref_rewarded == 1 else "⏳ Chưa xác minh Captcha"
+                    if ref_rewarded == 1:
+                        status = "✅ Hợp lệ"
+                    elif is_phone_verified == 0:
+                        status = "⏳ Chưa xác minh SĐT"
+                    else:
+                        status = "⏳ Chưa xong Captcha"
                     msg += f"• ID: <code>{invited_id}</code> | Name: {uname} | {status}\n"
             else:
                 msg += "❌ Người dùng này chưa mời được ai.\n"
@@ -1933,6 +2023,9 @@ def main():
     app.add_handler(CallbackQueryHandler(cancel_withdraw_callback, pattern=r"^cancel_withdraw$"))
     app.add_handler(CallbackQueryHandler(admin_withdraw_callback, pattern=r"^(approve|reject)_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_userinfo_callback, pattern=r"^userinfo_\d+$"))
+
+    # Handler nhận Contact từ người dùng
+    app.add_handler(MessageHandler(filters.CONTACT, contact_handler))
 
     admin_cmds = [
         "resetall", "tong", "tongrut", "rutid", "tb", "info", "bb", "ban", "moban",
