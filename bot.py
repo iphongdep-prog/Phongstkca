@@ -31,7 +31,6 @@ from telegram.ext import (
     filters,
 )
 
-
 # ============================================================
 # CẤU HÌNH
 # ============================================================
@@ -64,7 +63,6 @@ SUPPORT_GROUP = "https://t.me/conmuamenmenl"
 MIN_WITHDRAW = 15000  # Min rút 15,000đ
 MAX_WITHDRAW = 300000
 REFERRAL_REWARD = 1000
-
 
 # ============================================================
 # DANH SÁCH EMOJI
@@ -125,7 +123,6 @@ E = {
     "PHONE": '<tg-emoji emoji-id="5431445208531215160">📱</tg-emoji>',
 }
 
-
 # ============================================================
 # ANTI SPAM
 # ============================================================
@@ -138,7 +135,6 @@ user_msg_tracker = defaultdict(list)
 temp_bans = {}
 user_withdraw_state = {}
 
-
 # ============================================================
 # LOG
 # ============================================================
@@ -149,7 +145,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
 
 # ============================================================
 # DATABASE POSTGRESQL (CONNECTION POOL)
@@ -171,7 +166,6 @@ def get_pool():
         )
     return db_pool
 
-
 def _db_query_sync(query, params=(), fetchone=False, fetchall=False, commit=False):
     pool = get_pool()
     with pool.connection() as conn:
@@ -185,12 +179,10 @@ def _db_query_sync(query, params=(), fetchone=False, fetchall=False, commit=Fals
                 conn.commit()
             return None
 
-
 async def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     return await asyncio.to_thread(
         _db_query_sync, query, params, fetchone, fetchall, commit
     )
-
 
 def _db_transaction_sync(callback):
     pool = get_pool()
@@ -200,10 +192,8 @@ def _db_transaction_sync(callback):
             conn.commit()
             return result
 
-
 async def db_transaction(callback):
     return await asyncio.to_thread(_db_transaction_sync, callback)
-
 
 def _init_db_sync():
     pool = get_pool()
@@ -277,14 +267,11 @@ def _init_db_sync():
         conn.commit()
         logger.info("Database PostgreSQL đã sẵn sàng.")
 
-
 async def init_db():
     await asyncio.to_thread(_init_db_sync)
 
-
 def get_now_str():
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-
 
 # ============================================================
 # UTILS & VIETQR BUILDER
@@ -332,7 +319,6 @@ def generate_vietqr_url(bank_info: str, amount: int, memo: str = "lixi trung thu
     encoded_memo = urllib.parse.quote(memo)
     return f"https://img.vietqr.io/image/{code}-{stk}-compact2.png?amount={amount}&addInfo={encoded_memo}"
 
-
 # ============================================================
 # KEYBOARD
 # ============================================================
@@ -354,13 +340,11 @@ def get_main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-
 def get_phone_keyboard():
     keyboard = [
         [KeyboardButton("📱 Chia Sẻ Số Điện Thoại", request_contact=True)]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 # ============================================================
 # MAINTENANCE
@@ -372,7 +356,6 @@ async def is_maintenance():
         fetchone=True,
     )
     return bool(res and res[0] == "1")
-
 
 # ============================================================
 # CAPTCHA
@@ -390,7 +373,6 @@ def generate_captcha():
     opts_list = list(options)
     random.shuffle(opts_list)
     return a, b, correct_ans, opts_list
-
 
 # ============================================================
 # KIỂM TRA THAM GIA KÊNH
@@ -411,11 +393,9 @@ async def get_missing_channels(bot, user_id):
     results = await asyncio.gather(*tasks)
     return [ch for ch in results if ch is not None]
 
-
 async def check_channel_membership(bot, user_id):
     missing = await get_missing_channels(bot, user_id)
     return len(missing) == 0
-
 
 def build_channel_buttons(missing_channels):
     buttons = []
@@ -433,7 +413,6 @@ def build_channel_buttons(missing_channels):
         InlineKeyboardButton("❇️ XÁC NHẬN ĐÃ THAM GIA ❇️", callback_data="verify_join")
     ])
     return buttons
-
 
 # ============================================================
 # XỬ LÝ RỜI/THAM GIA LẠI
@@ -527,7 +506,6 @@ async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFA
                 except Exception as exc:
                     logger.warning("Không gửi được thông báo mở khóa rút tiền cho referrer %s: %s", ref_id, exc)
 
-
 # ============================================================
 # ANTI SPAM
 # ============================================================
@@ -577,7 +555,6 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     return False
 
-
 # ============================================================
 # USER
 # ============================================================
@@ -611,7 +588,6 @@ async def ensure_user_exists(update: Update):
         )
     return row
 
-
 async def require_private_user(update: Update):
     if not update.effective_chat or update.effective_chat.type != "private":
         return False
@@ -626,7 +602,6 @@ async def require_private_user(update: Update):
         )
         return False
     return True
-
 
 # ============================================================
 # START
@@ -740,7 +715,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-
 # ============================================================
 # GỬI CAPTCHA
 # ============================================================
@@ -784,7 +758,6 @@ async def send_captcha_challenge(update_or_query, context: ContextTypes.DEFAULT_
             parse_mode="HTML",
         )
 
-
 # ============================================================
 # VERIFY JOIN
 # ============================================================
@@ -823,7 +796,6 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await send_captcha_challenge(query, context)
 
-
 # ============================================================
 # CAPTCHA CALLBACK & YÊU CẦU SĐT
 # ============================================================
@@ -858,7 +830,11 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await query.answer("✅ Xác minh CAPTCHA thành công!")
-        await query.delete_message()
+        # Chỉnh sửa nội dung tin nhắn cũ để không đè bàn phím mới
+        await query.edit_message_text(
+            f"{E['CHECK_ANIMATED']} <b>XÁC THỰC CAPTCHA THÀNH CÔNG!</b>",
+            parse_mode="HTML"
+        )
     except Exception:
         pass
 
@@ -867,9 +843,9 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=user.id,
             text=(
-                f"{E['CHECK_ANIMATED']} <b>XÁC THỰC CAPTCHA THÀNH CÔNG!</b>\n"
+                f"{E['PHONE']} <b>BƯỚC CUỐI CÙNG: XÁC THỰC SỐ ĐIỆN THOẠI</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"{E['PHONE']} <b>BƯỚC CUỐI CÙNG:</b> Nhấn vào nút <b>'Chia Sẻ Số Điện Thoại'</b> phía dưới để hoàn tất đăng ký."
+                f"{E['ALERT1']} Vui lòng nhấn vào nút <b>'📱 Chia Sẻ Số Điện Thoại'</b> ở phía dưới góc bàn phím để hoàn tất."
             ),
             reply_markup=get_phone_keyboard(),
             parse_mode="HTML",
@@ -884,7 +860,6 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard(),
             parse_mode="HTML",
         )
-
 
 # ============================================================
 # XỬ LÝ CHIA SẺ SỐ ĐIỆN THOẠI (CHỐNG BUFF REF)
@@ -979,7 +954,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-
 # ============================================================
 # MENU
 # ============================================================
@@ -990,7 +964,6 @@ def clean_menu_text(raw_text: str) -> str:
         return ""
     text_cleaned = re.sub(r'[^\w\s]', '', raw_text).strip()
     return text_cleaned
-
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -1044,7 +1017,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not db_user[6]:
             await message.reply_text(
                 f"{E['PHONE']} <b>BẠN CHƯA XÁC THỰC SỐ ĐIỆN THOẠI!</b>\n"
-                f"Vui lòng nhấn nút bên dưới để gửi số điện thoại xác minh.",
+                f"Vui lòng nhấn vào nút <b>'📱 Chia Sẻ Số Điện Thoại'</b> ở phía dưới góc bàn phím để hoàn tất.",
                 reply_markup=get_phone_keyboard(),
                 parse_mode="HTML",
             )
@@ -1198,7 +1171,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
 
-
 # ============================================================
 # HỦY RÚT
 # ============================================================
@@ -1220,7 +1192,6 @@ async def cancel_withdraw_callback(update: Update, context: ContextTypes.DEFAULT
         reply_markup=get_main_keyboard(),
         parse_mode="HTML",
     )
-
 
 # ============================================================
 # LIÊN KẾT NGÂN HÀNG
@@ -1257,7 +1228,6 @@ async def link_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{E['LOCK']} Thông tin lưu trữ: <code>{bank_str}</code>",
         parse_mode="HTML",
     )
-
 
 # ============================================================
 # RESET BANK - ADMIN
@@ -1312,7 +1282,6 @@ async def reset_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
     except Exception as exc:
         logger.warning("Không gửi được thông báo reset bank cho user %s: %s", target_id, exc)
-
 
 # ============================================================
 # RÚT TIỀN (SỐ TIỀN & GỬI VIETQR CHO ADMIN)
@@ -1448,7 +1417,6 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
             logger.exception("Không gửi được yêu cầu rút cho admin %s: %s", admin_id, exc)
     return True
 
-
 # ============================================================
 # DUYỆT / TỪ CHỐI LỆNH RÚT
 # ============================================================
@@ -1571,7 +1539,6 @@ async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
                 update_text = f"{ref['base_text']}\n\n{E['BAN']} <b>TRẠNG THÁI: ĐÃ TỪ CHỐI</b> (Bởi Admin {admin_name_str})"
                 await update_admin_message(ref, update_text)
 
-
 # ============================================================
 # ADMIN USER INFO
 # ============================================================
@@ -1628,14 +1595,12 @@ async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_
         parse_mode="HTML",
     )
 
-
 # ============================================================
 # ADMIN COMMANDS
 # ============================================================
 
 def is_admin(update: Update):
     return bool(update.effective_user and update.effective_user.id in ADMIN_IDS)
-
 
 async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
@@ -2024,7 +1989,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Lỗi admin command %s: %s", cmd, exc)
         await message.reply_text("❌ Đã xảy ra lỗi khi xử lý lệnh.")
 
-
 # ============================================================
 # DISPATCHER
 # ============================================================
@@ -2039,10 +2003,8 @@ async def text_message_dispatcher(update: Update, context: ContextTypes.DEFAULT_
         return
     await menu_handler(update, context)
 
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception khi xử lý update: %s", context.error, exc_info=context.error)
-
 
 # ============================================================
 # MAIN
@@ -2082,7 +2044,6 @@ def main():
 
     logger.info("🤖 Bot đang chạy...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
