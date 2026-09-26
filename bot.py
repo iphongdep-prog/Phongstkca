@@ -345,9 +345,15 @@ def get_main_keyboard():
 
 def get_phone_request_keyboard():
     keyboard = [
-        [KeyboardButton(text="📱 XÁC MINH SỐ ĐIỆN THOẠI", request_contact=True)]
+        [KeyboardButton(text="📲 Bấm vào đây để Chia Sẻ Số Điện Thoại", request_contact=True)]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+
+def get_phone_inline_keyboard():
+    buttons = [
+        [InlineKeyboardButton("📱 XÁC MINH SỐ ĐIỆN THOẠI NGAY", callback_data="trigger_phone_request")]
+    ]
+    return InlineKeyboardMarkup(buttons)
 
 # ============================================================
 # MAINTENANCE
@@ -684,8 +690,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"{E['PHONE']} <b>BƯỚC 2: XÁC MINH SỐ ĐIỆN THOẠI!</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"{E['ALERT1']} Để bảo mật tài khoản và chống Buff Ref ảo, bạn vui lòng bấm nút góc dưới màn hình để gửi Số Điện Thoại Telegram xác minh.",
-            reply_markup=get_phone_request_keyboard(),
+            f"{E['ALERT1']} Để bảo mật tài khoản và chống Buff Ref ảo, bạn vui lòng nhấn vào nút bên dưới để xác minh:",
+            reply_markup=get_phone_inline_keyboard(),
             parse_mode="HTML"
         )
         return
@@ -789,30 +795,18 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     db_user = await get_fresh_user(user.id)
     
-    # Đã tham gia kênh thành công ➔ Chuyển qua bước Xác minh Số điện thoại
     if db_user and not db_user[11]:
         try:
             await query.edit_message_text(
                 f"{E['CHECK_ANIMATED']} <b>THAM GIA KÊNH THÀNH CÔNG!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"{E['PHONE']} Vui lòng thực hiện <b>Bước 2: Xác minh Số điện thoại</b> bên dưới.",
+                f"{E['PHONE']} Vui lòng bấm vào nút tin nhắn dưới để thực hiện <b>Bước 2: Xác minh Số điện thoại</b>.",
+                reply_markup=get_phone_inline_keyboard(),
                 parse_mode="HTML"
             )
         except Exception:
             pass
-
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=(
-                f"{E['PHONE']} <b>BƯỚC 2: XÁC MINH SỐ ĐIỆN THOẠI!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"{E['ALERT1']} Vui lòng bấm vào nút <b>📱 XÁC MINH SỐ ĐIỆN THOẠI</b> góc dưới màn hình để chia sẻ SĐT:"
-            ),
-            reply_markup=get_phone_request_keyboard(),
-            parse_mode="HTML",
-        )
     elif db_user and not db_user[7]:
-        # Nếu đã có SĐT rồi mà chưa xong CAPTCHA thì sang CAPTCHA
         await send_captcha_challenge(query, context)
     else:
         await context.bot.send_message(
@@ -821,6 +815,32 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=get_main_keyboard(),
             parse_mode="HTML",
         )
+
+# ============================================================
+# CALLBACK KÍCH HOẠT HIỂN THỊ NÚT SĐT
+# ============================================================
+
+async def trigger_phone_request_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    user = query.from_user
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    # Gửi một message mới mang ReplyKeyboard với một nút to duy nhất
+    await context.bot.send_message(
+        chat_id=user.id,
+        text=(
+            f"{E['PHONE']} <b>XÁC MINH SỐ ĐIỆN THOẠI TELEGRAM</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👇 <b>Bấm ngay nút '📲 Bấm vào đây để Chia Sẻ Số Điện Thoại' ở dưới cùng màn hình chat:</b>"
+        ),
+        reply_markup=get_phone_request_keyboard(),
+        parse_mode="HTML"
+    )
 
 # ============================================================
 # CONTACT HANDLER (XÁC MINH SỐ ĐIỆN THOẠI ➔ BƯỚC 3: CAPTCHA)
@@ -834,11 +854,10 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     contact = message.contact
 
-    # Chống giả mạo / gửi sđt của người khác
     if contact.user_id != user.id:
         await message.reply_text(
             f"{E['BAN']} <b>SỐ ĐIỆN THOẠI KHÔNG HỢP LỆ!</b>\n"
-            f"Vui lòng sử dụng chính nút bấm <b>📱 XÁC MINH SỐ ĐIỆN THOẠI</b> bên dưới để chia sẻ số điện thoại của chính tài khoản này!",
+            f"Vui lòng sử dụng chính tài khoản Telegram này để bấm nút chia sẻ SĐT!",
             reply_markup=get_phone_request_keyboard(),
             parse_mode="HTML"
         )
@@ -862,7 +881,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     db_user = await get_fresh_user(user.id)
-    # Chưa xong CAPTCHA thì gửi bài toán CAPTCHA (Bước cuối)
     if db_user and not db_user[7]:
         await send_captcha_challenge(
             message,
@@ -922,7 +940,6 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # HOÀN THÀNH TẤT CẢ BƯỚC ➔ CỘNG THƯỞNG CHO NGƯỜI GIỚI THIỆU
     db_user = await get_fresh_user(user.id)
     if db_user:
         referrer_id = db_user[4]
@@ -1015,9 +1032,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # KIỂM TRA XÁC THỰC THEO TRẬT TỰ
     if user.id not in ADMIN_IDS:
-        # 1. Kênh
         missing_channels = await get_missing_channels(context.bot, user.id)
         if missing_channels:
             buttons = build_channel_buttons(missing_channels)
@@ -1033,18 +1048,16 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # 2. SĐT
         if not db_user[11]:
             await message.reply_text(
                 f"{E['PHONE']} <b>VUI LÒNG XÁC MINH SỐ ĐIỆN THOẠI ĐỂ SỬ DỤNG BOT!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"{E['ALERT1']} Vui lòng sử dụng nút bấm góc dưới màn hình để gửi SĐT xác minh.",
-                reply_markup=get_phone_request_keyboard(),
+                f"{E['ALERT1']} Bấm nút bên dưới để thực hiện xác minh SĐT:",
+                reply_markup=get_phone_inline_keyboard(),
                 parse_mode="HTML"
             )
             return
 
-        # 3. CAPTCHA
         if not db_user[7]:
             await send_captcha_challenge(
                 update, context,
@@ -1055,7 +1068,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_text = (message.text or "").strip()
     clean_text = clean_menu_text(raw_text).lower()
 
-    # Tài khoản
     if clean_text in ["tai khoan", "tài khoản"] or "tài khoản" in raw_text.lower():
         balance = db_user[2]
         res = await db_query(
@@ -1079,7 +1091,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-    # Mời bạn bè
     elif clean_text in ["moi ban be", "mời bạn bè"] or "mời bạn" in raw_text.lower():
         try:
             bot_info = await context.bot.get_me()
@@ -1105,7 +1116,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-    # Top
     elif clean_text == "top" or "top" in raw_text.lower():
         top_users = await db_query(
             """
@@ -1141,7 +1151,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-    # Nhóm hỗ trợ
     elif clean_text in ["nhom ho tro", "nhóm hỗ trợ"] or "hỗ trợ" in raw_text.lower():
         await message.reply_text(
             f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}\n\n"
@@ -1150,7 +1159,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard()
         )
 
-    # Lịch sử giao dịch
     elif clean_text in ["lich su", "lich su giao dịch", "lịch sử giao dịch", "lịch sử"] or "lịch sử" in raw_text.lower():
         txs = await db_query(
             "SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10",
@@ -1171,7 +1179,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
-    # Rút tiền
     elif clean_text in ["rut tien", "rút tiền"] or "rút tiền" in raw_text.lower():
         if db_user[9] == 1:
             await message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị CẤM RÚT TIỀN!</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
@@ -2062,6 +2069,7 @@ def main():
     app.add_handler(CommandHandler("lk", link_bank_command))
     app.add_handler(ChatMemberHandler(chat_member_updated_handler, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(CallbackQueryHandler(verify_join_callback, pattern=r"^verify_join$"))
+    app.add_handler(CallbackQueryHandler(trigger_phone_request_callback, pattern=r"^trigger_phone_request$"))
     app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^captcha_\d+$"))
     app.add_handler(CallbackQueryHandler(cancel_withdraw_callback, pattern=r"^cancel_withdraw$"))
     app.add_handler(CallbackQueryHandler(admin_withdraw_callback, pattern=r"^(approve|reject)_\d+$"))
