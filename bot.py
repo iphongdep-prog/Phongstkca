@@ -225,7 +225,6 @@ def _init_db_sync():
                 )
                 """
             )
-            # Thêm các cột chống buff ref nếu bàn cũ chưa có
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_rewarded INTEGER NOT NULL DEFAULT 0;")
 
@@ -666,7 +665,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # CHỐNG BUFF REF: Nếu đã có referrer_id thì KHÔNG CHO ĐỔI người giới thiệu
     new_referrer = None
     if context.args:
         try:
@@ -683,7 +681,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             commit=True,
         )
     else:
-        # Nếu chưa có referrer_id thì cập nhật lần đầu, đã có rồi thì bỏ qua (Khóa 1 link duy nhất)
         if not db_user[2] and new_referrer:
             await db_query(
                 "UPDATE users SET username=%s, referrer_id=%s WHERE user_id=%s",
@@ -712,7 +709,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
         
-    # Lấy lại thông tin user để kiểm tra đã xác thực SĐT chưa
     check_user = await db_query("SELECT phone_number FROM users WHERE user_id=%s", (user.id,), fetchone=True)
     if not check_user or not check_user[0]:
         await update.message.reply_text(
@@ -888,7 +884,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not phone.startswith("+"):
         phone = "+" + phone
 
-    # Kiểm tra SĐT đã dùng cho tài khoản nào chưa
     phone_exist = await db_query("SELECT user_id FROM users WHERE phone_number=%s AND user_id != %s", (phone, user.id), fetchone=True)
     if phone_exist:
         await message.reply_text(
@@ -904,7 +899,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         commit=True,
     )
 
-    # XỬ LÝ CỘNG THƯỞNG REF (CHỈ 1 LẦN DUY NHẤT TRÁNH NHẬN 2 LẦN GIOI THIỆU)
     db_user = await db_query(
         "SELECT referrer_id, ref_rewarded FROM users WHERE user_id=%s",
         (user.id,),
@@ -965,6 +959,15 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MENU
 # ============================================================
 
+def clean_menu_text(raw_text: str) -> str:
+    """Làm sạch các biểu tượng Emoji để so sánh chính xác với nhãn của nút bấm"""
+    if not raw_text:
+        return ""
+    # Xóa các ký tự đặc biệt/emoji
+    text_cleaned = re.sub(r'[^\w\s]', '', raw_text).strip()
+    return text_cleaned
+
+
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     user = update.effective_user
@@ -972,8 +975,10 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if update.effective_chat.type != "private":
         return
+
     db_user = await ensure_user_exists(update)
     user_withdraw_state.pop(user.id, None)
+
     if await is_maintenance() and user.id not in ADMIN_IDS:
         await message.reply_text(
             f"{E['STOP']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n"
@@ -981,12 +986,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
         return
+
     if not db_user or db_user[3] == 1:
         await message.reply_text(
             f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm khỏi hệ thống!</b>",
             parse_mode="HTML"
         )
         return
+
     if user.id not in ADMIN_IDS:
         missing_channels = await get_missing_channels(context.bot, user.id)
         if missing_channels:
@@ -1002,7 +1009,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
             return
-        # Kiểm tra nếu chưa chia sẻ SĐT
+
         if not db_user[6]:
             await message.reply_text(
                 f"{E['PHONE']} <b>BẠN CHƯA XÁC THỰC SỐ ĐIỆN THOẠI!</b>\n"
@@ -1012,8 +1019,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    text = (message.text or "").strip()
-    if text in ["Tài Khoản", "👤 Tài Khoản"]:
+    raw_text = (message.text or "").strip()
+    clean_text = clean_menu_text(raw_text).lower()
+
+    # Xử lý Tài khoản
+    if clean_text in ["tai khoan", "tài khoản"] or "tài khoản" in raw_text.lower():
         balance = db_user[1]
         res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (user.id,), fetchone=True)
         invited_count = res[0]
@@ -1023,17 +1033,20 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fetchone=True,
         )
         total_withdraw = res_withdraw[0]
+        phone_str = db_user[6] if db_user[6] else "Chưa xác thực"
         msg = (
             f"{E['CROWN']} <b>THÔNG TIN TÀI KHOẢN VIP</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"{E['EYES']} <b>ID:</b> <code>{user.id}</code>\n"
-            f"{E['PHONE']} <b>SĐT:</b> <code>{db_user[6]}</code>\n"
+            f"{E['PHONE']} <b>SĐT:</b> <code>{phone_str}</code>\n"
             f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
             f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người hợp lệ\n"
             f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
         )
         await message.reply_text(msg, parse_mode="HTML")
-    elif text in ["Mời Bạn Bè", "🎁 Mời Bạn Bè"]:
+
+    # Xử lý Mời Bạn Bè
+    elif clean_text in ["moi ban be", "mời bạn bè"] or "mời bạn" in raw_text.lower():
         try:
             bot_info = await context.bot.get_me()
             bot_username = bot_info.username
@@ -1057,14 +1070,17 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
         )
         await message.reply_text(msg, parse_mode="HTML")
-    elif text in ["Top", "🔝 Top"]:
+
+    # Xử lý Top (Bảng xếp hạng)
+    elif clean_text == "top" or "top" in raw_text.lower():
         top_users = await db_query(
             """
             SELECT u.user_id, u.username, COUNT(r.user_id) AS ref_count
             FROM users u
-            JOIN users r ON r.referrer_id = u.user_id AND r.ref_rewarded = 1
+            LEFT JOIN users r ON r.referrer_id = u.user_id
             WHERE u.is_banned = 0
             GROUP BY u.user_id, u.username
+            HAVING COUNT(r.user_id) > 0
             ORDER BY ref_count DESC
             LIMIT 10
             """,
@@ -1090,13 +1106,17 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"{icon} <b>Top {idx}:</b> {name_str} — <code>{ref_count:,}</code> bạn bè\n"
             
         await message.reply_text(msg, parse_mode="HTML")
-    elif text in ["Nhóm Hỗ Trợ", "💬 Nhóm Hỗ Trợ"]:
+
+    # Xử lý Nhóm Hỗ Trợ
+    elif clean_text in ["nhom ho tro", "nhóm hỗ trợ"] or "hỗ trợ" in raw_text.lower():
         await message.reply_text(
             f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}\n\n"
             f"{E['SIX']} <b>ADMIN:</b> @echcutodz",
             parse_mode="HTML",
         )
-    elif text in ["Lịch Sử", "Lịch Sử Giao Dịch", "📜 Lịch Sử Giao Dịch"]:
+
+    # Xử lý Lịch Sử Giao Dịch
+    elif clean_text in ["lich su", "lich su giao dịch", "lịch sử giao dịch", "lịch sử"] or "lịch sử" in raw_text.lower():
         txs = await db_query(
             "SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10",
             (user.id,),
@@ -1115,7 +1135,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "----------------------------------\n"
             )
         await message.reply_text(msg, parse_mode="HTML")
-    elif text in ["Rút Tiền", "💳 Rút Tiền"]:
+
+    # Xử lý Rút Tiền
+    elif clean_text in ["rut tien", "rút tiền"] or "rút tiền" in raw_text.lower():
         if db_user[4] == 1:
             await message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị CẤM RÚT TIỀN!</b>", parse_mode="HTML")
             return
