@@ -557,21 +557,9 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return False
 
 # ============================================================
-# USER - QUERY DATABASE (ĐÃ SỬA THỨ TỰ CỘT CHUẨN POSTGRES)
+# USER - QUERY DATABASE
 # ============================================================
 
-# Cấu trúc Tương ứng chính xác với định nghĩa Bảng:
-# 0: user_id
-# 1: username
-# 2: balance
-# 3: bank_info
-# 4: referrer_id
-# 5: phone_number
-# 6: ref_rewarded
-# 7: is_captcha_passed
-# 8: is_banned
-# 9: is_withdraw_banned
-# 10: joined_at
 USER_SELECT_QUERY = (
     "SELECT user_id, username, balance, bank_info, referrer_id, "
     "phone_number, ref_rewarded, is_captcha_passed, is_banned, "
@@ -646,7 +634,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db_user = await ensure_user_exists(update)
 
-    if db_user and db_user[8] == 1: # index 8: is_banned
+    if db_user and db_user[8] == 1: # Index 8: is_banned
         await update.message.reply_text(
             f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>",
             parse_mode="HTML"
@@ -654,7 +642,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Xử lý referrer
-    if context.args and not db_user[4]: # index 4: referrer_id
+    if context.args and not db_user[4]: # Index 4: referrer_id
         try:
             ref_id = int(context.args[0])
             if ref_id != user.id:
@@ -669,6 +657,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = await get_fresh_user(user.id)
     if not db_user:
         await update.message.reply_text("❌ Có lỗi xảy ra, vui lòng thử lại /start.")
+        return
+
+    # Nếu là ADMIN bỏ qua các bước kiểm tra kích hoạt
+    if user.id in ADMIN_IDS:
+        await update.message.reply_text(
+            f"{E['LIGHTNING']} <b>CHÀO MỪNG ADMIN TỚI HỆ THỐNG!</b>\n"
+            f"{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
+            reply_markup=get_main_keyboard(),
+            parse_mode="HTML"
+        )
         return
 
     # Bước 1: Kiểm tra Kênh tham gia
@@ -796,7 +794,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await send_captcha_challenge(query, context)
 
 # ============================================================
-# CAPTCHA CALLBACK & YÊU CẦU SĐT (ĐÃ SỬA ÉP HIỆN BÀN PHÍM SĐT)
+# CAPTCHA CALLBACK & YÊU CẦU SĐT
 # ============================================================
 
 async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -845,7 +843,7 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     check = await get_fresh_user(user.id)
     phone_number = check[5] if check else None # Index 5: phone_number
 
-    if not phone_number:
+    if not phone_number and user.id not in ADMIN_IDS:
         # Ép gửi tin nhắn mới với get_phone_keyboard()
         await context.bot.send_message(
             chat_id=user.id,
@@ -888,7 +886,7 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     db_user = await ensure_user_exists(update)
-    if not db_user or not db_user[7]: # Index 7: is_captcha_passed
+    if not db_user or (not db_user[7] and user.id not in ADMIN_IDS): # Index 7: is_captcha_passed
         await message.reply_text(
             f"{E['ALERT1']} <b>BẠN CHƯA VƯỢT CAPTCHA!</b>\n"
             f"{E['ARROW_DOWN']} Vui lòng gửi /start để xác minh lại.",
@@ -982,7 +980,8 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def clean_menu_text(raw_text: str) -> str:
     if not raw_text:
         return ""
-    text_cleaned = re.sub(r'[^\w\s]', '', raw_text).strip()
+    # Giữ lại cả tiếng Việt Unicode để so sánh menu chính xác hơn
+    text_cleaned = re.sub(r'[^\w\s\àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]', '', raw_text, flags=re.IGNORECASE).strip()
     return text_cleaned
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -993,7 +992,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await ensure_user_exists(update)
     db_user = await get_fresh_user(user.id)
-    user_withdraw_state.pop(user.id, None)
 
     if await is_maintenance() and user.id not in ADMIN_IDS:
         await message.reply_text(
@@ -1050,7 +1048,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clean_text = clean_menu_text(raw_text).lower()
 
     # Xử lý Tài khoản
-    if clean_text in ["tai khoan", "tài khoản"] or "tài khoản" in raw_text.lower():
+    if "tài khoản" in raw_text.lower() or "tai khoan" in clean_text:
         balance = db_user[2] # Index 2: balance
         res = await db_query(
             "SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1",
@@ -1072,10 +1070,10 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người hợp lệ\n"
             f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
         )
-        await message.reply_text(msg, parse_mode="HTML")
+        await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     # Xử lý Mời Bạn Bè
-    elif clean_text in ["moi ban be", "mời bạn bè"] or "mời bạn" in raw_text.lower():
+    elif "mời bạn" in raw_text.lower() or "moi ban" in clean_text:
         try:
             bot_info = await context.bot.get_me()
             bot_username = bot_info.username
@@ -1098,10 +1096,10 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
             f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
         )
-        await message.reply_text(msg, parse_mode="HTML")
+        await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     # Xử lý Top (Bảng xếp hạng)
-    elif clean_text == "top" or "top" in raw_text.lower():
+    elif "top" in raw_text.lower():
         top_users = await db_query(
             """
             SELECT u.user_id, u.username, COUNT(r.user_id) AS ref_count
@@ -1116,7 +1114,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fetchall=True
         )
         if not top_users:
-            await message.reply_text(f"{E['CHART']} <b>Hiện chưa có ai trong bảng xếp hạng Top tuyển ref!</b>", parse_mode="HTML")
+            await message.reply_text(f"{E['CHART']} <b>Hiện chưa có ai trong bảng xếp hạng Top tuyển ref!</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
             return
 
         msg = f"{E['TOP']} <b>TOP 10 THÀNH VIÊN TUYỂN REF NHIỀU NHẤT</b>\n━━━━━━━━━━━━━━━━━━\n\n"
@@ -1134,25 +1132,26 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             msg += f"{icon} <b>Top {idx}:</b> {name_str} — <code>{ref_count:,}</code> bạn bè\n"
 
-        await message.reply_text(msg, parse_mode="HTML")
+        await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     # Xử lý Nhóm Hỗ Trợ
-    elif clean_text in ["nhom ho tro", "nhóm hỗ trợ"] or "hỗ trợ" in raw_text.lower():
+    elif "hỗ trợ" in raw_text.lower() or "ho tro" in clean_text:
         await message.reply_text(
             f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}\n\n"
             f"{E['SIX']} <b>ADMIN:</b> @echcutodz",
             parse_mode="HTML",
+            reply_markup=get_main_keyboard()
         )
 
     # Xử lý Lịch Sử Giao Dịch
-    elif clean_text in ["lich su", "lich su giao dịch", "lịch sử giao dịch", "lịch sử"] or "lịch sử" in raw_text.lower():
+    elif "lịch sử" in raw_text.lower() or "lich su" in clean_text:
         txs = await db_query(
             "SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10",
             (user.id,),
             fetchall=True,
         )
         if not txs:
-            await message.reply_text(f"{E['CALENDAR']} <b>Bạn chưa có giao dịch nào.</b>", parse_mode="HTML")
+            await message.reply_text(f"{E['CALENDAR']} <b>Bạn chưa có giao dịch nào.</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
             return
         msg = f"{E['CHART']} <b>LỊCH SỬ GIAO DỊCH GẦN ĐÂY</b>\n━━━━━━━━━━━━━━━━━━\n\n"
         for tx_type, amount, status, created_at in txs:
@@ -1163,12 +1162,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['CALENDAR']} Thời gian: <code>{created_at}</code>\n"
                 "----------------------------------\n"
             )
-        await message.reply_text(msg, parse_mode="HTML")
+        await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     # Xử lý Rút Tiền
-    elif clean_text in ["rut tien", "rút tiền"] or "rút tiền" in raw_text.lower():
+    elif "rút tiền" in raw_text.lower() or "rut tien" in clean_text:
         if db_user[9] == 1: # Index 9: is_withdraw_banned
-            await message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị CẤM RÚT TIỀN!</b>", parse_mode="HTML")
+            await message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị CẤM RÚT TIỀN!</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
             return
         bank_info = db_user[3] # Index 3: bank_info
         if not bank_info:
@@ -1178,6 +1177,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<code>/lk STK Tên_Ngân_Hàng Tên_Chủ_Thẻ</code>\n\n"
                 f"{E['LIGHTNING']} <b>Ví dụ:</b> <code>/lk 1068030300 VCB NGUYEN CA NGU</code>",
                 parse_mode="HTML",
+                reply_markup=get_main_keyboard()
             )
         else:
             user_withdraw_state[user.id] = "WAITING_AMOUNT"
@@ -1252,6 +1252,7 @@ async def link_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{E['THUMB']} <b>LIÊN KẾT THÀNH CÔNG!</b>\n"
         f"{E['LOCK']} Thông tin lưu trữ: <code>{bank_str}</code>",
         parse_mode="HTML",
+        reply_markup=get_main_keyboard()
     )
 
 # ============================================================
@@ -1565,7 +1566,7 @@ async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
                 await update_admin_message(ref, update_text)
 
 # ============================================================
-# ADMIN USER INFO (ĐÃ CHỈNH LẠI INDEX CỘT POSTGRES CHUẨN)
+# ADMIN USER INFO
 # ============================================================
 
 async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
