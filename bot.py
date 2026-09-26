@@ -219,6 +219,7 @@ def _init_db_sync():
                     referrer_id BIGINT,
                     phone_number TEXT,
                     ref_rewarded INTEGER NOT NULL DEFAULT 0,
+                    is_captcha_passed INTEGER NOT NULL DEFAULT 0,
                     is_banned INTEGER NOT NULL DEFAULT 0,
                     is_withdraw_banned INTEGER NOT NULL DEFAULT 0,
                     joined_at TEXT
@@ -227,6 +228,7 @@ def _init_db_sync():
             )
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_rewarded INTEGER NOT NULL DEFAULT 0;")
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_captcha_passed INTEGER NOT NULL DEFAULT 0;")
 
             cursor.execute(
                 """
@@ -585,7 +587,7 @@ async def ensure_user_exists(update: Update):
     if not user:
         return None
     row = await db_query(
-        "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id, phone_number, ref_rewarded FROM users WHERE user_id=%s",
+        "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id, phone_number, ref_rewarded, is_captcha_passed FROM users WHERE user_id=%s",
         (user.id,),
         fetchone=True,
     )
@@ -603,7 +605,7 @@ async def ensure_user_exists(update: Update):
             commit=True,
         )
         row = await db_query(
-            "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id, phone_number, ref_rewarded FROM users WHERE user_id=%s",
+            "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id, phone_number, ref_rewarded, is_captcha_passed FROM users WHERE user_id=%s",
             (user.id,),
             fetchone=True,
         )
@@ -653,7 +655,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     db_user = await db_query(
-        "SELECT user_id, is_banned, referrer_id, phone_number FROM users WHERE user_id=%s",
+        "SELECT user_id, is_banned, referrer_id, phone_number, is_captcha_passed FROM users WHERE user_id=%s",
         (user.id,),
         fetchone=True,
     )
@@ -694,6 +696,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 commit=True,
             )
 
+    # 1. BƯỚC 1: Kiểm tra Kênh tham gia
     missing_channels = await get_missing_channels(context.bot, user.id)
     if missing_channels:
         buttons = build_channel_buttons(missing_channels)
@@ -708,9 +711,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
         return
-        
-    check_user = await db_query("SELECT phone_number FROM users WHERE user_id=%s", (user.id,), fetchone=True)
-    if not check_user or not check_user[0]:
+
+    # 2. BƯỚC 2: Kiểm tra giải CAPTCHA
+    check_user = await db_query("SELECT is_captcha_passed, phone_number FROM users WHERE user_id=%s", (user.id,), fetchone=True)
+    is_captcha_passed = check_user[0] if check_user else 0
+    phone_number = check_user[1] if check_user else None
+
+    if not is_captcha_passed:
+        await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục xác minh:</b>")
+        return
+
+    # 3. BƯỚC 3: Kiểm tra Số điện thoại
+    if not phone_number:
         await update.message.reply_text(
             f"{E['PHONE']} <b>XÁC THỰC SỐ ĐIỆN THOẠI</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -720,6 +732,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Hoàn thành đầy đủ các bước -> Mở Menu
     await update.message.reply_text(
         f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỜ LẠI HỆ THỐNG!</b>\n"
         f"{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
@@ -756,9 +769,16 @@ async def send_captcha_challenge(update_or_query, context: ContextTypes.DEFAULT_
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="HTML",
         )
+    elif hasattr(update_or_query, "message") and update_or_query.message:
+        await update_or_query.message.reply_text(
+            caption,
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="HTML",
+        )
     else:
+        user_id = update_or_query.from_user.id if hasattr(update_or_query, "from_user") else update_or_query.effective_user.id
         await context.bot.send_message(
-            chat_id=update_or_query.from_user.id,
+            chat_id=user_id,
             text=caption,
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="HTML",
@@ -830,7 +850,12 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_text=f"{E['WARN1']} <b>Bạn đã chọn sai kết quả! Vui lòng tính lại.</b>",
         )
         return
+
     context.user_data.pop("captcha_ans", None)
+    
+    # Đánh dấu đã qua Captcha thành công
+    await db_query("UPDATE users SET is_captcha_passed=1 WHERE user_id=%s", (user.id,), commit=True)
+
     try:
         await query.answer("✅ Xác minh CAPTCHA thành công!")
         await query.delete_message()
@@ -963,7 +988,6 @@ def clean_menu_text(raw_text: str) -> str:
     """Làm sạch các biểu tượng Emoji để so sánh chính xác với nhãn của nút bấm"""
     if not raw_text:
         return ""
-    # Xóa các ký tự đặc biệt/emoji
     text_cleaned = re.sub(r'[^\w\s]', '', raw_text).strip()
     return text_cleaned
 
@@ -995,6 +1019,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if user.id not in ADMIN_IDS:
+        # Check Bước 1: Tham gia kênh
         missing_channels = await get_missing_channels(context.bot, user.id)
         if missing_channels:
             buttons = build_channel_buttons(missing_channels)
@@ -1010,6 +1035,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # Check Bước 2: Giải Captcha
+        if not db_user[8]:
+            await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục:</b>")
+            return
+
+        # Check Bước 3: Chia sẻ Số điện thoại
         if not db_user[6]:
             await message.reply_text(
                 f"{E['PHONE']} <b>BẠN CHƯA XÁC THỰC SỐ ĐIỆN THOẠI!</b>\n"
@@ -1587,9 +1618,9 @@ async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_
         f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
         f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
         f"{E['COOL']} Tổng đã mời hợp lệ: <code>{invited_count}</code> người\n"
-        f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[7] else 'KHÔNG'}</b>\n"
-        f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[8] else 'KHÔNG'}</b>\n"
-        f"{E['CALENDAR']} Tham gia: <code>{u[9]}</code>"
+        f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[8] else 'KHÔNG'}</b>\n"
+        f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[9] else 'KHÔNG'}</b>\n"
+        f"{E['CALENDAR']} Tham gia: <code>{u[10]}</code>"
     )
     await context.bot.send_message(
         chat_id=query.from_user.id,
@@ -1716,8 +1747,8 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['UP']} Số dư hiện tại: <code>{u[2]:,}đ</code>\n"
                 f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
                 f"{E['CLIP']} Người giới thiệu: <code>{referrer}</code>\n"
-                f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[7] else 'KHÔNG'}</b> | Cấm rút: <b>{'CÓ' if u[8] else 'KHÔNG'}</b>\n"
-                f"{E['CALENDAR']} Ngày tham gia: <code>{u[9]}</code>\n\n"
+                f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[8] else 'KHÔNG'}</b> | Cấm rút: <b>{'CÓ' if u[9] else 'KHÔNG'}</b>\n"
+                f"{E['CALENDAR']} Ngày tham gia: <code>{u[10]}</code>\n\n"
                 f"{E['CHART']} <b>THỐNG KÊ RÚT TIỀN:</b>\n"
                 f"• {E['DOWN']} Tổng tiền đã rút thành công: <code>{success_amount:,}đ</code>\n"
                 f"• {E['THUMB']} Số lần rút thành công: <code>{success_count}</code> lần\n"
@@ -1793,9 +1824,9 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
                 f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
                 f"{E['COOL']} Tổng đã mời hợp lệ: <code>{invited_count}</code> người\n"
-                f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[7] else 'KHÔNG'}</b>\n"
-                f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[8] else 'KHÔNG'}</b>\n"
-                f"{E['CALENDAR']} Tham gia: <code>{u[9]}</code>"
+                f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[8] else 'KHÔNG'}</b>\n"
+                f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[9] else 'KHÔNG'}</b>\n"
+                f"{E['CALENDAR']} Tham gia: <code>{u[10]}</code>"
             )
             await message.reply_text(msg, parse_mode="HTML")
         elif cmd == "/bb":
