@@ -344,7 +344,7 @@ def get_phone_keyboard():
     keyboard = [
         [KeyboardButton("📱 Chia Sẻ Số Điện Thoại", request_contact=True)]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 # ============================================================
 # MAINTENANCE
@@ -556,18 +556,20 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return False
 
 # ============================================================
-# USER
+# USER - QUERY CHUẨN ĐỒNG NHẤT 9 CỘT
 # ============================================================
+
+USER_SELECT_QUERY = (
+    "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, "
+    "referrer_id, phone_number, ref_rewarded, is_captcha_passed, joined_at "
+    "FROM users WHERE user_id=%s"
+)
 
 async def ensure_user_exists(update: Update):
     user = update.effective_user
     if not user:
         return None
-    row = await db_query(
-        "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id, phone_number, ref_rewarded, is_captcha_passed FROM users WHERE user_id=%s",
-        (user.id,),
-        fetchone=True,
-    )
+    row = await db_query(USER_SELECT_QUERY, (user.id,), fetchone=True)
     if row:
         current_username = user.username or ""
         await db_query(
@@ -581,12 +583,12 @@ async def ensure_user_exists(update: Update):
             (user.id, user.username or "", get_now_str()),
             commit=True,
         )
-        row = await db_query(
-            "SELECT user_id, balance, bank_info, is_banned, is_withdraw_banned, referrer_id, phone_number, ref_rewarded, is_captcha_passed FROM users WHERE user_id=%s",
-            (user.id,),
-            fetchone=True,
-        )
+        row = await db_query(USER_SELECT_QUERY, (user.id,), fetchone=True)
     return row
+
+async def get_fresh_user(user_id: int):
+    """Luôn lấy dữ liệu user mới nhất từ DB."""
+    return await db_query(USER_SELECT_QUERY, (user_id,), fetchone=True)
 
 async def require_private_user(update: Update):
     if not update.effective_chat or update.effective_chat.type != "private":
@@ -629,47 +631,34 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    db_user = await db_query(
-        "SELECT user_id, is_banned, referrer_id, phone_number, is_captcha_passed FROM users WHERE user_id=%s",
-        (user.id,),
-        fetchone=True,
-    )
+    # Đảm bảo user tồn tại
+    db_user = await ensure_user_exists(update)
 
-    if db_user and db_user[1] == 1:
+    if db_user and db_user[3] == 1:
         await update.message.reply_text(
             f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>",
             parse_mode="HTML"
         )
         return
 
-    new_referrer = None
-    if context.args:
+    # Xử lý referrer (chỉ set 1 lần nếu chưa có)
+    if context.args and not db_user[5]:
         try:
             ref_id = int(context.args[0])
             if ref_id != user.id:
-                new_referrer = ref_id
+                await db_query(
+                    "UPDATE users SET referrer_id=%s WHERE user_id=%s AND (referrer_id IS NULL OR referrer_id=0)",
+                    (ref_id, user.id),
+                    commit=True,
+                )
         except (ValueError, TypeError):
             pass
 
+    # Lấy lại dữ liệu fresh sau mọi update
+    db_user = await get_fresh_user(user.id)
     if not db_user:
-        await db_query(
-            "INSERT INTO users (user_id, username, balance, referrer_id, joined_at) VALUES (%s, %s, 0, %s, %s) ON CONFLICT (user_id) DO NOTHING",
-            (user.id, user.username or "", new_referrer, get_now_str()),
-            commit=True,
-        )
-    else:
-        if not db_user[2] and new_referrer:
-            await db_query(
-                "UPDATE users SET username=%s, referrer_id=%s WHERE user_id=%s",
-                (user.username or "", new_referrer, user.id),
-                commit=True,
-            )
-        else:
-            await db_query(
-                "UPDATE users SET username=%s WHERE user_id=%s",
-                (user.username or "", user.id),
-                commit=True,
-            )
+        await update.message.reply_text("❌ Có lỗi xảy ra, vui lòng thử lại /start.")
+        return
 
     # 1. BƯỚC 1: Kiểm tra Kênh tham gia
     missing_channels = await get_missing_channels(context.bot, user.id)
@@ -687,17 +676,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 2. BƯỚC 2: Kiểm tra giải CAPTCHA
-    check_user = await db_query("SELECT is_captcha_passed, phone_number FROM users WHERE user_id=%s", (user.id,), fetchone=True)
-    is_captcha_passed = check_user[0] if check_user else 0
-    phone_number = check_user[1] if check_user else None
-
-    if not is_captcha_passed:
-        await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục xác minh:</b>")
+    # 2. BƯỚC 2: Kiểm tra giải CAPTCHA (index 8)
+    if not db_user[8]:
+        await send_captcha_challenge(
+            update, context,
+            message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục xác minh:</b>"
+        )
         return
 
-    # 3. BƯỚC 3: Kiểm tra Số điện thoại
-    if not phone_number:
+    # 3. BƯỚC 3: Kiểm tra Số điện thoại (index 6)
+    if not db_user[6]:
         await update.message.reply_text(
             f"{E['PHONE']} <b>XÁC THỰC SỐ ĐIỆN THOẠI</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -709,7 +697,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Hoàn thành đầy đủ các bước -> Mở Menu
     await update.message.reply_text(
-        f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỜ LẠI HỆ THỐNG!</b>\n"
+        f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỞ LẠI HỆ THỐNG!</b>\n"
         f"{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
         reply_markup=get_main_keyboard(),
         parse_mode="HTML"
@@ -824,28 +812,37 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data.pop("captcha_ans", None)
-    
-    # Đánh dấu đã qua Captcha thành công
-    await db_query("UPDATE users SET is_captcha_passed=1 WHERE user_id=%s", (user.id,), commit=True)
+
+    # Đảm bảo user tồn tại rồi đánh dấu đã qua CAPTCHA
+    await ensure_user_exists(update)
+    await db_query(
+        "UPDATE users SET is_captcha_passed=1 WHERE user_id=%s",
+        (user.id,),
+        commit=True,
+    )
+
+    # VERIFY lại từ DB để chắc chắn đã commit
+    check = await get_fresh_user(user.id)
+    is_captcha_ok = check[8] if check else 0
+    phone_number = check[6] if check else None
+    logger.info(
+        "User %s vượt CAPTCHA: is_captcha_passed=%s phone=%s",
+        user.id, is_captcha_ok, phone_number
+    )
 
     try:
         await query.answer("✅ Xác minh CAPTCHA thành công!")
-        # Chỉnh sửa nội dung tin nhắn cũ để không đè bàn phím mới
-        await query.edit_message_text(
-            f"{E['CHECK_ANIMATED']} <b>XÁC THỰC CAPTCHA THÀNH CÔNG!</b>",
-            parse_mode="HTML"
-        )
+        await query.delete_message()
     except Exception:
         pass
 
-    db_user = await db_query("SELECT phone_number FROM users WHERE user_id=%s", (user.id,), fetchone=True)
-    if not db_user or not db_user[0]:
+    if not phone_number:
         await context.bot.send_message(
             chat_id=user.id,
             text=(
-                f"{E['PHONE']} <b>BƯỚC CUỐI CÙNG: XÁC THỰC SỐ ĐIỆN THOẠI</b>\n"
+                f"{E['CHECK_ANIMATED']} <b>XÁC THỰC CAPTCHA THÀNH CÔNG!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"{E['ALERT1']} Vui lòng nhấn vào nút <b>'📱 Chia Sẻ Số Điện Thoại'</b> ở phía dưới góc bàn phím để hoàn tất."
+                f"{E['PHONE']} <b>BƯỚC CUỐI CÙNG:</b> Nhấn vào nút <b>'Chia Sẻ Số Điện Thoại'</b> phía dưới để hoàn tất đăng ký."
             ),
             reply_markup=get_phone_keyboard(),
             parse_mode="HTML",
@@ -880,11 +877,25 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # BẮT BUỘC: Phải vượt CAPTCHA trước khi chia sẻ SĐT
+    db_user = await ensure_user_exists(update)
+    if not db_user or not db_user[8]:
+        await message.reply_text(
+            f"{E['ALERT1']} <b>BẠN CHƯA VƯỢT CAPTCHA!</b>\n"
+            f"{E['ARROW_DOWN']} Vui lòng gửi /start để xác minh lại.",
+            parse_mode="HTML",
+        )
+        return
+
     phone = contact.phone_number
     if not phone.startswith("+"):
         phone = "+" + phone
 
-    phone_exist = await db_query("SELECT user_id FROM users WHERE phone_number=%s AND user_id != %s", (phone, user.id), fetchone=True)
+    phone_exist = await db_query(
+        "SELECT user_id FROM users WHERE phone_number=%s AND user_id != %s",
+        (phone, user.id),
+        fetchone=True,
+    )
     if phone_exist:
         await message.reply_text(
             f"{E['BAN']} <b>SỐ ĐIỆN THOẠI ĐÃ ĐƯỢC SỬ DỤNG!</b>\n"
@@ -899,21 +910,22 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         commit=True,
     )
 
-    db_user = await db_query(
-        "SELECT referrer_id, ref_rewarded FROM users WHERE user_id=%s",
-        (user.id,),
-        fetchone=True,
-    )
+    db_user = await get_fresh_user(user.id)
+    if not db_user:
+        return
 
-    if db_user and db_user[0] and db_user[1] == 0:
-        ref_id = db_user[0]
+    referrer_id = db_user[5]
+    ref_rewarded = db_user[7]
+
+    if referrer_id and ref_rewarded == 0:
+        ref_id = referrer_id
         try:
             def reward_referrer(cursor):
                 cursor.execute("SELECT ref_rewarded FROM users WHERE user_id=%s", (user.id,))
                 res = cursor.fetchone()
                 if res and res[0] == 1:
                     return False
-                
+
                 details = f"Mời {user.id}"
                 cursor.execute(
                     "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
@@ -973,7 +985,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
 
-    db_user = await ensure_user_exists(update)
+    # Đảm bảo user tồn tại, sau đó LẤY FRESH data
+    await ensure_user_exists(update)
+    db_user = await get_fresh_user(user.id)
     user_withdraw_state.pop(user.id, None)
 
     if await is_maintenance() and user.id not in ADMIN_IDS:
@@ -984,7 +998,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if not db_user or db_user[3] == 1:
+    if not db_user:
+        await message.reply_text(
+            f"{E['BAN']} <b>Không tìm thấy tài khoản. Vui lòng /start lại.</b>",
+            parse_mode="HTML"
+        )
+        return
+
+    if db_user[3] == 1:
         await message.reply_text(
             f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm khỏi hệ thống!</b>",
             parse_mode="HTML"
@@ -1008,16 +1029,19 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Check Bước 2: Giải Captcha
+        # Check Bước 2: Giải Captcha (index 8)
         if not db_user[8]:
-            await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục:</b>")
+            await send_captcha_challenge(
+                update, context,
+                message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục:</b>"
+            )
             return
 
-        # Check Bước 3: Chia sẻ Số điện thoại
+        # Check Bước 3: Chia sẻ Số điện thoại (index 6)
         if not db_user[6]:
             await message.reply_text(
                 f"{E['PHONE']} <b>BẠN CHƯA XÁC THỰC SỐ ĐIỆN THOẠI!</b>\n"
-                f"Vui lòng nhấn vào nút <b>'📱 Chia Sẻ Số Điện Thoại'</b> ở phía dưới góc bàn phím để hoàn tất.",
+                f"Vui lòng nhấn nút bên dưới để gửi số điện thoại xác minh.",
                 reply_markup=get_phone_keyboard(),
                 parse_mode="HTML",
             )
@@ -1029,12 +1053,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Xử lý Tài khoản
     if clean_text in ["tai khoan", "tài khoản"] or "tài khoản" in raw_text.lower():
         balance = db_user[1]
-        res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (user.id,), fetchone=True)
+        res = await db_query(
+            "SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1",
+            (user.id,), fetchone=True
+        )
         invited_count = res[0]
         res_withdraw = await db_query(
             "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'",
-            (user.id,),
-            fetchone=True,
+            (user.id,), fetchone=True,
         )
         total_withdraw = res_withdraw[0]
         phone_str = db_user[6] if db_user[6] else "Chưa xác thực"
@@ -1093,11 +1119,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not top_users:
             await message.reply_text(f"{E['CHART']} <b>Hiện chưa có ai trong bảng xếp hạng Top tuyển ref!</b>", parse_mode="HTML")
             return
-        
+
         msg = f"{E['TOP']} <b>TOP 10 THÀNH VIÊN TUYỂN REF NHIỀU NHẤT</b>\n━━━━━━━━━━━━━━━━━━\n\n"
         for idx, (top_id, top_username, ref_count) in enumerate(top_users, start=1):
             name_str = f"@{top_username}" if top_username else f"User {top_id}"
-            
+
             if idx == 1:
                 icon = E['MEDAL1']
             elif idx == 2:
@@ -1106,9 +1132,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 icon = E['MEDAL3']
             else:
                 icon = E['CHECK_ANIMATED']
-                
+
             msg += f"{icon} <b>Top {idx}:</b> {name_str} — <code>{ref_count:,}</code> bạn bè\n"
-            
+
         await message.reply_text(msg, parse_mode="HTML")
 
     # Xử lý Nhóm Hỗ Trợ
@@ -1386,10 +1412,10 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
         f"{E['MAIL']} <b>Nội dung chuyển:</b> <code>lixi trung thu</code>\n"
         f"{E['CALENDAR']} <b>Thời gian:</b> <code>{get_now_str()}</code>"
     )
-    
+
     qr_url = generate_vietqr_url(bank_info, amount, memo="lixi trung thu")
     msg_refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
-    
+
     for admin_id in ADMIN_IDS:
         try:
             if qr_url:
