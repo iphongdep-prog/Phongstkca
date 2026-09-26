@@ -124,11 +124,11 @@ E = {
 }
 
 # ============================================================
-# ANTI SPAM
+# ANTI SPAM (ĐÃ SỬA CHUẨN TRÁNH KHÓA NHẦM USER)
 # ============================================================
 
-SPAM_WINDOW_SECONDS = 4
-SPAM_MAX_MESSAGES = 10
+SPAM_WINDOW_SECONDS = 3
+SPAM_MAX_MESSAGES = 6
 TEMP_BAN_MINUTES = 2
 
 user_msg_tracker = defaultdict(list)
@@ -344,7 +344,7 @@ def get_phone_keyboard():
     keyboard = [
         [KeyboardButton("📱 Chia Sẻ Số Điện Thoại", request_contact=True)]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 # ============================================================
 # MAINTENANCE
@@ -507,7 +507,7 @@ async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFA
                     logger.warning("Không gửi được thông báo mở khóa rút tiền cho referrer %s: %s", ref_id, exc)
 
 # ============================================================
-# ANTI SPAM
+# ANTI SPAM (ĐÃ FIX LỖI KHÓA NHẦM TẤT CẢ USER THƯỜNG)
 # ============================================================
 
 async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -515,13 +515,16 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user = update.effective_user
     message = update.effective_message
 
-    if not chat or chat.type != "private":
+    if not chat or chat.type != "private" or not user or not message:
         return False
 
-    if not user or user.id in ADMIN_IDS or not message:
+    # Bỏ qua Admin không check Anti-spam
+    if user.id in ADMIN_IDS:
         return False
 
     now = datetime.now()
+    
+    # Kiểm tra nếu đang bị tạm cấm
     ban_until = temp_bans.get(user.id)
     if ban_until:
         if now < ban_until:
@@ -529,18 +532,19 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             minutes = remaining_seconds // 60
             seconds = remaining_seconds % 60
             await message.reply_text(
-                f"{E['BAN']} <b>BẠN ĐÃ BỊ TẠM CẤM!</b>\n"
+                f"{E['BAN']} <b>BẠN ĐÃ BỊ TẠM CẤM TÍNH NĂNG!</b>\n"
                 f"{E['CALENDAR']} Vui lòng chờ: <b>{minutes} phút {seconds} giây</b>\n"
-                f"{E['ALERT1']} Lý do: <b>Spam tin nhắn quá nhanh.</b>",
+                f"{E['ALERT1']} Lý do: <b>Spam thao tác quá nhanh.</b>",
                 parse_mode="HTML"
             )
             return True
-        temp_bans.pop(user.id, None)
+        else:
+            temp_bans.pop(user.id, None)
 
-    times = user_msg_tracker[user.id]
-    times.append(now)
+    # Đếm số tin nhắn trong khung thời gian
     cutoff = now - timedelta(seconds=SPAM_WINDOW_SECONDS)
-    user_msg_tracker[user.id] = [t for t in times if t >= cutoff]
+    user_msg_tracker[user.id] = [t for t in user_msg_tracker[user.id] if t >= cutoff]
+    user_msg_tracker[user.id].append(now)
 
     if len(user_msg_tracker[user.id]) >= SPAM_MAX_MESSAGES:
         temp_bans[user.id] = now + timedelta(minutes=TEMP_BAN_MINUTES)
@@ -548,7 +552,7 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await message.reply_text(
             f"{E['BAN']} <b>CẢNH BÁO ANTI-SPAM</b>\n"
             f"{E['STOP']} Bạn đã bị cấm <b>{TEMP_BAN_MINUTES} phút</b>!\n"
-            f"{E['ALERT1']} Lý do: Gửi quá <b>{SPAM_MAX_MESSAGES} tin nhắn</b> trong <b>{SPAM_WINDOW_SECONDS}s</b>.",
+            f"{E['ALERT1']} Lý do: Thao tác quá <b>{SPAM_MAX_MESSAGES} lần</b> trong <b>{SPAM_WINDOW_SECONDS}s</b>.",
             parse_mode="HTML"
         )
         return True
@@ -556,7 +560,7 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return False
 
 # ============================================================
-# USER - QUERY CHUẨN ĐỒNG NHẤT 9 CỘT
+# USER - QUERY DATABASE
 # ============================================================
 
 USER_SELECT_QUERY = (
@@ -587,7 +591,6 @@ async def ensure_user_exists(update: Update):
     return row
 
 async def get_fresh_user(user_id: int):
-    """Luôn lấy dữ liệu user mới nhất từ DB."""
     return await db_query(USER_SELECT_QUERY, (user_id,), fetchone=True)
 
 async def require_private_user(update: Update):
@@ -631,7 +634,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Đảm bảo user tồn tại
     db_user = await ensure_user_exists(update)
 
     if db_user and db_user[3] == 1:
@@ -641,7 +643,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Xử lý referrer (chỉ set 1 lần nếu chưa có)
+    # Xử lý referrer
     if context.args and not db_user[5]:
         try:
             ref_id = int(context.args[0])
@@ -654,13 +656,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (ValueError, TypeError):
             pass
 
-    # Lấy lại dữ liệu fresh sau mọi update
     db_user = await get_fresh_user(user.id)
     if not db_user:
         await update.message.reply_text("❌ Có lỗi xảy ra, vui lòng thử lại /start.")
         return
 
-    # 1. BƯỚC 1: Kiểm tra Kênh tham gia
+    # Bước 1: Kiểm tra Kênh
     missing_channels = await get_missing_channels(context.bot, user.id)
     if missing_channels:
         buttons = build_channel_buttons(missing_channels)
@@ -676,7 +677,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 2. BƯỚC 2: Kiểm tra giải CAPTCHA (index 8)
+    # Bước 2: Captcha
     if not db_user[8]:
         await send_captcha_challenge(
             update, context,
@@ -684,20 +685,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 3. BƯỚC 3: Kiểm tra Số điện thoại (index 6)
+    # Bước 3: Số điện thoại
     if not db_user[6]:
         await update.message.reply_text(
             f"{E['PHONE']} <b>XÁC THỰC SỐ ĐIỆN THOẠI</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"{E['ALERT1']} Để chống buff ảo và bảo vệ tài khoản, vui lòng bấm nút <b>'Chia Sẻ Số Điện Thoại'</b> bên dưới để xác minh chính chủ!",
+            f"{E['ALERT1']} Để chống buff ảo và bảo vệ tài khoản, vui lòng bấm nút <b>'📱 Chia Sẻ Số Điện Thoại'</b> góc bàn phím bên dưới!",
             reply_markup=get_phone_keyboard(),
             parse_mode="HTML",
         )
         return
 
-    # Hoàn thành đầy đủ các bước -> Mở Menu
+    # Mở Menu
     await update.message.reply_text(
-        f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỞ LẠI HỆ THỐNG!</b>\n"
+        f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỜ LẠI HỆ THỐNG!</b>\n"
         f"{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
         reply_markup=get_main_keyboard(),
         parse_mode="HTML"
@@ -785,7 +786,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await send_captcha_challenge(query, context)
 
 # ============================================================
-# CAPTCHA CALLBACK & YÊU CẦU SĐT
+# CAPTCHA CALLBACK & YÊU CẦU SĐT (ĐÃ FIX KHÔNG XÓA TIN NHẮN TẠO LỖI)
 # ============================================================
 
 async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -813,7 +814,7 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data.pop("captcha_ans", None)
 
-    # Đảm bảo user tồn tại rồi đánh dấu đã qua CAPTCHA
+    # Lưu db đã vượt Captcha
     await ensure_user_exists(update)
     await db_query(
         "UPDATE users SET is_captcha_passed=1 WHERE user_id=%s",
@@ -821,28 +822,26 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         commit=True,
     )
 
-    # VERIFY lại từ DB để chắc chắn đã commit
-    check = await get_fresh_user(user.id)
-    is_captcha_ok = check[8] if check else 0
-    phone_number = check[6] if check else None
-    logger.info(
-        "User %s vượt CAPTCHA: is_captcha_passed=%s phone=%s",
-        user.id, is_captcha_ok, phone_number
-    )
-
     try:
         await query.answer("✅ Xác minh CAPTCHA thành công!")
-        await query.delete_message()
+        # Sửa tin nhắn Inline thành công (KHÔNG XÓA để tránh thu hồi bàn phím)
+        await query.edit_message_text(
+            f"{E['CHECK_ANIMATED']} <b>XÁC THỰC CAPTCHA THÀNH CÔNG!</b>",
+            parse_mode="HTML"
+        )
     except Exception:
         pass
+
+    check = await get_fresh_user(user.id)
+    phone_number = check[6] if check else None
 
     if not phone_number:
         await context.bot.send_message(
             chat_id=user.id,
             text=(
-                f"{E['CHECK_ANIMATED']} <b>XÁC THỰC CAPTCHA THÀNH CÔNG!</b>\n"
+                f"{E['PHONE']} <b>BƯỚC CUỐI CÙNG: XÁC THỰC SỐ ĐIỆN THOẠI</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"{E['PHONE']} <b>BƯỚC CUỐI CÙNG:</b> Nhấn vào nút <b>'Chia Sẻ Số Điện Thoại'</b> phía dưới để hoàn tất đăng ký."
+                f"{E['ALERT1']} Vui lòng nhấn nút <b>'📱 Chia Sẻ Số Điện Thoại'</b> bên dưới khung chat để hoàn tất!"
             ),
             reply_markup=get_phone_keyboard(),
             parse_mode="HTML",
@@ -859,7 +858,7 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ============================================================
-# XỬ LÝ CHIA SẺ SỐ ĐIỆN THOẠI (CHỐNG BUFF REF)
+# XỬ LÝ CHIA SẺ SỐ ĐIỆN THOẠI
 # ============================================================
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -877,7 +876,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # BẮT BUỘC: Phải vượt CAPTCHA trước khi chia sẻ SĐT
     db_user = await ensure_user_exists(update)
     if not db_user or not db_user[8]:
         await message.reply_text(
@@ -899,7 +897,7 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if phone_exist:
         await message.reply_text(
             f"{E['BAN']} <b>SỐ ĐIỆN THOẠI ĐÃ ĐƯỢC SỬ DỤNG!</b>\n"
-            f"Số điện thoại này đã được liên kết với một tài khoản khác trong hệ thống.",
+            f"Số điện thoại này đã được liên kết với một tài khoản khác.",
             parse_mode="HTML",
         )
         return
@@ -971,7 +969,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 def clean_menu_text(raw_text: str) -> str:
-    """Làm sạch các biểu tượng Emoji để so sánh chính xác với nhãn của nút bấm"""
     if not raw_text:
         return ""
     text_cleaned = re.sub(r'[^\w\s]', '', raw_text).strip()
@@ -980,12 +977,9 @@ def clean_menu_text(raw_text: str) -> str:
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     user = update.effective_user
-    if not message or not user:
-        return
-    if update.effective_chat.type != "private":
+    if not message or not user or update.effective_chat.type != "private":
         return
 
-    # Đảm bảo user tồn tại, sau đó LẤY FRESH data
     await ensure_user_exists(update)
     db_user = await get_fresh_user(user.id)
     user_withdraw_state.pop(user.id, None)
@@ -998,22 +992,16 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if not db_user:
-        await message.reply_text(
-            f"{E['BAN']} <b>Không tìm thấy tài khoản. Vui lòng /start lại.</b>",
-            parse_mode="HTML"
-        )
-        return
-
-    if db_user[3] == 1:
+    if not db_user or db_user[3] == 1:
         await message.reply_text(
             f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm khỏi hệ thống!</b>",
             parse_mode="HTML"
         )
         return
 
+    # BẮT BUỘC DÀNH CHO USER THƯỜNG
     if user.id not in ADMIN_IDS:
-        # Check Bước 1: Tham gia kênh
+        # Check Bước 1: Kênh
         missing_channels = await get_missing_channels(context.bot, user.id)
         if missing_channels:
             buttons = build_channel_buttons(missing_channels)
@@ -1029,7 +1017,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Check Bước 2: Giải Captcha (index 8)
+        # Check Bước 2: Captcha
         if not db_user[8]:
             await send_captcha_challenge(
                 update, context,
@@ -1037,11 +1025,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Check Bước 3: Chia sẻ Số điện thoại (index 6)
+        # Check Bước 3: SĐT
         if not db_user[6]:
             await message.reply_text(
                 f"{E['PHONE']} <b>BẠN CHƯA XÁC THỰC SỐ ĐIỆN THOẠI!</b>\n"
-                f"Vui lòng nhấn nút bên dưới để gửi số điện thoại xác minh.",
+                f"Vui lòng bấm nút <b>'📱 Chia Sẻ Số Điện Thoại'</b> dưới góc bàn phím để xác minh.",
                 reply_markup=get_phone_keyboard(),
                 parse_mode="HTML",
             )
