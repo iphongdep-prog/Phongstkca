@@ -51,6 +51,8 @@ REQUIRED_CHECK_CHANNELS = [
     "@vtc345",
     "@vtc567",
     "@hocviencbm",
+    "@chungnaomoidu",
+    "@khuyenmaionline",
 ]
 
 OPTIONAL_DISPLAY_CHANNELS = []
