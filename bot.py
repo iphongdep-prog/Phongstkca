@@ -64,7 +64,7 @@ MAX_WITHDRAW = 300000
 REFERRAL_REWARD = 1000
 
 # ============================================================
-# EMOJI (ĐÃ CẬP NHẬT THEO DANH SÁCH BẠN CUNG CẤP)
+# EMOJI
 # ============================================================
 E = {
     "CROWN": '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji>',
@@ -125,7 +125,7 @@ E = {
     "FLASH": '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
 }
 
-# Danh sách Icon Premium từ JSON của bạn dùng để trang trí & chống AI đọc captcha
+# Danh sách Icon Premium dùng để trang trí & chống AI đọc captcha
 PREMIUM_ICONS = [
     '<tg-emoji emoji-id="5375338737028841420">🔄</tg-emoji>',
     '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
@@ -1740,7 +1740,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += "• Chưa có giao dịch rút tiền nào.\n"
             await message.reply_text(msg, parse_mode="HTML")
         elif cmd == "/dl":
-            # LỆNH MỚI: KIỂM TRA MỜI BẠN BÈ & KÊNH RỜI CHI TIẾT
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/dl USER_ID</code>", parse_mode="HTML")
                 return
@@ -1750,7 +1749,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("❌ USER_ID không hợp lệ.")
                 return
 
-            # Kiểm tra xem user tồn tại không
             target_user = await db_query("SELECT user_id, username FROM users WHERE user_id=%s", (target_id,), fetchone=True)
             if not target_user:
                 await message.reply_text("❌ Không tìm thấy ID này trong cơ sở dữ liệu.")
@@ -1778,12 +1776,16 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             for inv_id, inv_username, is_captcha, is_text, ref_rewarded, joined_at in invited_users:
                 uname = f"@{inv_username}" if inv_username else f"<code>{inv_id}</code>"
-                missing_ch = await get_missing_channels(context.bot, inv_id)
+                
+                try:
+                    missing_ch = await get_missing_channels(context.bot, inv_id)
+                except Exception as check_err:
+                    logger.warning(f"Lỗi check channel user {inv_id}: {check_err}")
+                    missing_ch = []
 
                 msg += f"👤 <b>Thành viên:</b> {uname} (<code>{inv_id}</code>)\n"
                 msg += f"🗓 <b>Tham gia:</b> <code>{joined_at or 'N/A'}</code>\n"
 
-                # Trạng thái CAPTCHA / Text Verify
                 if not is_captcha:
                     msg += f"├ {E['STOP']} <b>Captcha:</b> ❌ Chưa giải\n"
                 else:
@@ -1794,7 +1796,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     msg += f"├ {E['CHECK_ANIMATED']} <b>Xác minh AI:</b> ✅ Đã xong\n"
 
-                # Trạng thái kênh tham gia
                 if not missing_ch:
                     msg += f"└ {E['CHECK_ANIMATED']} <b>Kênh đối tác:</b> Đã tham gia ĐỦ ({len(REQUIRED_CHECK_CHANNELS)}/{len(REQUIRED_CHECK_CHANNELS)})\n"
                 else:
@@ -1802,12 +1803,14 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg += f"└ {E['BAN']} <b>Kênh ĐÃ RỜI / CHƯA VÀO ({len(missing_ch)}):</b> <i>{missing_str}</i>\n"
 
                 msg += "----------------------------------\n"
+                
+                if len(msg) > 3500:
+                    await message.reply_text(msg, parse_mode="HTML")
+                    msg = ""
+                
+                await asyncio.sleep(0.1)
 
-            # Nếu nội dung quá dài (tránh vọt quá limit 4096 ký tự Telegram), chia nhỏ tin nhắn
-            if len(msg) > 4000:
-                for chunk in [msg[i:i+4000] for i in range(0, len(msg), 4000)]:
-                    await message.reply_text(chunk, parse_mode="HTML")
-            else:
+            if msg.strip():
                 await message.reply_text(msg, parse_mode="HTML")
 
         elif cmd == "/tb":
