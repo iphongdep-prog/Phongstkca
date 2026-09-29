@@ -1,13 +1,90 @@
-function sendIP() {
-    if (!userIP) return;
-    document.getElementById('verify-btn').disabled = true;
-    document.getElementById('status').innerText = "Đang gửi dữ liệu...";
-    
-    // Gửi IP về cho Telegram Bot
-    tg.sendData(JSON.stringify({ ip: userIP }));
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xác minh IP</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        .card {
+            background: #fff;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            text-align: center;
+            width: 280px;
+        }
+        .btn {
+            background-color: #0088cc;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 15px;
+            width: 100%;
+            font-weight: bold;
+        }
+        .btn:disabled {
+            background-color: #ccc;
+        }
+        #status {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h3>🌐 XÁC MINH IP</h3>
+        <p id="ip-text">Đang lấy địa chỉ IP...</p>
+        <button id="verify-btn" class="btn" onclick="sendIP()" disabled>Gửi xác minh</button>
+        <p id="status"></p>
+    </div>
 
-    // Tự động đóng Mini App ngay sau 0.3 giây
-    setTimeout(() => {
-        tg.close();
-    }, 300);
-}
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+
+        let userIP = "";
+
+        fetch('https://api.ipify.org?format=json')
+            .then(res => res.json())
+            .then(data => {
+                userIP = data.ip;
+                document.getElementById('ip-text').innerHTML = "IP của bạn: <b>" + userIP + "</b>";
+                document.getElementById('verify-btn').disabled = false;
+            })
+            .catch(() => {
+                document.getElementById('ip-text').innerText = "Không lấy được IP, thử lại sau!";
+            });
+
+        function sendIP() {
+            if (!userIP) return;
+            document.getElementById('verify-btn').disabled = true;
+            document.getElementById('status').innerText = "Đã gửi! Đang đóng...";
+            
+            // 1. Gửi dữ liệu IP về Bot
+            tg.sendData(JSON.stringify({ ip: userIP }));
+
+            // 2. Ép Mini App đóng ngay lập tức
+            setTimeout(() => {
+                tg.close();
+            }, 100);
+        }
+    </script>
+</body>
+</html>
