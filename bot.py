@@ -397,12 +397,14 @@ async def send_ip_verification_challenge(update_or_message, context: ContextType
     caption = (
         f"{E['ALERT1']} <b>BƯỚC XÁC MINH MẠNG (CHECK IP MINIAPP)</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"Vui lòng nhấn vào nút bên dưới để mở Miniapp xác minh địa chỉ IP của bạn:\n"
+        f"Vui lòng nhấn vào nút <b>🌐 XÁC MINH IP QUA MINIAPP</b> ở bàn phím bên dưới để xác minh địa chỉ IP của bạn:\n"
         f"<i>(Lưu ý: Mỗi tài khoản chỉ được dùng 1 IP duy nhất. Tài khoản trùng IP sẽ bị khóa vĩnh viễn!)</i>"
     )
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🌐 XÁC MINH IP QUA MINIAPP", web_app=WebAppInfo(url=WEBAPP_URL))
-    ]])
+    kb = ReplyKeyboardMarkup(
+        [[KeyboardButton("🌐 XÁC MINH IP QUA MINIAPP", web_app=WebAppInfo(url=WEBAPP_URL))]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
     if hasattr(update_or_message, "reply_text"):
         await update_or_message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
     else:
