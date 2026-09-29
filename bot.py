@@ -64,7 +64,7 @@ MAX_WITHDRAW = 300000
 REFERRAL_REWARD = 1000
 
 # ============================================================
-# EMOJI
+# EMOJI (ĐÃ CẬP NHẬT THEO DANH SÁCH BẠN CUNG CẤP)
 # ============================================================
 E = {
     "CROWN": '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji>',
@@ -120,20 +120,23 @@ E = {
     "ROLL": '<tg-emoji emoji-id="5429300173559832620">🙄</tg-emoji>',
     "SIX": '<tg-emoji emoji-id="5305642863902604489">6️⃣</tg-emoji>',
     "PHONE": '<tg-emoji emoji-id="5431445208531215160">📱</tg-emoji>',
+    "PRAY": '<tg-emoji emoji-id="5228878926306101271">🙏</tg-emoji>',
+    "MONEY": '<tg-emoji emoji-id="5278467510604160626">💰</tg-emoji>',
+    "FLASH": '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
 }
 
 # Danh sách Icon Premium từ JSON của bạn dùng để trang trí & chống AI đọc captcha
 PREMIUM_ICONS = [
-    '<tg-emoji emoji-id="6003484159404675751">⭐️</tg-emoji>',
-    '<tg-emoji emoji-id="6005895044807004291">😌</tg-emoji>',
-    '<tg-emoji emoji-id="6005808814748602638">✅</tg-emoji>',
-    '<tg-emoji emoji-id="6005839373440914228">👀</tg-emoji>',
-    '<tg-emoji emoji-id="5210956306952758910">👀</tg-emoji>',
-    '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>',
+    '<tg-emoji emoji-id="5375338737028841420">🔄</tg-emoji>',
+    '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
+    '<tg-emoji emoji-id="5361741454685256344">🎮</tg-emoji>',
+    '<tg-emoji emoji-id="5228878926306101271">🙏</tg-emoji>',
+    '<tg-emoji emoji-id="5278467510604160626">💰</tg-emoji>',
+    '<tg-emoji emoji-id="5260293700088511294">⛔️</tg-emoji>',
     '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
     '<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji>',
-    '<tg-emoji emoji-id="5447410659077661506">🌐</tg-emoji>',
-    '<tg-emoji emoji-id="5402186569006210455">💱</tg-emoji>',
+    '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
+    '<tg-emoji emoji-id="5456140674028019486">⚡️</tg-emoji>',
 ]
 
 # ============================================================
@@ -388,14 +391,9 @@ def generate_captcha():
     return a, b, correct_ans, opts_list
 
 def generate_text_verification():
-    """
-    Tạo ra một chuỗi gồm các ký tự dễ đọc nhưng xen kẽ các icon Premium HTML
-    để AI OCR/Bot không thể đọc nhầm hoặc bị rối dữ liệu.
-    """
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     raw_code = "".join(random.choices(chars, k=5))
     
-    # Tạo chuỗi hiển thị có chèn Custom Emoji Premium trang trí xung quanh và xen kẽ
     formatted_display = ""
     for char in raw_code:
         icon = random.choice(PREMIUM_ICONS)
@@ -695,7 +693,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Xử lý referrer
     if context.args and not db_user[4]:
         try:
             ref_id = int(context.args[0])
@@ -713,7 +710,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Có lỗi xảy ra, vui lòng thử lại /start.")
         return
 
-    # BƯỚC 1: Kiểm tra Tham gia kênh
     missing_channels = await get_missing_channels(context.bot, user.id)
     if missing_channels:
         buttons = build_channel_buttons(missing_channels)
@@ -729,7 +725,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # BƯỚC 2: Kiểm tra CAPTCHA
     if not db_user[7]:
         await send_captcha_challenge(
             update, context,
@@ -737,12 +732,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # BƯỚC 3: Kiểm tra Xác minh Chuỗi Ký tự (Chống AI)
     if not db_user[11]:
         await send_text_verification_challenge(update.message, context)
         return
 
-    # Menu chính
     await update.message.reply_text(
         f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỞ LẠI HỆ THỐNG!</b>\n"
         f"{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
@@ -794,7 +787,7 @@ async def send_captcha_challenge(update_or_query, context: ContextTypes.DEFAULT_
         )
 
 # ============================================================
-# VERIFY JOIN (XÁC NHẬN THAM GIA KÊNH ➔ BƯỚC 2: CAPTCHA)
+# VERIFY JOIN
 # ============================================================
 
 async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -846,7 +839,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
 # ============================================================
-# CAPTCHA CALLBACK (XÁC MINH CAPTCHA ➔ BƯỚC 3: XÁC MINH CHUỖI KÝ TỰ)
+# CAPTCHA CALLBACK
 # ============================================================
 
 async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -890,7 +883,6 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    # Chuyển sang Bước 3: Xác minh Ký tự Chống AI
     await send_text_verification_challenge(query, context)
 
 # ============================================================
@@ -923,7 +915,6 @@ async def handle_text_verification_input(update: Update, context: ContextTypes.D
         await send_text_verification_challenge(message, context)
         return True
 
-    # Xác minh thành công
     context.user_data.pop("text_verify_code", None)
     await db_query(
         "UPDATE users SET is_text_verified=1 WHERE user_id=%s",
@@ -931,7 +922,6 @@ async def handle_text_verification_input(update: Update, context: ContextTypes.D
         commit=True,
     )
 
-    # Thưởng giới thiệu nếu thỏa điều kiện
     db_user = await get_fresh_user(user.id)
     if db_user:
         referrer_id = db_user[4]
@@ -1749,6 +1739,77 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 msg += "• Chưa có giao dịch rút tiền nào.\n"
             await message.reply_text(msg, parse_mode="HTML")
+        elif cmd == "/dl":
+            # LỆNH MỚI: KIỂM TRA MỜI BẠN BÈ & KÊNH RỜI CHI TIẾT
+            if len(args) < 1:
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/dl USER_ID</code>", parse_mode="HTML")
+                return
+            try:
+                target_id = int(args[0])
+            except (ValueError, TypeError):
+                await message.reply_text("❌ USER_ID không hợp lệ.")
+                return
+
+            # Kiểm tra xem user tồn tại không
+            target_user = await db_query("SELECT user_id, username FROM users WHERE user_id=%s", (target_id,), fetchone=True)
+            if not target_user:
+                await message.reply_text("❌ Không tìm thấy ID này trong cơ sở dữ liệu.")
+                return
+
+            invited_users = await db_query(
+                "SELECT user_id, username, is_captcha_passed, is_text_verified, ref_rewarded, joined_at "
+                "FROM users WHERE referrer_id=%s ORDER BY joined_at DESC",
+                (target_id,),
+                fetchall=True,
+            )
+
+            if not invited_users:
+                await message.reply_text(
+                    f"{E['ALERT1']} Người dùng <code>{target_id}</code> chưa giới thiệu được ai.",
+                    parse_mode="HTML"
+                )
+                return
+
+            await message.reply_text(f"{E['REFRESH']} Đang kiểm tra danh sách {len(invited_users)} người được mời, vui lòng đợi giây lát...", parse_mode="HTML")
+
+            msg = f"{E['CHART']} <b>DANH SÁCH CHI TIẾT NGUỜI ĐƯỢC MỜI BỞI <code>{target_id}</code></b>\n"
+            msg += f"━━━━━━━━━━━━━━━━━━\n"
+            msg += f"{E['COOL']} Tổng người đã giới thiệu: <b>{len(invited_users)}</b>\n\n"
+
+            for inv_id, inv_username, is_captcha, is_text, ref_rewarded, joined_at in invited_users:
+                uname = f"@{inv_username}" if inv_username else f"<code>{inv_id}</code>"
+                missing_ch = await get_missing_channels(context.bot, inv_id)
+
+                msg += f"👤 <b>Thành viên:</b> {uname} (<code>{inv_id}</code>)\n"
+                msg += f"🗓 <b>Tham gia:</b> <code>{joined_at or 'N/A'}</code>\n"
+
+                # Trạng thái CAPTCHA / Text Verify
+                if not is_captcha:
+                    msg += f"├ {E['STOP']} <b>Captcha:</b> ❌ Chưa giải\n"
+                else:
+                    msg += f"├ {E['CHECK_ANIMATED']} <b>Captcha:</b> ✅ Đã giải\n"
+
+                if not is_text:
+                    msg += f"├ {E['STOP']} <b>Xác minh AI:</b> ❌ Chưa xong\n"
+                else:
+                    msg += f"├ {E['CHECK_ANIMATED']} <b>Xác minh AI:</b> ✅ Đã xong\n"
+
+                # Trạng thái kênh tham gia
+                if not missing_ch:
+                    msg += f"└ {E['CHECK_ANIMATED']} <b>Kênh đối tác:</b> Đã tham gia ĐỦ ({len(REQUIRED_CHECK_CHANNELS)}/{len(REQUIRED_CHECK_CHANNELS)})\n"
+                else:
+                    missing_str = ", ".join(missing_ch)
+                    msg += f"└ {E['BAN']} <b>Kênh ĐÃ RỜI / CHƯA VÀO ({len(missing_ch)}):</b> <i>{missing_str}</i>\n"
+
+                msg += "----------------------------------\n"
+
+            # Nếu nội dung quá dài (tránh vọt quá limit 4096 ký tự Telegram), chia nhỏ tin nhắn
+            if len(msg) > 4000:
+                for chunk in [msg[i:i+4000] for i in range(0, len(msg), 4000)]:
+                    await message.reply_text(chunk, parse_mode="HTML")
+            else:
+                await message.reply_text(msg, parse_mode="HTML")
+
         elif cmd == "/tb":
             if not args:
                 await message.reply_text(f"Cú pháp: <code>/tb Nội dung thông báo</code>", parse_mode="HTML")
@@ -2061,7 +2122,7 @@ def main():
     admin_cmds = [
         "resetall", "tong", "tongrut", "rutid", "tb", "info", "bb", "ban", "moban",
         "cam", "mocam", "rutls", "ruttc", "nap", "tru", "lsgd", "baotri", "batbt",
-        "tatbt", "resetbank",
+        "tatbt", "resetbank", "dl"
     ]
     for command in admin_cmds:
         app.add_handler(CommandHandler(command, admin_commands))
