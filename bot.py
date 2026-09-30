@@ -74,7 +74,7 @@ E = {
     "REFRESH": '<tg-emoji emoji-id="5375338737028841420">🔄</tg-emoji>',
     "TOP": '<tg-emoji emoji-id="5415655814079723871">🔝</tg-emoji>',
     "EYES": '<tg-emoji emoji-id="5210956306952758910">👀</tg-emoji>',
-    "LIGHTNING": '<tg-emoji emoji-id="5456140674028019486">⚡️</tg-emoji>',
+    "LIGHTNING": '<tg-emoji emoji-id="5456140674028019486">⚡️️</tg-emoji>',
     "COMET": '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>',
     "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔️</tg-emoji>',
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
@@ -83,7 +83,7 @@ E = {
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
     "ALERT1": '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>',
-    "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠️</tg-emoji>',
+    "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠️️</tg-emoji>',
     "CHART": '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>',
     "UP": '<tg-emoji emoji-id="5449683594425410231">🔼</tg-emoji>',
     "DOWN": '<tg-emoji emoji-id="5447183459602669338">🔽</tg-emoji>',
@@ -269,7 +269,9 @@ def _init_db_sync():
                 ('check_channels', '1'),
                 ('check_captcha', '1'),
                 ('check_ai_text', '1'),
-                ('check_ip', '1')
+                ('check_ip', '1'),
+                ('enable_withdraw', '1'),
+                ('auto_lock_left_member', '1')
             ]
             for key, val in defaults:
                 cursor.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING;", (key, val))
@@ -287,7 +289,7 @@ def get_now_str():
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 # ============================================================
-# CẤU HÌNH SETTINGS (BẬT / TẮT BƯỚC XÁC MINH)
+# CẤU HÌNH SETTINGS (BẬT / TẮT BƯỚC XÁC MINH & RÚT TIỀN)
 # ============================================================
 
 async def get_setting(key: str, default="1") -> bool:
@@ -541,30 +543,33 @@ async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFA
     username_str = f"@{user.username}" if user.username else str(user.id)
 
     if old_state in ("member", "administrator", "creator") and new_state in ("left", "kicked"):
-        await db_query("UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s", (ref_id,), commit=True)
-        user_withdraw_state.pop(ref_id, None)
-        try:
-            await context.bot.send_message(
-                chat_id=user.id,
-                text=(
-                    f"{E['BAN']} <b>THÔNG BÁO TỪ HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n"
-                    f"{E['STOP']} Bạn đã rời khỏi nhóm/kênh đối tác bắt buộc.\n"
-                    f"{E['ALERT1']} Tài khoản của bạn và người giới thiệu bạn đã bị hạn chế các tính năng rút tiền!"
-                ),
-                parse_mode="HTML",
-            )
-        except Exception: pass
-        try:
-            await context.bot.send_message(
-                chat_id=ref_id,
-                text=(
-                    f"{E['BAN']} <b>CẢNH BÁO KHÓA RÚT TIỀN!</b>\n━━━━━━━━━━━━━━━━━━\n"
-                    f"{E['STOP']} Thành viên được bạn mời (<b>{username_str}</b> - <code>{user.id}</code>) đã rời khỏi nhóm/kênh đối tác.\n"
-                    f"{E['ALERT1']} <b>Lý do bị khóa:</b> Người được bạn mời đã rời nhóm nên hệ thống tiến hành khoá tính năng rút tiền của bạn!"
-                ),
-                parse_mode="HTML",
-            )
-        except Exception: pass
+        # KIỂM TRA BẬT/TẮT TÍNH NĂNG TỰ ĐỘNG KHÓA RÚT TIỀN
+        auto_lock = await get_setting("auto_lock_left_member", "1")
+        if auto_lock:
+            await db_query("UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s", (ref_id,), commit=True)
+            user_withdraw_state.pop(ref_id, None)
+            try:
+                await context.bot.send_message(
+                    chat_id=user.id,
+                    text=(
+                        f"{E['BAN']} <b>THÔNG BÁO TỪ HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n"
+                        f"{E['STOP']} Bạn đã rời khỏi nhóm/kênh đối tác bắt buộc.\n"
+                        f"{E['ALERT1']} Tài khoản của bạn và người giới thiệu bạn đã bị hạn chế các tính năng rút tiền!"
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception: pass
+            try:
+                await context.bot.send_message(
+                    chat_id=ref_id,
+                    text=(
+                        f"{E['BAN']} <b>CẢNH BÁO KHÓA RÚT TIỀN!</b>\n━━━━━━━━━━━━━━━━━━\n"
+                        f"{E['STOP']} Thành viên được bạn mời (<b>{username_str}</b> - <code>{user.id}</code>) đã rời khỏi nhóm/kênh đối tác.\n"
+                        f"{E['ALERT1']} <b>Lý do bị khóa:</b> Người được bạn mời đã rời nhóm nên hệ thống tiến hành khoá tính năng rút tiền của bạn!"
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception: pass
 
     elif old_state in ("left", "kicked") and new_state in ("member", "administrator", "creator"):
         is_fully_joined = await check_channel_membership(context.bot, user.id)
@@ -913,7 +918,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await message.reply_text(f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 # ============================================================
-# LỆNH ADMIN MỚI: /bo, /moip, /setmenu
+# LỆNH ADMIN MỚI: /menu, /bo, /moip, /setmenu
 # ============================================================
 
 async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -924,15 +929,23 @@ async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c_cap = "🟢 BẬT" if await get_setting("check_captcha") else "🔴 TẮT"
     c_txt = "🟢 BẬT" if await get_setting("check_ai_text") else "🔴 TẮT"
     c_ip = "🟢 BẬT" if await get_setting("check_ip") else "🔴 TẮT"
+    c_wd = "🟢 BẬT" if await get_setting("enable_withdraw") else "🔴 TẮT"
+    c_autolock = "🟢 BẬT" if await get_setting("auto_lock_left_member") else "🔴 TẮT"
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"1. Check Kênh: {c_chan}", callback_data="toggle_check_channels")],
         [InlineKeyboardButton(f"2. Check Captcha: {c_cap}", callback_data="toggle_check_captcha")],
         [InlineKeyboardButton(f"3. Check Ký tự AI: {c_txt}", callback_data="toggle_check_ai_text")],
         [InlineKeyboardButton(f"4. Check IP Miniapp: {c_ip}", callback_data="toggle_check_ip")],
+        [InlineKeyboardButton(f"💳 Tính năng Rút Tiền: {c_wd}", callback_data="toggle_enable_withdraw")],
+        [InlineKeyboardButton(f"🔒 Bạn rời nhóm tự động khóa Rút: {c_autolock}", callback_data="toggle_auto_lock_left_member")],
     ])
 
-    msg_text = f"{E['GEAR']} <b>MENU QUẢN LÝ BẬT/TẮT CÁC BƯỚC XÁC MINH</b>\n━━━━━━━━━━━━━━━━━━\nNhấp vào các nút bên dưới để Bật hoặc Tắt nhanh từng bước:"
+    msg_text = (
+        f"{E['GEAR']} <b>MENU QUẢN LÝ BẬT/TẮT HỆ THỐNG</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"Bấm vào các nút bên dưới để Bật hoặc Tắt nhanh tính năng tương ứng:"
+    )
 
     if update.callback_query:
         try:
@@ -1098,6 +1111,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     elif clean_text in ["rut tien", "rút tiền"] or "rút tiền" in raw_text.lower():
+        # CHECK XEM TÍNH NĂNG RÚT TIỀN CÓ ĐANG ĐƯỢC BẬT KHÔNG
+        if not await get_setting("enable_withdraw", "1"):
+            await message.reply_text(f"{E['STOP']} <b>TÍNH NĂNG RÚT TIỀN ĐANG TẠM ĐÓNG!</b>\n{E['GEAR']} Hệ thống đang tạm ngưng chức năng rút tiền. Vui lòng quay lại sau!", parse_mode="HTML", reply_markup=get_main_keyboard())
+            return
+
         if db_user[9] == 1:
             await message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị CẤM RÚT TIỀN!</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
             return
@@ -1201,6 +1219,12 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
     message = update.effective_message
     if not user or not message or update.effective_chat.type != "private" or user_withdraw_state.get(user.id) != "WAITING_AMOUNT":
         return False
+
+    if not await get_setting("enable_withdraw", "1"):
+        user_withdraw_state.pop(user.id, None)
+        await message.reply_text(f"{E['STOP']} <b>Chức năng rút tiền hiện đã bị khóa bởi Admin.</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
+        return True
+
     raw_text = (message.text or "").strip()
     text = raw_text.replace(",", "").replace(".", "")
     if text.lower() in ["hủy", "huy", "cancel", "❌ hủy", "❌ hủy rút tiền"]:
@@ -1717,7 +1741,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif cmd == "/baotri":
             curr = await is_maintenance()
             await set_setting("maintenance", "0" if curr else "1")
-            await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{'TẮT BẢO TRÌ 🟢' if curr else 'BẮT ĐẦU BẢO TRÌ 🔴'}</b>", parse_mode="HTML")
+            await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{'TẮT BẢO TRÌ 🟢' if curr else 'BẮT ĐẮU BẢO TRÌ 🔴'}</b>", parse_mode="HTML")
 
         elif cmd == "/batbt":
             await set_setting("maintenance", "1")
@@ -1765,6 +1789,7 @@ def main():
     app.add_handler(CommandHandler("lk", link_bank_command))
     
     # Đăng ký các lệnh Admin đặc biệt
+    app.add_handler(CommandHandler("menu", admin_menu_panel))
     app.add_handler(CommandHandler("setmenu", admin_menu_panel))
     app.add_handler(CommandHandler("bo", bo_ip_command))
     app.add_handler(CommandHandler("moip", mo_ip_command))
