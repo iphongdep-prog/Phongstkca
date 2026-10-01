@@ -78,11 +78,11 @@ E = {
     "COMET": '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>',
     "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔️</tg-emoji>',
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
-    "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗️️</tg-emoji>',
+    "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗</tg-emoji>',
     "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
-    "ALERT1": '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>',
+    "ALERT1": '<tg-emoji emoji-id="5447644880824181073">⚠️️</tg-emoji>',
     "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
     "CHART": '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>',
     "UP": '<tg-emoji emoji-id="5449683594425410231">🔼</tg-emoji>',
@@ -866,7 +866,7 @@ async def handle_text_verification_input(update: Update, context: ContextTypes.D
     await message.reply_text(f"{E['CHECK_ANIMATED']} <b>XÁC MINH KÝ TỰ THÀNH CÔNG!</b>", parse_mode="HTML")
 
     if await process_user_verification_flow(update, context, user.id):
-        await trigger_referral_reward_if_eligible(update, context, user.id)
+        await trigger_referral_reward_if_eligible(user.id, context)
         await message.reply_text(f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
     return True
 
@@ -1707,7 +1707,10 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(f"{E['REFRESH']} Đang tải {len(txs)} lệnh rút tiền đang chờ duyệt...", parse_mode="HTML")
             
             for tx_id, target_id, amount, details, created_at in txs:
-                btns = [[InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{tx_id}"), InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{tx_id}")]
+                btns = [[
+                    InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{tx_id}"),
+                    InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{tx_id}")
+                ]]
                 msg_text = f"{E['EYES']} <b>Lệnh:</b> #{tx_id}\n{E['COOL']} <b>User:</b> <code>{target_id}</code>\n{E['UP']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n{E['LOCK']} <b>Bank:</b> <code>{details or 'N/A'}</code>"
                 
                 qr_url = generate_vietqr_url(details, amount, memo="lixi trung thu") if details else ""
