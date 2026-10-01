@@ -82,7 +82,7 @@ E = {
     "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
-    "ALERT1": '<tg-emoji emoji-id="5447644880824181073">⚠️️</tg-emoji>',
+    "ALERT1": '<tg-emoji emoji-id="5447644880824181073">⚠</tg-emoji>',
     "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
     "CHART": '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>',
     "UP": '<tg-emoji emoji-id="5449683594425410231">🔼</tg-emoji>',
@@ -270,8 +270,7 @@ def _init_db_sync():
                 ('check_captcha', '1'),
                 ('check_ai_text', '1'),
                 ('check_ip', '1'),
-                ('enable_withdraw', '1'),
-                ('auto_lock_left_member', '1')
+                ('enable_withdraw', '1')
             ]
             for key, val in defaults:
                 cursor.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING;", (key, val))
@@ -491,19 +490,25 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
             logger.exception("Lỗi transaction thưởng giới thiệu: %s", exc)
 
 # ============================================================
-# KIỂM TRA THAM GIA KÊNH
+# KIỂM TRA THAM GIA KÊNH (TỐI ƯU CHỐNG LAG)
 # ============================================================
 
 async def get_missing_channels(bot, user_id):
+    sem = asyncio.Semaphore(4)  # Giới hạn gọi đồng thời để chống nghẽn Telegram API / chống lag bot
+
     async def check_one(channel):
-        try:
-            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status in ("left", "kicked"):
+        async with sem:
+            try:
+                member = await asyncio.wait_for(
+                    bot.get_chat_member(chat_id=channel, user_id=user_id),
+                    timeout=3.5
+                )
+                if member.status in ("left", "kicked"):
+                    return channel
+            except Exception as exc:
+                logger.warning(f"Lỗi check kênh {channel} cho user {user_id}: {exc}")
                 return channel
-        except Exception as exc:
-            logger.warning(f"Lỗi check kênh {channel} cho user {user_id}: {exc}")
-            return channel
-        return None
+            return None
 
     tasks = [check_one(ch) for ch in REQUIRED_CHECK_CHANNELS]
     results = await asyncio.gather(*tasks)
@@ -525,74 +530,12 @@ def build_channel_buttons(missing_channels):
     return buttons
 
 # ============================================================
-# XỬ LÝ RỜI/THAM GIA LẠI
+# XỬ LÝ RỜI/THAM GIA LẠI (ĐÃ GỠ BỎ TÍNH NĂNG TỰ ĐỘNG KHÓA RÚT)
 # ============================================================
 
 async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = update.chat_member or update.my_chat_member
-    if not result:
-        return
-    old_state = result.old_chat_member.status
-    new_state = result.new_chat_member.status
-    user = result.new_chat_member.user
-
-    user_info = await db_query("SELECT referrer_id FROM users WHERE user_id=%s", (user.id,), fetchone=True)
-    if not user_info or not user_info[0]:
-        return
-    ref_id = user_info[0]
-    username_str = f"@{user.username}" if user.username else str(user.id)
-
-    if old_state in ("member", "administrator", "creator") and new_state in ("left", "kicked"):
-        auto_lock = await get_setting("auto_lock_left_member", "1")
-        if auto_lock:
-            await db_query("UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s", (ref_id,), commit=True)
-            user_withdraw_state.pop(ref_id, None)
-            try:
-                await context.bot.send_message(
-                    chat_id=user.id,
-                    text=(
-                        f"{E['BAN']} <b>THÔNG BÁO TỪ HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n"
-                        f"{E['STOP']} Bạn đã rời khỏi nhóm/kênh đối tác bắt buộc.\n"
-                        f"{E['ALERT1']} Tài khoản của bạn và người giới thiệu bạn đã bị hạn chế các tính năng rút tiền!"
-                    ),
-                    parse_mode="HTML",
-                )
-            except Exception: pass
-            try:
-                await context.bot.send_message(
-                    chat_id=ref_id,
-                    text=(
-                        f"{E['BAN']} <b>CẢNH BÁO KHÓA RÚT TIỀN!</b>\n━━━━━━━━━━━━━━━━━━\n"
-                        f"{E['STOP']} Thành viên được bạn mời (<b>{username_str}</b> - <code>{user.id}</code>) đã rời khỏi nhóm/kênh đối tác.\n"
-                        f"{E['ALERT1']} <b>Lý do bị khóa:</b> Người được bạn mời đã rời nhóm nên hệ thống tiến hành khoá tính năng rút tiền của bạn!"
-                    ),
-                    parse_mode="HTML",
-                )
-            except Exception: pass
-
-    elif old_state in ("left", "kicked") and new_state in ("member", "administrator", "creator"):
-        is_fully_joined = await check_channel_membership(context.bot, user.id)
-        if is_fully_joined:
-            invited_users = await db_query("SELECT user_id FROM users WHERE referrer_id=%s", (ref_id,), fetchall=True)
-            all_friends_joined = True
-            if invited_users:
-                tasks = [check_channel_membership(context.bot, inv_id) for (inv_id,) in invited_users]
-                results = await asyncio.gather(*tasks)
-                if not all(results):
-                    all_friends_joined = False
-            if all_friends_joined:
-                await db_query("UPDATE users SET is_withdraw_banned=0 WHERE user_id=%s", (ref_id,), commit=True)
-                try:
-                    await context.bot.send_message(
-                        chat_id=ref_id,
-                        text=(
-                            f"{E['THUMB']} <b>THÔNG BÁO MỞ KHÓA RÚT TIỀN!</b>\n━━━━━━━━━━━━━━━━━━\n"
-                            f"{E['LIGHTNING']} Thành viên được bạn mời (<b>{username_str}</b> - <code>{user.id}</code>) đã tham gia lại nhóm/kênh đối tác.\n"
-                            f"{E['UP']} <b>Hệ thống đã tự động mở khóa tính năng rút tiền cho bạn!</b>"
-                        ),
-                        parse_mode="HTML",
-                    )
-                except Exception: pass
+    # Đã xóa toàn bộ tính năng tự động khóa/mở khóa rút tiền của người giới thiệu khi người được giới thiệu rời nhóm theo yêu cầu.
+    pass
 
 # ============================================================
 # ANTI SPAM
@@ -917,7 +860,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await message.reply_text(f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 # ============================================================
-# LỆNH ADMIN MỚI: /menu, /bo, /moip, /setmenu
+# LỆNH ADMIN: /menu, /bo, /moip, /setmenu
 # ============================================================
 
 async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -929,7 +872,6 @@ async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c_txt = "🟢 BẬT" if await get_setting("check_ai_text") else "🔴 TẮT"
     c_ip = "🟢 BẬT" if await get_setting("check_ip") else "🔴 TẮT"
     c_wd = "🟢 BẬT" if await get_setting("enable_withdraw") else "🔴 TẮT"
-    c_autolock = "🟢 BẬT" if await get_setting("auto_lock_left_member") else "🔴 TẮT"
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"1. Check Kênh: {c_chan}", callback_data="toggle_check_channels")],
@@ -937,7 +879,6 @@ async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(f"3. Check Ký tự AI: {c_txt}", callback_data="toggle_check_ai_text")],
         [InlineKeyboardButton(f"4. Check IP Miniapp: {c_ip}", callback_data="toggle_check_ip")],
         [InlineKeyboardButton(f"💳 Tính năng Rút Tiền: {c_wd}", callback_data="toggle_enable_withdraw")],
-        [InlineKeyboardButton(f"🔒 Bạn rời nhóm tự động khóa Rút: {c_autolock}", callback_data="toggle_auto_lock_left_member")],
     ])
 
     msg_text = (
@@ -1578,7 +1519,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if len(msg) > 3500:
                     await message.reply_text(msg, parse_mode="HTML")
                     msg = ""
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
 
             if msg.strip():
                 await message.reply_text(msg, parse_mode="HTML")
@@ -1596,13 +1537,13 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=target_id, text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}", parse_mode="HTML")
                     count += 1
                 except Exception: pass
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.02)
             for (chat_id,) in groups:
                 try:
                     await context.bot.send_message(chat_id=chat_id, text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}", parse_mode="HTML")
                     count += 1
                 except Exception: pass
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.02)
             await message.reply_text(f"{E['THUMB']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.", parse_mode="HTML")
 
         elif cmd == "/info":
@@ -1728,7 +1669,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
                     refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": False})
                 
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.15)
 
         elif cmd == "/ruttc":
             txs = await db_query("SELECT id, user_id, amount, created_at FROM transactions WHERE type='Rút Tiền' AND status='Thành công' ORDER BY id DESC LIMIT 15", fetchall=True)
@@ -1755,7 +1696,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif cmd == "/baotri":
             curr = await is_maintenance()
             await set_setting("maintenance", "0" if curr else "1")
-            await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{'TẮT BẢO TRÌ 🟢' if curr else 'BẮT ĐẮU BẢO TRÌ 🔴'}</b>", parse_mode="HTML")
+            await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{'TẮT BẢO TRÌ 🟢' if curr else 'BẮT ĐẦU BẢO TRÌ 🔴'}</b>", parse_mode="HTML")
 
         elif cmd == "/batbt":
             await set_setting("maintenance", "1")
