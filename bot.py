@@ -74,16 +74,16 @@ E = {
     "REFRESH": '<tg-emoji emoji-id="5375338737028841420">🔄</tg-emoji>',
     "TOP": '<tg-emoji emoji-id="5415655814079723871">🔝</tg-emoji>',
     "EYES": '<tg-emoji emoji-id="5210956306952758910">👀</tg-emoji>',
-    "LIGHTNING": '<tg-emoji emoji-id="5456140674028019486">⚡️️</tg-emoji>',
+    "LIGHTNING": '<tg-emoji emoji-id="5456140674028019486">⚡</tg-emoji>',
     "COMET": '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>',
     "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔️</tg-emoji>',
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
-    "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji>',
+    "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗️️</tg-emoji>',
     "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
     "ALERT1": '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>',
-    "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠️️</tg-emoji>',
+    "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
     "CHART": '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>',
     "UP": '<tg-emoji emoji-id="5449683594425410231">🔼</tg-emoji>',
     "DOWN": '<tg-emoji emoji-id="5447183459602669338">🔽</tg-emoji>',
@@ -177,8 +177,8 @@ def get_pool():
             raise RuntimeError("Chưa cấu hình DATABASE_URL trên VPS/Railway.")
         db_pool = ConnectionPool(
             DATABASE_URL,
-            min_size=1,
-            max_size=10,
+            min_size=2,
+            max_size=20,
             kwargs={"row_factory": tuple_row},
             open=True
         )
@@ -543,7 +543,6 @@ async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFA
     username_str = f"@{user.username}" if user.username else str(user.id)
 
     if old_state in ("member", "administrator", "creator") and new_state in ("left", "kicked"):
-        # KIỂM TRA BẬT/TẮT TÍNH NĂNG TỰ ĐỘNG KHÓA RÚT TIỀN
         auto_lock = await get_setting("auto_lock_left_member", "1")
         if auto_lock:
             await db_query("UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s", (ref_id,), commit=True)
@@ -867,7 +866,7 @@ async def handle_text_verification_input(update: Update, context: ContextTypes.D
     await message.reply_text(f"{E['CHECK_ANIMATED']} <b>XÁC MINH KÝ TỰ THÀNH CÔNG!</b>", parse_mode="HTML")
 
     if await process_user_verification_flow(update, context, user.id):
-        await trigger_referral_reward_if_eligible(user.id, context)
+        await trigger_referral_reward_if_eligible(update, context, user.id)
         await message.reply_text(f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
     return True
 
@@ -1033,7 +1032,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if clean_text in ["tai khoan", "tài khoản"] or "tài khoản" in raw_text.lower():
         balance = db_user[2]
-        res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (user.id,), fetchone=True)
+        res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (user.id,), fetchone=True)
         invited_count = res[0]
         res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (user.id,), fetchone=True)
         total_withdraw = res_withdraw[0]
@@ -1042,7 +1041,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['EYES']} <b>ID:</b> <code>{user.id}</code>\n"
             f"{E['CHECK_ANIMATED']} <b>Xác minh:</b> <code>Đã hoàn tất</code>\n"
             f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
-            f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người hợp lệ\n"
+            f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người\n"
             f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
         )
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
@@ -1064,7 +1063,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['CLIP']} <b>Link giới thiệu của bạn:</b>\n<code>{ref_link}</code>\n\n"
             f"{E['CALENDAR']} <b>Thể lệ nhận thưởng:</b>\n"
             f"• {E['LIGHTNING']} Nhận ngay: <b>+{REFERRAL_REWARD:,}đ</b> / lượt mời thành công.\n"
-            f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh, giải CAPTCHA & xác minh ký tự.\n"
+            f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh, giải CAPTCHA & xác minh.\n"
             f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
             f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
         )
@@ -1075,7 +1074,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """
             SELECT u.user_id, u.username, COUNT(r.user_id) AS ref_count
             FROM users u
-            LEFT JOIN users r ON r.referrer_id = u.user_id AND r.ref_rewarded = 1
+            LEFT JOIN users r ON r.referrer_id = u.user_id
             WHERE u.is_banned = 0
             GROUP BY u.user_id, u.username
             HAVING COUNT(r.user_id) > 0
@@ -1111,7 +1110,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     elif clean_text in ["rut tien", "rút tiền"] or "rút tiền" in raw_text.lower():
-        # CHECK XEM TÍNH NĂNG RÚT TIỀN CÓ ĐANG ĐƯỢC BẬT KHÔNG
         if not await get_setting("enable_withdraw", "1"):
             await message.reply_text(f"{E['STOP']} <b>TÍNH NĂNG RÚT TIỀN ĐANG TẠM ĐÓNG!</b>\n{E['GEAR']} Hệ thống đang tạm ngưng chức năng rút tiền. Vui lòng quay lại sau!", parse_mode="HTML", reply_markup=get_main_keyboard())
             return
@@ -1403,7 +1401,7 @@ async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_
         try: await query.answer("❌ Không tìm thấy thông tin user này.", show_alert=True)
         except Exception: pass
         return
-    res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (target_id,), fetchone=True)
+    res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
     invited_count = res[0]
     username = f"@{u[1]}" if u[1] else "Chưa đặt"
     bank = u[3] if u[3] else "Chưa liên kết"
@@ -1415,7 +1413,7 @@ async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_
         f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
         f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
         f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
-        f"{E['COOL']} Tổng đã mời hợp lệ: <code>{invited_count}</code> người\n"
+        f"{E['COOL']} Tổng đã mời: <code>{invited_count}</code> người\n"
         f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[8] else 'KHÔNG'}</b>\n"
         f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[9] else 'KHÔNG'}</b>\n"
         f"{E['CALENDAR']} Tham gia: <code>{u[10]}</code>"
@@ -1619,7 +1617,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not u:
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
-            res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (target_id,), fetchone=True)
+            res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
             msg = (
                 f"{E['EYES']} <b>THÔNG TIN CHI TIẾT USER</b>\n━━━━━━━━━━━━━━━━━━\n"
                 f"{E['EYES']} ID: <code>{u[0]}</code>\n"
@@ -1627,7 +1625,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
                 f"{E['LOCK']} Ngân hàng: <code>{u[3] or 'Chưa liên kết'}</code>\n"
                 f"{E['CLIP']} Người giới thiệu: <code>{u[4] if u[4] else 'Không có'}</code>\n"
-                f"{E['COOL']} Tổng đã mời hợp lệ: <code>{res[0]}</code> người\n"
+                f"{E['COOL']} Tổng đã mời: <code>{res[0]}</code> người\n"
                 f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[8] else 'KHÔNG'}</b>\n"
                 f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[9] else 'KHÔNG'}</b>\n"
                 f"{E['CALENDAR']} Tham gia: <code>{u[10]}</code>"
@@ -1705,16 +1703,29 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not txs:
                 await message.reply_text(f"{E['LOVE']} Không có yêu cầu rút tiền nào đang chờ duyệt!")
                 return
+            
+            await message.reply_text(f"{E['REFRESH']} Đang tải {len(txs)} lệnh rút tiền đang chờ duyệt...", parse_mode="HTML")
+            
             for tx_id, target_id, amount, details, created_at in txs:
-                btns = [[InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{tx_id}"), InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{tx_id}")]]
+                btns = [[InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{tx_id}"), InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{tx_id}")]
                 msg_text = f"{E['EYES']} <b>Lệnh:</b> #{tx_id}\n{E['COOL']} <b>User:</b> <code>{target_id}</code>\n{E['UP']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n{E['LOCK']} <b>Bank:</b> <code>{details or 'N/A'}</code>"
-                qr_url = generate_vietqr_url(details, amount, memo="lixi trung thu")
-                if qr_url:
-                    sent_msg = await message.reply_photo(photo=qr_url, caption=msg_text, reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
-                else:
-                    sent_msg = await message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
-                refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
-                refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": bool(qr_url)})
+                
+                qr_url = generate_vietqr_url(details, amount, memo="lixi trung thu") if details else ""
+                try:
+                    if qr_url:
+                        sent_msg = await message.reply_photo(photo=qr_url, caption=msg_text, reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
+                    else:
+                        sent_msg = await message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
+                    
+                    refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
+                    refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": bool(qr_url)})
+                except Exception as exc:
+                    logger.error("Lỗi gửi ảnh QR lệnh rút #%s: %s", tx_id, exc)
+                    sent_msg = await message.reply_text(msg_text + f"\n\n⚠️ <i>(Không tải được ảnh QR VietQR)</i>", reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
+                    refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
+                    refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": False})
+                
+                await asyncio.sleep(0.3)
 
         elif cmd == "/ruttc":
             txs = await db_query("SELECT id, user_id, amount, created_at FROM transactions WHERE type='Rút Tiền' AND status='Thành công' ORDER BY id DESC LIMIT 15", fetchall=True)
@@ -1788,13 +1799,11 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("lk", link_bank_command))
     
-    # Đăng ký các lệnh Admin đặc biệt
     app.add_handler(CommandHandler("menu", admin_menu_panel))
     app.add_handler(CommandHandler("setmenu", admin_menu_panel))
     app.add_handler(CommandHandler("bo", bo_ip_command))
     app.add_handler(CommandHandler("moip", mo_ip_command))
 
-    # Đăng ký danh sách các lệnh Admin chính
     admin_cmds = [
         "resetall", "tong", "tongrut", "rutid", "tb", "info", "bb", "ban", "moban",
         "cam", "mocam", "rutls", "ruttc", "nap", "tru", "lsgd", "baotri", "batbt",
@@ -1811,7 +1820,6 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_userinfo_callback, pattern=r"^userinfo_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_toggle_callback, pattern=r"^toggle_"))
 
-    # Bộ lắng nghe nhận dữ liệu gửi về từ MiniApp
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_dispatcher))
