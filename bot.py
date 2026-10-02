@@ -79,7 +79,7 @@ E = {
     "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔</tg-emoji>',
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
     "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗</tg-emoji>',
-    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
+    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️️</tg-emoji>',
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
     "ALERT1": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
@@ -1495,7 +1495,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
             
-            # Đã sửa lỗi tràn số bằng cách ép kiểu ::BIGINT cho các trường SUM và COUNT
             stats = await db_query(
                 """
                 SELECT 
@@ -1615,32 +1614,65 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.02)
             await message.reply_text(f"{E['THUMB']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.", parse_mode="HTML")
 
-        elif cmd == "/info":
+        elif cmd == "/tt":
             if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/info USER_ID</code>", parse_mode="HTML")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/tt USER_ID</code>", parse_mode="HTML")
                 return
             try: target_id = int(args[0])
             except (ValueError, TypeError):
                 await message.reply_text("❌ USER_ID không hợp lệ.")
                 return
+            
             u = await db_query(USER_SELECT_QUERY, (target_id,), fetchone=True)
             if not u:
-                await message.reply_text("❌ Không tìm thấy user này.")
+                await message.reply_text("❌ Không tìm thấy user này trong hệ thống.")
                 return
-            res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
+            
+            res_ref = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
+            invited_count = res_ref[0] if res_ref else 0
+
+            res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (target_id,), fetchone=True)
+            total_withdrawn = res_withdraw[0] if res_withdraw else 0
+
+            recent_txs = await db_query("SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 5", (target_id,), fetchall=True)
+
+            username_str = f"@{u[1]}" if u[1] else "Chưa đặt"
+            bank_info_str = u[3] if u[3] else "Chưa liên kết"
+            referrer_str = f"<code>{u[4]}</code>" if u[4] else "Không có"
+            phone_str = u[5] if u[5] else "Chưa xác minh"
+            captcha_status = "Đã giải" if u[7] == 1 else "Chưa giải"
+            phone_status = "Đã xác minh" if u[9] == 1 else "Chưa xác minh"
+            banned_status = "CÓ (Bị khóa vĩnh viễn)" if u[10] == 1 else "KHÔNG"
+            withdraw_banned_status = "CÓ (Bị cấm rút tiền)" if u[11] == 1 else "KHÔNG"
+            joined_date = u[12] if u[12] else "N/A"
+            ip_str = u[13] if u[13] else "Chưa xác minh"
+
             msg = (
-                f"{E['EYES']} <b>THÔNG TIN CHI TIẾT USER</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['EYES']} ID: <code>{u[0]}</code>\n"
-                f"{E['COOL']} Username: @{u[1] if u[1] else 'Chưa đặt'}\n"
-                f"{E['PHONE']} SĐT: <code>{u[5] or 'Chưa xác minh'}</code>\n"
-                f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
-                f"{E['LOCK']} Ngân hàng: <code>{u[3] or 'Chưa liên kết'}</code>\n"
-                f"{E['CLIP']} Người giới thiệu: <code>{u[4] if u[4] else 'Không có'}</code>\n"
-                f"{E['COOL']} Tổng đã mời: <code>{res[0]}</code> người\n"
-                f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[10] else 'KHÔNG'}</b>\n"
-                f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[11] else 'KHÔNG'}</b>\n"
-                f"{E['CALENDAR']} Tham gia: <code>{u[12]}</code>"
+                f"{E['CROWN']} <b>TRA CỨU TOÀN BỘ THÔNG TIN USER</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"{E['EYES']} <b>ID:</b> <code>{u[0]}</code>\n"
+                f"{E['COOL']} <b>Username:</b> {username_str}\n"
+                f"{E['PHONE']} <b>Số điện thoại:</b> <code>{phone_str}</code>\n"
+                f"{E['UP']} <b>Số dư hiện tại:</b> <code>{u[2]:,}đ</code>\n"
+                f"{E['DOWN']} <b>Tổng tiền đã rút:</b> <code>{total_withdrawn:,}đ</code>\n"
+                f"{E['LOCK']} <b>Ngân hàng:</b> <code>{bank_info_str}</code>\n"
+                f"{E['CLIP']} <b>Người giới thiệu:</b> {referrer_str}\n"
+                f"{E['COOL']} <b>Tổng số đã mời:</b> <code>{invited_count}</code> bạn bè\n"
+                f"{E['GAME']} <b>Trạng thái Captcha:</b> {captcha_status}\n"
+                f"{E['CHECK_ANIMATED']} <b>Trạng thái SĐT:</b> {phone_status}\n"
+                f"{E['GLOBE'] if 'GLOBE' in E else E['CLIP']} <b>Địa chỉ IP:</b> <code>{ip_str}</code>\n"
+                f"{E['BAN']} <b>Khóa tài khoản:</b> <b>{banned_status}</b>\n"
+                f"{E['STOP']} <b>Cấm rút tiền:</b> <b>{withdraw_banned_status}</b>\n"
+                f"{E['CALENDAR']} <b>Ngày tham gia:</b> <code>{joined_date}</code>\n\n"
+                f"{E['CHART']} <b>5 Giao dịch gần nhất:</b>\n"
             )
+
+            if recent_txs:
+                for tx_type, amount, status, created_at in recent_txs:
+                    icon = E['THUMB'] if status == "Thành công" else (E['BAN'] if status == "Từ chối" else E['CALENDAR'])
+                    msg += f"• {icon} <b>{tx_type}</b>: <code>{amount:,}đ</code> ({status}) — <code>{created_at}</code>\n"
+            else:
+                msg += "• Chưa có giao dịch nào.\n"
+
             await message.reply_text(msg, parse_mode="HTML")
 
         elif cmd == "/bb":
@@ -1768,14 +1800,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await set_setting("maintenance", "0" if curr else "1")
             await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{'TẮT BẢO TRÌ 🟢' if curr else 'BẮT ĐẦU BẢO TRÌ 🔴'}</b>", parse_mode="HTML")
 
-        elif cmd == "/batbt":
-            await set_setting("maintenance", "1")
-            await message.reply_text(f"{E['STOP']} <b>ĐÃ BẬT CHẾ ĐỘ BẢO TRÌ HỆ THỐNG!</b>", parse_mode="HTML")
-
-        elif cmd == "/tatbt":
-            await set_setting("maintenance", "0")
-            await message.reply_text(f"{E['LIGHTNING']} <b>ĐÃ TẮT BẢO TRÌ HỆ THỐNG!</b>", parse_mode="HTML")
-
         elif cmd == "/resetbank":
             await reset_bank_command(update, context)
 
@@ -1814,14 +1838,13 @@ def main():
     app.add_handler(CommandHandler("lk", link_bank_command))
     
     app.add_handler(CommandHandler("menu", admin_menu_panel))
-    app.add_handler(CommandHandler("setmenu", admin_menu_panel))
     app.add_handler(CommandHandler("bo", bo_ip_command))
     app.add_handler(CommandHandler("moip", mo_ip_command))
 
     admin_cmds = [
-        "resetall", "tong", "tongrut", "rutid", "tb", "info", "bb", "ban", "moban",
-        "cam", "mocam", "rutls", "ruttc", "nap", "tru", "lsgd", "baotri", "batbt",
-        "tatbt", "resetbank", "dl"
+        "resetall", "tong", "tongrut", "rutid", "tb", "tt", "bb", "ban", "moban",
+        "cam", "mocam", "rutls", "ruttc", "nap", "tru", "lsgd", "baotri",
+        "resetbank", "dl"
     ]
     for command in admin_cmds:
         app.add_handler(CommandHandler(command, admin_commands))
