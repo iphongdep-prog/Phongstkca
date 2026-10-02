@@ -128,19 +128,6 @@ E = {
     "FLASH": '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
 }
 
-PREMIUM_ICONS = [
-    '<tg-emoji emoji-id="5375338737028841420">🔄</tg-emoji>',
-    '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
-    '<tg-emoji emoji-id="5361741454685256344">🎮</tg-emoji>',
-    '<tg-emoji emoji-id="5228878926306101271">🙏</tg-emoji>',
-    '<tg-emoji emoji-id="5278467510604160626">💰</tg-emoji>',
-    '<tg-emoji emoji-id="5260293700088511294">⛔️</tg-emoji>',
-    '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
-    '<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji>',
-    '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
-    '<tg-emoji emoji-id="5456140674028019486">⚡️</tg-emoji>',
-]
-
 # ============================================================
 # ANTI SPAM
 # ============================================================
@@ -228,7 +215,7 @@ def _init_db_sync():
                     phone_number TEXT,
                     ref_rewarded INTEGER NOT NULL DEFAULT 0,
                     is_captcha_passed INTEGER NOT NULL DEFAULT 0,
-                    is_text_verified INTEGER NOT NULL DEFAULT 0,
+                    is_text_verified INTEGER NOT NULL DEFAULT 1,
                     is_phone_verified INTEGER NOT NULL DEFAULT 0,
                     is_banned INTEGER NOT NULL DEFAULT 0,
                     is_withdraw_banned INTEGER NOT NULL DEFAULT 0,
@@ -241,7 +228,7 @@ def _init_db_sync():
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_rewarded INTEGER NOT NULL DEFAULT 0;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_captcha_passed INTEGER NOT NULL DEFAULT 0;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_text_verified INTEGER NOT NULL DEFAULT 0;")
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_text_verified INTEGER NOT NULL DEFAULT 1;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_phone_verified INTEGER NOT NULL DEFAULT 0;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_withdraw_banned INTEGER NOT NULL DEFAULT 0;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_info TEXT;")
@@ -270,7 +257,6 @@ def _init_db_sync():
                 ('maintenance', '0'),
                 ('check_channels', '1'),
                 ('check_captcha', '1'),
-                ('check_ai_text', '1'),
                 ('check_phone', '1'),
                 ('check_ip', '1'),
                 ('enable_withdraw', '1')
@@ -291,7 +277,7 @@ def get_now_str():
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 # ============================================================
-# CẤU HÌNH SETTINGS (BẬT / TẮT BƯỚC XÁC MINH & RÚT TIỀN)
+# CẤU HÌNH SETTINGS
 # ============================================================
 
 async def get_setting(key: str, default="1") -> bool:
@@ -346,7 +332,7 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ============================================================
-# CAPTCHA & AI & CHECK IP & PHONE VERIFICATION
+# CAPTCHA & CHECK IP & PHONE VERIFICATION
 # ============================================================
 
 def generate_captcha():
@@ -361,40 +347,6 @@ def generate_captcha():
     opts_list = list(options)
     random.shuffle(opts_list)
     return a, b, correct_ans, opts_list
-
-def generate_text_verification():
-    chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    raw_code = "".join(random.choices(chars, k=5))
-    
-    formatted_display = ""
-    for char in raw_code:
-        icon = random.choice(PREMIUM_ICONS)
-        formatted_display += f" <b>{char}</b> {icon}"
-    
-    prefix_icons = "".join(random.sample(PREMIUM_ICONS, 3))
-    suffix_icons = "".join(random.sample(PREMIUM_ICONS, 3))
-    
-    display_text = f"{prefix_icons}\n👉 {formatted_display}\n{suffix_icons}"
-    return raw_code, display_text
-
-async def send_text_verification_challenge(update_or_message, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update_or_message.effective_user.id if hasattr(update_or_message, "effective_user") else update_or_message.from_user.id
-    raw_code, display_text = generate_text_verification()
-    
-    context.user_data["text_verify_code"] = raw_code
-    
-    caption = (
-        f"{E['ALERT1']} <b>XÁC MINH KÝ TỰ BẢO MẬT (CHỐNG BOT/AI)</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"Vui lòng nhập lại <b>đúng 5 ký tự</b> (viết hoa hoặc viết thường) xuất hiện dưới đây:\n\n"
-        f"{display_text}\n\n"
-        f"<i>(Lưu ý: Chỉ nhập các chữ cái/chữ số, không nhập emoji/icon)</i>"
-    )
-    
-    if hasattr(update_or_message, "reply_text"):
-        await update_or_message.reply_text(caption, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
-    else:
-        await context.bot.send_message(chat_id=user_id, text=caption, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
 
 async def send_phone_verification_challenge(update_or_message, context: ContextTypes.DEFAULT_TYPE):
     user_id = update_or_message.effective_user.id if hasattr(update_or_message, "effective_user") else update_or_message.from_user.id
@@ -462,10 +414,6 @@ async def process_user_verification_flow(update: Update, context: ContextTypes.D
         await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục:</b>")
         return False
 
-    if await get_setting("check_ai_text") and not db_user[11]:
-        await send_text_verification_challenge(update.effective_message or update, context)
-        return False
-
     if await get_setting("check_phone") and not db_user[9]:
         await send_phone_verification_challenge(update.effective_message or update, context)
         return False
@@ -484,11 +432,10 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
     referrer_id, ref_rewarded = db_user[4], db_user[6]
 
     check_cap = not await get_setting("check_captcha") or db_user[7] == 1
-    check_txt = not await get_setting("check_ai_text") or db_user[11] == 1
     check_phn = not await get_setting("check_phone") or db_user[9] == 1
     check_ip_cond = not await get_setting("check_ip") or db_user[13] is not None or db_user[14] == 1
 
-    if referrer_id and ref_rewarded == 0 and check_cap and check_txt and check_phn and check_ip_cond:
+    if referrer_id and ref_rewarded == 0 and check_cap and check_phn and check_ip_cond:
         try:
             def reward_referrer(cursor):
                 cursor.execute("SELECT ref_rewarded FROM users WHERE user_id=%s", (user_id,))
@@ -523,7 +470,6 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
 # ============================================================
 
 async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý sự kiện khi thành viên thay đổi trạng thái tham gia kênh/nhóm."""
     pass
 
 async def get_missing_channels(bot, user_id):
@@ -877,39 +823,8 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(chat_id=user.id, text=f"{E['LAUGH1']} <b>Bạn đã hoàn tất tất cả xác minh!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 # ============================================================
-# XỬ LÝ KÝ TỰ BẢO MẬT & MINIAPP CHECK IP
+# MINIAPP CHECK IP
 # ============================================================
-
-async def handle_text_verification_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user = update.effective_user
-    message = update.effective_message
-    if not user or not message or update.effective_chat.type != "private":
-        return False
-
-    db_user = await get_fresh_user(user.id)
-    if not db_user or db_user[11] == 1 or not await get_setting("check_ai_text"):
-        return False
-
-    expected_code = context.user_data.get("text_verify_code")
-    if not expected_code:
-        await send_text_verification_challenge(message, context)
-        return True
-
-    user_input = (message.text or "").strip().upper()
-
-    if user_input != expected_code:
-        await message.reply_text(f"{E['BAN']} <b>MÃ XÁC MINH KHÔNG CHÍNH XÁC!</b>\nVui lòng nhập đúng 5 ký tự (chữ cái/chữ số) được hiển thị bên dưới.", parse_mode="HTML")
-        await send_text_verification_challenge(message, context)
-        return True
-
-    context.user_data.pop("text_verify_code", None)
-    await db_query("UPDATE users SET is_text_verified=1 WHERE user_id=%s", (user.id,), commit=True)
-    await message.reply_text(f"{E['CHECK_ANIMATED']} <b>XÁC MINH KÝ TỰ THÀNH CÔNG!</b>", parse_mode="HTML")
-
-    if await process_user_verification_flow(update, context, user.id):
-        await trigger_referral_reward_if_eligible(user.id, context)
-        await message.reply_text(f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
-    return True
 
 async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -958,7 +873,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await message.reply_text(f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 # ============================================================
-# LỆNH ADMIN: /menu, /bo, /moip, /setmenu
+# LỆNH ADMIN
 # ============================================================
 
 async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -967,7 +882,6 @@ async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     c_chan = "🟢 BẬT" if await get_setting("check_channels") else "🔴 TẮT"
     c_cap = "🟢 BẬT" if await get_setting("check_captcha") else "🔴 TẮT"
-    c_txt = "🟢 BẬT" if await get_setting("check_ai_text") else "🔴 TẮT"
     c_phn = "🟢 BẬT" if await get_setting("check_phone") else "🔴 TẮT"
     c_ip = "🟢 BẬT" if await get_setting("check_ip") else "🔴 TẮT"
     c_wd = "🟢 BẬT" if await get_setting("enable_withdraw") else "🔴 TẮT"
@@ -975,9 +889,8 @@ async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"1. Check Kênh: {c_chan}", callback_data="toggle_check_channels")],
         [InlineKeyboardButton(f"2. Check Captcha: {c_cap}", callback_data="toggle_check_captcha")],
-        [InlineKeyboardButton(f"3. Check Ký tự AI: {c_txt}", callback_data="toggle_check_ai_text")],
-        [InlineKeyboardButton(f"4. Check SĐT (+84): {c_phn}", callback_data="toggle_check_phone")],
-        [InlineKeyboardButton(f"5. Check IP Miniapp: {c_ip}", callback_data="toggle_check_ip")],
+        [InlineKeyboardButton(f"3. Check SĐT (+84): {c_phn}", callback_data="toggle_check_phone")],
+        [InlineKeyboardButton(f"4. Check IP Miniapp: {c_ip}", callback_data="toggle_check_ip")],
         [InlineKeyboardButton(f"💳 Tính năng Rút Tiền: {c_wd}", callback_data="toggle_enable_withdraw")],
         [InlineKeyboardButton("🔄 Xác Minh Toàn Bộ", callback_data="force_verify_all")],
     ])
@@ -1016,17 +929,21 @@ async def force_verify_all_callback(update: Update, context: ContextTypes.DEFAUL
     except Exception:
         pass
 
-    # Reset trạng thái xác minh của tất cả người dùng trong hệ thống
     await db_query(
-        "UPDATE users SET is_captcha_passed=0, is_text_verified=0, is_phone_verified=0, ip_address=NULL, skip_ip_check=0",
+        "UPDATE users SET is_captcha_passed=0, is_phone_verified=0, ip_address=NULL, skip_ip_check=0, ref_rewarded=0",
         commit=True
     )
 
+    await set_setting("check_channels", "1")
+    await set_setting("check_captcha", "1")
+    await set_setting("check_phone", "1")
+    await set_setting("check_ip", "1")
+
     try:
         await query.edit_message_text(
-            f"{E['CHECK_ANIMATED']} <b>ĐÃ YÊU CẦU XÁC MINH TOÀN BỘ THÀNH VIÊN!</b>\n"
-            f"• Toàn bộ dữ liệu xác minh (Captcha, AI, SĐT, IP) đã được làm mới.\n"
-            f"• Người dùng sẽ phải thực hiện lại tất cả các bước xác minh ở lần tương tác tiếp theo.",
+            f"{E['CHECK_ANIMATED']} <b>ĐÃ XÁC MINH LẠI TOÀN BỘ HỆ THỐNG THÀNH CÔNG!</b>\n"
+            f"• Toàn bộ các bước (Kênh, Captcha, SĐT +84, IP) đã được kích hoạt bắt buộc.\n"
+            f"• Thành viên khi bấm /start sẽ phải thực hiện lại từ đầu.",
             parse_mode="HTML"
         )
     except Exception:
@@ -1395,7 +1312,7 @@ async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
     user_id, amount, status, bank_info = tx
     admin_name_str = f"@{admin_user.username}" if admin_user.username else f"<code>{admin_user.id}</code>"
     if status != "Chờ duyệt":
-        try: await query.answer("⚠️️ Giao dịch này đã được xử lý trước đó!", show_alert=True)
+        try: await query.answer("⚠ Giao dịch này đã được xử lý trước đó!", show_alert=True)
         except Exception: pass
         return
 
@@ -1618,7 +1535,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("❌ Không tìm thấy ID này trong cơ sở dữ liệu.")
                 return
 
-            invited_users = await db_query("SELECT user_id, username, is_captcha_passed, is_text_verified, is_phone_verified, ref_rewarded, joined_at FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
+            invited_users = await db_query("SELECT user_id, username, is_captcha_passed, is_phone_verified, ref_rewarded, joined_at FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
 
             if not invited_users:
                 await message.reply_text(f"{E['ALERT1']} Người dùng <code>{target_id}</code> chưa giới thiệu được ai.", parse_mode="HTML")
@@ -1629,7 +1546,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"{E['CHART']} <b>DANH SÁCH CHI TIẾT NGUỜI ĐƯỢC MỜI BỞI <code>{target_id}</code></b>\n━━━━━━━━━━━━━━━━━━\n"
             msg += f"{E['COOL']} Tổng người đã giới thiệu: <b>{len(invited_users)}</b>\n\n"
 
-            for inv_id, inv_username, is_captcha, is_text, is_phone, ref_rewarded, joined_at in invited_users:
+            for inv_id, inv_username, is_captcha, is_phone, ref_rewarded, joined_at in invited_users:
                 uname = f"@{inv_username}" if inv_username else f"<code>{inv_id}</code>"
                 try: missing_ch = await get_missing_channels(context.bot, inv_id)
                 except Exception: missing_ch = []
@@ -1637,7 +1554,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"👤 <b>Thành viên:</b> {uname} (<code>{inv_id}</code>)\n"
                 msg += f"🗓 <b>Tham gia:</b> <code>{joined_at or 'N/A'}</code>\n"
                 msg += f"├ {'✅ Đã giải' if is_captcha else '❌ Chưa giải'} Captcha\n"
-                msg += f"├ {'✅ Đã xong' if is_text else '❌ Chưa xong'} Xác minh AI\n"
                 msg += f"├ {'✅ Đã chia sẻ' if is_phone else '❌ Chưa chia sẻ'} Số điện thoại (+84)\n"
                 if not missing_ch:
                     msg += f"└ <b>Kênh đối tác:</b> Đã tham gia ĐỦ\n"
@@ -1711,10 +1627,10 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except (ValueError, TypeError):
                 await message.reply_text("❌ USER_ID không hợp lệ.")
                 return
-            invited_users = await db_query("SELECT user_id, username, joined_at, ref_rewarded, is_captcha_passed, is_text_verified, is_phone_verified FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
+            invited_users = await db_query("SELECT user_id, username, joined_at, ref_rewarded, is_captcha_passed, is_phone_verified FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
             msg = f"{E['COOL']} <b>DANH SÁCH BẠN BÈ MỜI CỦA USER <code>{target_id}</code></b> (Tổng: <code>{len(invited_users)}</code> người):\n━━━━━━━━━━━━━━━━━━\n\n"
             if invited_users:
-                for invited_id, username, joined_at, ref_rewarded, is_captcha_passed, is_text_verified, is_phone_verified in invited_users:
+                for invited_id, username, joined_at, ref_rewarded, is_captcha_passed, is_phone_verified in invited_users:
                     uname = f"@{username}" if username else "Chưa đặt username"
                     status = "✅ Hợp lệ" if ref_rewarded == 1 else ("⏳ Chưa giải CAPTCHA" if is_captcha_passed == 0 else ("⏳ Chưa xác minh SĐT" if is_phone_verified == 0 else "⏳ Chưa hoàn tất"))
                     msg += f"• ID: <code>{invited_id}</code> | Name: {uname} | {status}\n"
@@ -1795,7 +1711,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": bool(qr_url)})
                 except Exception as exc:
                     logger.error("Lỗi gửi ảnh QR lệnh rút #%s: %s", tx_id, exc)
-                    sent_msg = await message.reply_text(msg_text + f"\n\n⚠️️ <i>(Không tải được ảnh QR VietQR)</i>", reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
+                    sent_msg = await message.reply_text(msg_text + f"\n\n⚠ <i>(Không tải được ảnh QR VietQR)</i>", reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
                     refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
                     refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": False})
                 
@@ -1850,7 +1766,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_message_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message or await handle_anti_spam(update, context):
         return
-    if await handle_withdraw_amount(update, context) or await handle_text_verification_input(update, context):
+    if await handle_withdraw_amount(update, context):
         return
     await menu_handler(update, context)
 
@@ -1893,12 +1809,9 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_withdraw_callback, pattern=r"^(approve|reject)_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_userinfo_callback, pattern=r"^userinfo_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_toggle_callback, pattern=r"^toggle_"))
-    
-    # Bổ sung handler xử lý nút callback "Xác Minh Toàn Bộ"
     app.add_handler(CallbackQueryHandler(force_verify_all_callback, pattern=r"^force_verify_all$"))
 
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
-    
     app.add_handler(MessageHandler(filters.CONTACT, contact_handler))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_dispatcher))
