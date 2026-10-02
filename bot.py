@@ -410,17 +410,14 @@ async def process_user_verification_flow(update: Update, context: ContextTypes.D
                 await update.effective_message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
             return False
 
-    # 1. Xác minh SĐT trước
     if await get_setting("check_phone") and not db_user[9]:
         await send_phone_verification_challenge(update.effective_message or update, context)
         return False
 
-    # 2. Xác minh IP
     if await get_setting("check_ip") and not db_user[13] and db_user[14] == 0:
         await send_ip_verification_challenge(update.effective_message or update, context)
         return False
 
-    # 3. Xác minh Captcha cuối cùng
     if await get_setting("check_captcha") and not db_user[7]:
         await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục:</b>")
         return False
@@ -504,7 +501,7 @@ def build_channel_buttons(missing_channels):
     for ch in OPTIONAL_DISPLAY_CHANNELS:
         channel_url = f"https://t.me/{ch.replace('@', '')}"
         buttons.append([InlineKeyboardButton(f"🌟 Tham gia: {ch} (Tham khảo)", url=channel_url)])
-    buttons.append([InlineKeyboardButton("❇️ XÁC NHẬN ĐÃ THAM GIA ❇️", callback_data="verify_join")])
+    buttons.append([InlineKeyboardButton("❇️ XÁC NHẬN ĐÃ THAM GIA ❇️️", callback_data="verify_join")])
     return buttons
 
 # ============================================================
@@ -707,7 +704,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         commit=True
     )
 
-    # Gửi tin nhắn thông báo thành công và kiểm tra bước tiếp theo
     await message.reply_text(
         f"{E['CHECK_ANIMATED']} Xác minh số điện thoại thành công!\n\n"
         f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
@@ -881,7 +877,6 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await db_query("UPDATE users SET ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
     
-    # Gửi tin nhắn thông báo thành công IP và kiểm tra bước tiếp theo
     await message.reply_text(
         f"{E['CHECK_ANIMATED']} Xác minh IP thành công!\n\n"
         f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
@@ -1499,24 +1494,32 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not u:
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
+            
+            # Sửa truy vấn an toàn, tránh lỗi khi user chưa có giao dịch nào
             stats = await db_query(
                 """
                 SELECT 
-                    COUNT(*),
+                    COALESCE(COUNT(*), 0),
                     COALESCE(SUM(CASE WHEN status='Thành công' THEN amount ELSE 0 END), 0),
-                    COUNT(CASE WHEN status='Thành công' THEN 1 END),
-                    COUNT(CASE WHEN status='Chờ duyệt' THEN 1 END),
-                    COUNT(CASE WHEN status='Từ chối' THEN 1 END)
+                    COALESCE(COUNT(CASE WHEN status='Thành công' THEN 1 END), 0),
+                    COALESCE(COUNT(CASE WHEN status='Chờ duyệt' THEN 1 END), 0),
+                    COALESCE(COUNT(CASE WHEN status='Từ chối' THEN 1 END), 0)
                 FROM transactions
                 WHERE user_id=%s AND type='Rút Tiền'
                 """,
                 (target_id,), fetchone=True
             )
-            total_attempts, success_amount, success_count, pending_count, reject_count = stats
+            
+            if not stats:
+                total_attempts, success_amount, success_count, pending_count, reject_count = 0, 0, 0, 0, 0
+            else:
+                total_attempts, success_amount, success_count, pending_count, reject_count = stats
+
             username = f"@{u[1]}" if u[1] else "Chưa đặt"
             bank = u[3] if u[3] else "Chưa liên kết"
             referrer = u[4] if u[4] is not None else "Không có"
             withdraw_txs = await db_query("SELECT id, amount, status, created_at FROM transactions WHERE user_id=%s AND type='Rút Tiền' ORDER BY id DESC LIMIT 10", (target_id,), fetchall=True)
+            
             msg = (
                 f"{E['EYES']} <b>THÔNG TIN RÚT TIỀN CỦA USER <code>{target_id}</code></b>\n━━━━━━━━━━━━━━━━━━\n"
                 f"{E['COOL']} Username: {username}\n"
