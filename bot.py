@@ -126,7 +126,6 @@ E = {
     "PRAY": '<tg-emoji emoji-id="5228878926306101271">🙏</tg-emoji>',
     "MONEY": '<tg-emoji emoji-id="5278467510604160626">💰</tg-emoji>',
     "FLASH": '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
-    "GLOBE": '<tg-emoji emoji-id="5416117059207572332">🌐</tg-emoji>',
 }
 
 # ============================================================
@@ -1661,7 +1660,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['COOL']} <b>Tổng số đã mời:</b> <code>{invited_count}</code> bạn bè\n"
                 f"{E['GAME']} <b>Trạng thái Captcha:</b> {captcha_status}\n"
                 f"{E['CHECK_ANIMATED']} <b>Trạng thái SĐT:</b> {phone_status}\n"
-                f"{E['GLOBE']} <b>Địa chỉ IP:</b> <code>{ip_str}</code>\n"
+                f"🌐 <b>Địa chỉ IP:</b> <code>{ip_str}</code>\n"
                 f"{E['BAN']} <b>Khóa tài khoản:</b> <b>{banned_status}</b>\n"
                 f"{E['STOP']} <b>Cấm rút tiền:</b> <b>{withdraw_banned_status}</b>\n"
                 f"{E['CALENDAR']} <b>Ngày tham gia:</b> <code>{joined_date}</code>\n\n"
