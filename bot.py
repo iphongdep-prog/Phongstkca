@@ -97,7 +97,7 @@ E = {
     "DROP": '<tg-emoji emoji-id="5393512611968995988">💧</tg-emoji>',
     "SNOW": '<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji>',
     "SUN": '<tg-emoji emoji-id="5402477260982731644">☀️</tg-emoji>',
-    "ARROW_DOWN": '<tg-emoji emoji-id="5416117059207572332">➡️️</tg-emoji>',
+    "ARROW_DOWN": '<tg-emoji emoji-id="5416117059207572332">➡</tg-emoji>',
     "MAIL": '<tg-emoji emoji-id="5253742260054409879">✉</tg-emoji>',
     "LOCK": '<tg-emoji emoji-id="5296369303661067030">🔒</tg-emoji>',
     "GAME": '<tg-emoji emoji-id="5361741454685256344">🎮</tg-emoji>',
@@ -126,6 +126,7 @@ E = {
     "PRAY": '<tg-emoji emoji-id="5228878926306101271">🙏</tg-emoji>',
     "MONEY": '<tg-emoji emoji-id="5278467510604160626">💰</tg-emoji>',
     "FLASH": '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
+    "GLOBE": '<tg-emoji emoji-id="5416117059207572332">🌐</tg-emoji>',
 }
 
 # ============================================================
@@ -1614,9 +1615,9 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.02)
             await message.reply_text(f"{E['THUMB']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.", parse_mode="HTML")
 
-        elif cmd == "/tt":
+        elif cmd in ("/tt", "/ttf"):
             if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/tt USER_ID</code>", parse_mode="HTML")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>{cmd} USER_ID</code>", parse_mode="HTML")
                 return
             try:
                 target_id = int(args[0])
@@ -1845,7 +1846,7 @@ def main():
     admin_cmds = [
         "resetall", "tong", "tongrut", "rutid", "tb", "tt", "bb", "ban", "moban",
         "cam", "mocam", "rutls", "ruttc", "nap", "tru", "lsgd", "baotri",
-        "resetbank", "dl"
+        "resetbank", "dl", "ttf"
     ]
     for command in admin_cmds:
         app.add_handler(CommandHandler(command, admin_commands))
