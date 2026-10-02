@@ -76,7 +76,7 @@ E = {
     "EYES": '<tg-emoji emoji-id="5210956306952758910">👀</tg-emoji>',
     "LIGHTNING": '<tg-emoji emoji-id="5456140674028019486">⚡</tg-emoji>',
     "COMET": '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>',
-    "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔️️</tg-emoji>',
+    "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔</tg-emoji>',
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
     "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗</tg-emoji>',
     "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
@@ -98,7 +98,7 @@ E = {
     "SNOW": '<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji>',
     "SUN": '<tg-emoji emoji-id="5402477260982731644">☀️</tg-emoji>',
     "ARROW_DOWN": '<tg-emoji emoji-id="5406745015365943482">⬇️</tg-emoji>',
-    "MAIL": '<tg-emoji emoji-id="5253742260054409879">✉️️</tg-emoji>',
+    "MAIL": '<tg-emoji emoji-id="5253742260054409879">✉</tg-emoji>',
     "LOCK": '<tg-emoji emoji-id="5296369303661067030">🔒</tg-emoji>',
     "GAME": '<tg-emoji emoji-id="5361741454685256344">🎮</tg-emoji>',
     "GEAR": '<tg-emoji emoji-id="5341715473882955310">⚙️</tg-emoji>',
@@ -238,7 +238,6 @@ def _init_db_sync():
                 )
                 """
             )
-            # Thêm cột nếu chưa tồn tại
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_rewarded INTEGER NOT NULL DEFAULT 0;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_captcha_passed INTEGER NOT NULL DEFAULT 0;")
@@ -709,7 +708,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     phone_number = contact.phone_number.strip()
     
-    # Kiểm tra số điện thoại Việt Nam (+84 hoặc 84 hoặc bắt đầu bằng 0 đổi về +84)
     normalized_phone = phone_number
     if phone_number.startswith("84"):
         normalized_phone = "+" + phone_number
@@ -721,7 +719,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_phone_verification_challenge(message, context)
         return
 
-    # Kiểm tra yêu cầu: Tên hiển thị không quá 20 ký tự
     full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
     if len(full_name) > 20:
         await message.reply_text(
@@ -731,7 +728,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Kiểm tra yêu cầu: Có username
     if not user.username:
         await message.reply_text(
             "❌ **Chưa có Username!**\n"
@@ -740,7 +736,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Kiểm tra yêu cầu: Có ảnh đại diện
     try:
         photos = await context.bot.get_user_profile_photos(user.id, limit=1)
         if photos.total_count == 0:
@@ -753,7 +748,6 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         logger.warning("Không kiểm tra được avatar user %s: %s", user.id, exc)
 
-    # Lưu số điện thoại và cập nhật trạng thái xác minh
     await db_query(
         "UPDATE users SET phone_number=%s, is_phone_verified=1 WHERE user_id=%s",
         (normalized_phone, user.id),
@@ -981,12 +975,13 @@ async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(f"4. Check SĐT (+84): {c_phn}", callback_data="toggle_check_phone")],
         [InlineKeyboardButton(f"5. Check IP Miniapp: {c_ip}", callback_data="toggle_check_ip")],
         [InlineKeyboardButton(f"💳 Tính năng Rút Tiền: {c_wd}", callback_data="toggle_enable_withdraw")],
+        [InlineKeyboardButton("🔄 Xác Minh Toàn Bộ", callback_data="force_verify_all")],
     ])
 
     msg_text = (
         f"{E['GEAR']} <b>MENU QUẢN LÝ BẬT/TẮT HỆ THỐNG</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"Bấm vào các nút bên dưới để Bật hoặc Tắt nhanh tính năng tương ứng:"
+        f"Bấm vào các nút bên dưới để Bật hoặc Tắt nhanh tính năng tương ứng hoặc yêu cầu xác minh lại:"
     )
 
     if update.callback_query:
@@ -1007,6 +1002,31 @@ async def admin_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TY
     curr = await get_setting(key)
     await set_setting(key, "0" if curr else "1")
     await admin_menu_panel(update, context)
+
+async def force_verify_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    # Reset trạng thái xác minh của tất cả người dùng trong hệ thống
+    await db_query(
+        "UPDATE users SET is_captcha_passed=0, is_text_verified=0, is_phone_verified=0, ip_address=NULL, skip_ip_check=0",
+        commit=True
+    )
+
+    try:
+        await query.edit_message_text(
+            f"{E['CHECK_ANIMATED']} <b>ĐÃ YÊU CẦU XÁC MINH TOÀN BỘ THÀNH VIÊN!</b>\n"
+            f"• Toàn bộ dữ liệu xác minh (Captcha, AI, SĐT, IP) đã được làm mới.\n"
+            f"• Người dùng sẽ phải thực hiện lại tất cả các bước xác minh ở lần tương tác tiếp theo.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
 async def bo_ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update): return
@@ -1869,10 +1889,12 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_withdraw_callback, pattern=r"^(approve|reject)_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_userinfo_callback, pattern=r"^userinfo_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_toggle_callback, pattern=r"^toggle_"))
+    
+    # Bổ sung handler xử lý nút callback "Xác Minh Toàn Bộ"
+    app.add_handler(CallbackQueryHandler(force_verify_all_callback, pattern=r"^force_verify_all$"))
 
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
     
-    # Bổ sung handler xử lý chia sẻ số điện thoại (Contact)
     app.add_handler(MessageHandler(filters.CONTACT, contact_handler))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_dispatcher))
