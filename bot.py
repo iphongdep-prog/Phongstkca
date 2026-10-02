@@ -79,7 +79,7 @@ E = {
     "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔</tg-emoji>',
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
     "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗</tg-emoji>',
-    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️️</tg-emoji>',
+    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
     "ALERT1": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
@@ -126,6 +126,7 @@ E = {
     "PRAY": '<tg-emoji emoji-id="5228878926306101271">🙏</tg-emoji>',
     "MONEY": '<tg-emoji emoji-id="5278467510604160626">💰</tg-emoji>',
     "FLASH": '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
+    "GLOBE": '🌐',
 }
 
 # ============================================================
@@ -1659,7 +1660,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['COOL']} <b>Tổng số đã mời:</b> <code>{invited_count}</code> bạn bè\n"
                 f"{E['GAME']} <b>Trạng thái Captcha:</b> {captcha_status}\n"
                 f"{E['CHECK_ANIMATED']} <b>Trạng thái SĐT:</b> {phone_status}\n"
-                f"{E['GLOBE'] if 'GLOBE' in E else E['CLIP']} <b>Địa chỉ IP:</b> <code>{ip_str}</code>\n"
+                f"{E['GLOBE']} <b>Địa chỉ IP:</b> <code>{ip_str}</code>\n"
                 f"{E['BAN']} <b>Khóa tài khoản:</b> <b>{banned_status}</b>\n"
                 f"{E['STOP']} <b>Cấm rút tiền:</b> <b>{withdraw_banned_status}</b>\n"
                 f"{E['CALENDAR']} <b>Ngày tham gia:</b> <code>{joined_date}</code>\n\n"
