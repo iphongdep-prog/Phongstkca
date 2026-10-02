@@ -519,8 +519,12 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
             logger.exception("Lỗi transaction thưởng giới thiệu: %s", exc)
 
 # ============================================================
-# KIỂM TRA THAM GIA KÊNH (TỐI ƯU CHỐNG LAG)
+# KIỂM TRA THAM GIA KÊNH & CHAT MEMBER UPDATED
 # ============================================================
+
+async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý sự kiện khi thành viên thay đổi trạng thái tham gia kênh/nhóm."""
+    pass
 
 async def get_missing_channels(bot, user_id):
     sem = asyncio.Semaphore(4)
@@ -1391,7 +1395,7 @@ async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
     user_id, amount, status, bank_info = tx
     admin_name_str = f"@{admin_user.username}" if admin_user.username else f"<code>{admin_user.id}</code>"
     if status != "Chờ duyệt":
-        try: await query.answer("⚠️ Giao dịch này đã được xử lý trước đó!", show_alert=True)
+        try: await query.answer("⚠️️ Giao dịch này đã được xử lý trước đó!", show_alert=True)
         except Exception: pass
         return
 
@@ -1791,7 +1795,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": bool(qr_url)})
                 except Exception as exc:
                     logger.error("Lỗi gửi ảnh QR lệnh rút #%s: %s", tx_id, exc)
-                    sent_msg = await message.reply_text(msg_text + f"\n\n⚠️ <i>(Không tải được ảnh QR VietQR)</i>", reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
+                    sent_msg = await message.reply_text(msg_text + f"\n\n⚠️️ <i>(Không tải được ảnh QR VietQR)</i>", reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
                     refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
                     refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": False})
                 
