@@ -501,7 +501,7 @@ def build_channel_buttons(missing_channels):
     for ch in OPTIONAL_DISPLAY_CHANNELS:
         channel_url = f"https://t.me/{ch.replace('@', '')}"
         buttons.append([InlineKeyboardButton(f"🌟 Tham gia: {ch} (Tham khảo)", url=channel_url)])
-    buttons.append([InlineKeyboardButton("❇️ XÁC NHẬN ĐÃ THAM GIA ❇️️", callback_data="verify_join")])
+    buttons.append([InlineKeyboardButton("❇️ XÁC NHẬN ĐÃ THAM GIA ❇️", callback_data="verify_join")])
     return buttons
 
 # ============================================================
@@ -1495,7 +1495,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
             
-            # Sửa truy vấn an toàn, tránh lỗi khi user chưa có giao dịch nào
+            # Đảm bảo câu lệnh SQL sử dụng COALESCE an toàn tuyệt đối khi chưa có giao dịch
             stats = await db_query(
                 """
                 SELECT 
