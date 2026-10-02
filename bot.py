@@ -82,7 +82,7 @@ E = {
     "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
-    "ALERT1": '<tg-emoji emoji-id="5447644880824181073">⚠</tg-emoji>',
+    "ALERT1": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
     "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
     "CHART": '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>',
     "UP": '<tg-emoji emoji-id="5449683594425410231">🔼</tg-emoji>',
@@ -90,14 +90,14 @@ E = {
     "MEDAL1": '<tg-emoji emoji-id="5440539497383087970">🥇</tg-emoji>',
     "MEDAL2": '<tg-emoji emoji-id="5447203607294265305">🥈</tg-emoji>',
     "MEDAL3": '<tg-emoji emoji-id="5453902265922376865">🥉</tg-emoji>',
-    "CHECK_ANIMATED": '<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>',
+    "CHECK_ANIMATED": '<tg-emoji emoji-id="5206607081334906820">✔️️</tg-emoji>',
     "FREE": '<tg-emoji emoji-id="5406756500108501710">🆓</tg-emoji>',
     "PENCIL": '<tg-emoji emoji-id="5395444784611480792">✏️</tg-emoji>',
     "CALENDAR": '<tg-emoji emoji-id="5413879192267805083">🗓</tg-emoji>',
     "DROP": '<tg-emoji emoji-id="5393512611968995988">💧</tg-emoji>',
     "SNOW": '<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji>',
     "SUN": '<tg-emoji emoji-id="5402477260982731644">☀️</tg-emoji>',
-    "ARROW_DOWN": '<tg-emoji emoji-id="5406745015365943482">⬇️</tg-emoji>',
+    "ARROW_DOWN": '<tg-emoji emoji-id="5416117059207572332">➡️</tg-emoji>',
     "MAIL": '<tg-emoji emoji-id="5253742260054409879">✉</tg-emoji>',
     "LOCK": '<tg-emoji emoji-id="5296369303661067030">🔒</tg-emoji>',
     "GAME": '<tg-emoji emoji-id="5361741454685256344">🎮</tg-emoji>',
@@ -352,12 +352,12 @@ async def send_phone_verification_challenge(update_or_message, context: ContextT
     user_id = update_or_message.effective_user.id if hasattr(update_or_message, "effective_user") else update_or_message.from_user.id
     caption = (
         f"{E['LOCK']} <b>XÁC MINH SỐ ĐIỆN THOẠI</b>\n\n"
-        f"❗️ <b>Yêu cầu tài khoản hợp lệ:</b>\n"
-        f"✔️ Số điện thoại Việt Nam (+84)\n"
-        f"✔️ Tên hiển thị không quá 20 ký tự\n"
-        f"✔️ Có username (@)\n"
-        f"✔️ Có ảnh đại diện\n"
-        f"➡ Nhấn nút bên dưới để chia sẻ số điện thoại:"
+        f"{E['ALERT1']} <b>Yêu cầu tài khoản hợp lệ:</b>\n"
+        f"{E['CHECK_ANIMATED']} Số điện thoại Việt Nam (+84)\n"
+        f"{E['CHECK_ANIMATED']} Tên hiển thị không quá 20 ký tự\n"
+        f"{E['CHECK_ANIMATED']} Có username (@)\n"
+        f"{E['CHECK_ANIMATED']} Có ảnh đại diện\n"
+        f"{E['ARROW_DOWN']} Nhấn nút bên dưới để chia sẻ số điện thoại:"
     )
     kb = ReplyKeyboardMarkup(
         [[KeyboardButton("📱 Chia sẻ số điện thoại", request_contact=True)]],
@@ -388,7 +388,7 @@ async def send_ip_verification_challenge(update_or_message, context: ContextType
         await context.bot.send_message(chat_id=user_id, text=caption, parse_mode="HTML", reply_markup=kb)
 
 # ============================================================
-# KIỂM TRA LUỒNG XÁC MINH CHUNG
+# KIỂM TRA LUỒNG XÁC MINH CHUNG (SĐT -> IP -> CAPTCHA)
 # ============================================================
 
 async def process_user_verification_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
@@ -410,16 +410,19 @@ async def process_user_verification_flow(update: Update, context: ContextTypes.D
                 await update.effective_message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
             return False
 
-    if await get_setting("check_captcha") and not db_user[7]:
-        await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục:</b>")
-        return False
-
+    # 1. Xác minh SĐT trước
     if await get_setting("check_phone") and not db_user[9]:
         await send_phone_verification_challenge(update.effective_message or update, context)
         return False
 
+    # 2. Xác minh IP
     if await get_setting("check_ip") and not db_user[13] and db_user[14] == 0:
         await send_ip_verification_challenge(update.effective_message or update, context)
+        return False
+
+    # 3. Xác minh Captcha cuối cùng
+    if await get_setting("check_captcha") and not db_user[7]:
+        await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục:</b>")
         return False
 
     return True
@@ -881,16 +884,16 @@ async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     c_chan = "🟢 BẬT" if await get_setting("check_channels") else "🔴 TẮT"
-    c_cap = "🟢 BẬT" if await get_setting("check_captcha") else "🔴 TẮT"
     c_phn = "🟢 BẬT" if await get_setting("check_phone") else "🔴 TẮT"
     c_ip = "🟢 BẬT" if await get_setting("check_ip") else "🔴 TẮT"
+    c_cap = "🟢 BẬT" if await get_setting("check_captcha") else "🔴 TẮT"
     c_wd = "🟢 BẬT" if await get_setting("enable_withdraw") else "🔴 TẮT"
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"1. Check Kênh: {c_chan}", callback_data="toggle_check_channels")],
-        [InlineKeyboardButton(f"2. Check Captcha: {c_cap}", callback_data="toggle_check_captcha")],
-        [InlineKeyboardButton(f"3. Check SĐT (+84): {c_phn}", callback_data="toggle_check_phone")],
-        [InlineKeyboardButton(f"4. Check IP Miniapp: {c_ip}", callback_data="toggle_check_ip")],
+        [InlineKeyboardButton(f"2. Check SĐT (+84): {c_phn}", callback_data="toggle_check_phone")],
+        [InlineKeyboardButton(f"3. Check IP Miniapp: {c_ip}", callback_data="toggle_check_ip")],
+        [InlineKeyboardButton(f"4. Check Captcha: {c_cap}", callback_data="toggle_check_captcha")],
         [InlineKeyboardButton(f"💳 Tính năng Rút Tiền: {c_wd}", callback_data="toggle_enable_withdraw")],
         [InlineKeyboardButton("🔄 Xác Minh Toàn Bộ", callback_data="force_verify_all")],
     ])
@@ -935,14 +938,14 @@ async def force_verify_all_callback(update: Update, context: ContextTypes.DEFAUL
     )
 
     await set_setting("check_channels", "1")
-    await set_setting("check_captcha", "1")
     await set_setting("check_phone", "1")
     await set_setting("check_ip", "1")
+    await set_setting("check_captcha", "1")
 
     try:
         await query.edit_message_text(
             f"{E['CHECK_ANIMATED']} <b>ĐÃ XÁC MINH LẠI TOÀN BỘ HỆ THỐNG THÀNH CÔNG!</b>\n"
-            f"• Toàn bộ các bước (Kênh, Captcha, SĐT +84, IP) đã được kích hoạt bắt buộc.\n"
+            f"• Toàn bộ các bước (Kênh, SĐT +84, IP, Captcha) đã được kích hoạt bắt buộc.\n"
             f"• Thành viên khi bấm /start sẽ phải thực hiện lại từ đầu.",
             parse_mode="HTML"
         )
@@ -1553,8 +1556,8 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 msg += f"👤 <b>Thành viên:</b> {uname} (<code>{inv_id}</code>)\n"
                 msg += f"🗓 <b>Tham gia:</b> <code>{joined_at or 'N/A'}</code>\n"
-                msg += f"├ {'✅ Đã giải' if is_captcha else '❌ Chưa giải'} Captcha\n"
                 msg += f"├ {'✅ Đã chia sẻ' if is_phone else '❌ Chưa chia sẻ'} Số điện thoại (+84)\n"
+                msg += f"├ {'✅ Đã giải' if is_captcha else '❌ Chưa giải'} Captcha\n"
                 if not missing_ch:
                     msg += f"└ <b>Kênh đối tác:</b> Đã tham gia ĐỦ\n"
                 else:
@@ -1632,7 +1635,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if invited_users:
                 for invited_id, username, joined_at, ref_rewarded, is_captcha_passed, is_phone_verified in invited_users:
                     uname = f"@{username}" if username else "Chưa đặt username"
-                    status = "✅ Hợp lệ" if ref_rewarded == 1 else ("⏳ Chưa giải CAPTCHA" if is_captcha_passed == 0 else ("⏳ Chưa xác minh SĐT" if is_phone_verified == 0 else "⏳ Chưa hoàn tất"))
+                    status = "✅ Hợp lệ" if ref_rewarded == 1 else ("⏳ Chưa xác minh SĐT" if is_phone_verified == 0 else ("⏳ Chưa giải CAPTCHA" if is_captcha_passed == 0 else "⏳ Chưa hoàn tất"))
                     msg += f"• ID: <code>{invited_id}</code> | Name: {uname} | {status}\n"
             else:
                 msg += "❌ Người dùng này chưa mời được ai.\n"
