@@ -90,7 +90,7 @@ E = {
     "MEDAL1": '<tg-emoji emoji-id="5440539497383087970">🥇</tg-emoji>',
     "MEDAL2": '<tg-emoji emoji-id="5447203607294265305">🥈</tg-emoji>',
     "MEDAL3": '<tg-emoji emoji-id="5453902265922376865">🥉</tg-emoji>',
-    "CHECK_ANIMATED": '<tg-emoji emoji-id="5206607081334906820">✔️️</tg-emoji>',
+    "CHECK_ANIMATED": '<tg-emoji emoji-id="5206607081334906820">✔</tg-emoji>',
     "FREE": '<tg-emoji emoji-id="5406756500108501710">🆓</tg-emoji>',
     "PENCIL": '<tg-emoji emoji-id="5395444784611480792">✏️</tg-emoji>',
     "CALENDAR": '<tg-emoji emoji-id="5413879192267805083">🗓</tg-emoji>',
@@ -707,10 +707,12 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         commit=True
     )
 
+    # Gửi tin nhắn thông báo thành công và kiểm tra bước tiếp theo
     await message.reply_text(
-        f"{E['CHECK_ANIMATED']} <b>XÁC MINH SỐ ĐIỆN THOẠI THÀNH CÔNG!</b>\n"
-        f"📱 Số điện thoại: <code>{normalized_phone}</code>",
-        parse_mode="HTML"
+        f"{E['CHECK_ANIMATED']} Xác minh số điện thoại thành công!\n\n"
+        f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
     )
 
     if await process_user_verification_flow(update, context, user.id):
@@ -777,7 +779,11 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await query.answer("✅ Xác minh CAPTCHA thành công!")
-        await query.edit_message_text(f"{E['CHECK_ANIMATED']} <b>XÁC THỰC CAPTCHA THÀNH CÔNG!</b>", parse_mode="HTML")
+        await query.edit_message_text(
+            f"{E['CHECK_ANIMATED']} Xác minh captcha thành công!\n\n"
+            f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
+            parse_mode="HTML"
+        )
     except Exception:
         pass
 
@@ -852,7 +858,12 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if db_user[14] == 1:
         await db_query("UPDATE users SET ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
-        await message.reply_text(f"{E['CHECK_ANIMATED']} <b>Xác minh IP thành công! (Tài khoản thuộc danh sách miễn kiểm tra)</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
+        await message.reply_text(
+            f"{E['CHECK_ANIMATED']} Xác minh IP thành công!\n\n"
+            f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
+            reply_markup=get_main_keyboard(),
+            parse_mode="HTML"
+        )
         return
 
     existing_ip_user = await db_query("SELECT user_id FROM users WHERE ip_address=%s AND user_id != %s AND skip_ip_check = 0", (ip_addr, user.id), fetchone=True)
@@ -869,7 +880,14 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     await db_query("UPDATE users SET ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
-    await message.reply_text(f"{E['CHECK_ANIMATED']} <b>XÁC MINH IP THÀNH CÔNG!</b>\n🌐 IP của bạn: <code>{ip_addr}</code>", parse_mode="HTML")
+    
+    # Gửi tin nhắn thông báo thành công IP và kiểm tra bước tiếp theo
+    await message.reply_text(
+        f"{E['CHECK_ANIMATED']} Xác minh IP thành công!\n\n"
+        f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
+    )
 
     if await process_user_verification_flow(update, context, user.id):
         await trigger_referral_reward_if_eligible(user.id, context)
