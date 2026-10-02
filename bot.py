@@ -97,7 +97,7 @@ E = {
     "DROP": '<tg-emoji emoji-id="5393512611968995988">💧</tg-emoji>',
     "SNOW": '<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji>',
     "SUN": '<tg-emoji emoji-id="5402477260982731644">☀️</tg-emoji>',
-    "ARROW_DOWN": '<tg-emoji emoji-id="5416117059207572332">➡️</tg-emoji>',
+    "ARROW_DOWN": '<tg-emoji emoji-id="5416117059207572332">➡️️</tg-emoji>',
     "MAIL": '<tg-emoji emoji-id="5253742260054409879">✉</tg-emoji>',
     "LOCK": '<tg-emoji emoji-id="5296369303661067030">🔒</tg-emoji>',
     "GAME": '<tg-emoji emoji-id="5361741454685256344">🎮</tg-emoji>',
@@ -126,7 +126,6 @@ E = {
     "PRAY": '<tg-emoji emoji-id="5228878926306101271">🙏</tg-emoji>',
     "MONEY": '<tg-emoji emoji-id="5278467510604160626">💰</tg-emoji>',
     "FLASH": '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
-    "GLOBE": '🌐',
 }
 
 # ============================================================
@@ -1619,7 +1618,8 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/tt USER_ID</code>", parse_mode="HTML")
                 return
-            try: target_id = int(args[0])
+            try:
+                target_id = int(args[0])
             except (ValueError, TypeError):
                 await message.reply_text("❌ USER_ID không hợp lệ.")
                 return
@@ -1865,7 +1865,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_dispatcher))
     app.add_error_handler(error_handler)
 
-    logger.info("🤖 Bot đang chạy...")
+    logger.info("🤖 Bot đã chạy...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
