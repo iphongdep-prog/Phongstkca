@@ -1034,8 +1034,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         balance = db_user[2]
         res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (user.id,), fetchone=True)
         invited_count = res[0]
-        res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (user.id,), fetchone=True)
-        total_withdraw = res_withdraw[0]
+        res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (user.id,), fetchone=True)
+        total_withdraw = res_withdraw[0] if res_withdraw else 0
         msg = (
             f"{E['CROWN']} <b>THÔNG TIN TÀI KHOẢN VIP</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"{E['EYES']} <b>ID:</b> <code>{user.id}</code>\n"
@@ -1473,8 +1473,8 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons) if buttons else None, parse_mode="HTML")
 
         elif cmd == "/tongrut":
-            res = await db_query("SELECT COALESCE(SUM(amount), 0), COUNT(*) FROM transactions WHERE type='Rút Tiền' AND status='Thành công'", fetchone=True)
-            total_amount, total_count = res[0], res[1]
+            res = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT, COUNT(*) FROM transactions WHERE type='Rút Tiền' AND status='Thành công'", fetchone=True)
+            total_amount, total_count = (res[0] if res else 0), (res[1] if res else 0)
             msg = (
                 f"{E['DOWN']} <b>TỔNG TOÀN BỘ SỐ TIỀN ĐÃ RÚT THÀNH CÔNG</b>\n━━━━━━━━━━━━━━━━━━\n"
                 f"{E['UP']} <b>Tổng số tiền đã rút:</b> <code>{total_amount:,}đ</code>\n"
@@ -1495,15 +1495,15 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
             
-            # Đảm bảo câu lệnh SQL sử dụng COALESCE an toàn tuyệt đối khi chưa có giao dịch
+            # Đã sửa lỗi tràn số bằng cách ép kiểu ::BIGINT cho các trường SUM và COUNT
             stats = await db_query(
                 """
                 SELECT 
-                    COALESCE(COUNT(*), 0),
-                    COALESCE(SUM(CASE WHEN status='Thành công' THEN amount ELSE 0 END), 0),
-                    COALESCE(COUNT(CASE WHEN status='Thành công' THEN 1 END), 0),
-                    COALESCE(COUNT(CASE WHEN status='Chờ duyệt' THEN 1 END), 0),
-                    COALESCE(COUNT(CASE WHEN status='Từ chối' THEN 1 END), 0)
+                    COALESCE(COUNT(*), 0)::BIGINT,
+                    COALESCE(SUM(CASE WHEN status='Thành công' THEN amount ELSE 0 END), 0)::BIGINT,
+                    COALESCE(COUNT(CASE WHEN status='Thành công' THEN 1 END), 0)::BIGINT,
+                    COALESCE(COUNT(CASE WHEN status='Chờ duyệt' THEN 1 END), 0)::BIGINT,
+                    COALESCE(COUNT(CASE WHEN status='Từ chối' THEN 1 END), 0)::BIGINT
                 FROM transactions
                 WHERE user_id=%s AND type='Rút Tiền'
                 """,
