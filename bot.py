@@ -139,7 +139,7 @@ TEMP_BAN_MINUTES = 2
 user_msg_tracker = defaultdict(list)
 temp_bans = {}
 user_withdraw_state = {}
-admin_checkdl_state = {} # Lưu trạng thái chờ admin nhập ngày cho /checkdl id
+admin_checkdl_state = {}
 
 # ============================================================
 # LOG
@@ -389,7 +389,7 @@ async def send_ip_verification_challenge(update_or_message, context: ContextType
         await context.bot.send_message(chat_id=user_id, text=caption, parse_mode="HTML", reply_markup=kb)
 
 # ============================================================
-# KIỂM TRA LUỒNG XÁC MINH CHUNG (SĐT -> IP -> CAPTCHA)
+# KIỂM TRA LUỒNG XÁC MINH CHUNG
 # ============================================================
 
 async def process_user_verification_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
@@ -435,8 +435,12 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
     check_cap = not await get_setting("check_captcha") or db_user[7] == 1
     check_phn = not await get_setting("check_phone") or db_user[9] == 1
     check_ip_cond = not await get_setting("check_ip") or db_user[13] is not None or db_user[14] == 1
+    
+    # Kiểm tra thêm điều kiện đã tham gia đủ kênh hay chưa
+    missing_channels = await get_missing_channels(context.bot, user_id)
+    check_chan = len(missing_channels) == 0 if await get_setting("check_channels") else True
 
-    if referrer_id and ref_rewarded == 0 and check_cap and check_phn and check_ip_cond:
+    if referrer_id and ref_rewarded == 0 and check_cap and check_phn and check_ip_cond and check_chan:
         try:
             def reward_referrer(cursor):
                 cursor.execute("SELECT ref_rewarded FROM users WHERE user_id=%s", (user_id,))
@@ -643,7 +647,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ============================================================
-# XỬ LÝ CHIA SẺ SỐ ĐIỆN THOẠI (CONTACT HANDLER)
+# XỬ LÝ CHIA SẺ SỐ ĐIỆN THOẠI
 # ============================================================
 
 async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1016,7 +1020,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = await get_fresh_user(user.id)
     user_withdraw_state.pop(user.id, None)
 
-    # Xử lý nhập ngày cho lệnh /checkdl id nếu admin đang ở trạng thái chờ
     if user.id in ADMIN_IDS and user.id in admin_checkdl_state:
         target_id = admin_checkdl_state.pop(user.id)
         date_str = message.text.strip()
@@ -1026,15 +1029,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await message.reply_text(f"❌ Không tìm thấy user ID <code>{target_id}</code> trong hệ thống.", parse_mode="HTML")
             return
 
-        # Lấy danh sách bạn bè được giới thiệu từ ngày chỉ định trở đi
-        # Định dạng ngày user nhập vào dạng YYYY-MM-DD hoặc DD-MM-YYYY hoặc so sánh chuỗi tương đối
-        # Ở đây ta lọc dựa trên chuỗi hoặc chuyển đổi linh hoạt
-        invited_users = await db_query(
-            "SELECT user_id, username, is_captcha_passed, is_phone_verified, joined_at FROM users WHERE referrer_id=%s AND joined_at >= %s ORDER BY joined_at DESC", 
-            (target_id, date_str), fetchall=True
-        )
-        
-        # Nếu câu lệnh SQL trên kén định dạng, ta lấy tất cả rồi lọc theo python cho chắc chắn:
         all_invited = await db_query("SELECT user_id, username, is_captcha_passed, is_phone_verified, joined_at FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
         
         filtered_invited = []
@@ -1057,7 +1051,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for inv_id, inv_username, is_captcha, is_phone, joined_at in filtered_invited:
             inv_uname = f"@{inv_username}" if inv_username else f"<code>{inv_id}</code>"
             
-            # Kiểm tra chưa tham gia nhóm nào (chưa vào các kênh bắt buộc)
             try:
                 missing_ch = await get_missing_channels(context.bot, inv_id)
             except Exception:
@@ -1073,7 +1066,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 msg += f"• <b>Chưa gia nhập các nhóm ({len(missing_ch)}):</b> <i>{', '.join(missing_ch)}</i>\n"
             
-            msg += f"• <b>Chưa xác minh cái gì khác:</b> {'Đã hoàn tất mọi thứ' if (is_phone and is_captcha and not missing_ch) else 'Chưa hoàn tất đầy đủ'}\n"
             msg += "----------------------------------\n"
             
             if len(msg) > 3500:
@@ -1102,8 +1094,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if clean_text in ["tai khoan", "tài khoản"] or "tài khoản" in raw_text.lower():
         balance = db_user[2]
-        res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (user.id,), fetchone=True)
-        invited_count = res[0]
+        # Chỉ đếm số lượng bạn bè đã hoàn thành đầy đủ các điều kiện (ref_rewarded = 1)
+        res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (user.id,), fetchone=True)
+        invited_count = res[0] if res else 0
         res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (user.id,), fetchone=True)
         total_withdraw = res_withdraw[0] if res_withdraw else 0
         msg = (
@@ -1111,8 +1104,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['EYES']} <b>ID:</b> <code>{user.id}</code>\n"
             f"{E['CHECK_ANIMATED']} <b>Xác minh:</b> <code>Đã hoàn tất</code>\n"
             f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
-            f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người\n"
-            f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ}</code>"
+            f"{E['COOL']} <b>Đã mời hợp lệ:</b> <code>{invited_count}</code> người\n"
+            f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
         )
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
@@ -1133,7 +1126,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['CLIP']} <b>Link giới thiệu của bạn:</b>\n<code>{ref_link}</code>\n\n"
             f"{E['CALENDAR']} <b>Thể lệ nhận thưởng:</b>\n"
             f"• {E['LIGHTNING']} Nhận ngay: <b>+{REFERRAL_REWARD:,}đ</b> / lượt mời thành công.\n"
-            f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh, giải CAPTCHA & xác minh.\n"
+            f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh, giải CAPTCHA & xác minh SĐT.\n"
             f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
             f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
         )
@@ -1144,7 +1137,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """
             SELECT u.user_id, u.username, COUNT(r.user_id) AS ref_count
             FROM users u
-            LEFT JOIN users r ON r.referrer_id = u.user_id
+            LEFT JOIN users r ON r.referrer_id = u.user_id AND r.ref_rewarded = 1
             WHERE u.is_banned = 0
             GROUP BY u.user_id, u.username
             HAVING COUNT(r.user_id) > 0
@@ -1161,12 +1154,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for idx, (top_id, top_username, ref_count) in enumerate(top_users, start=1):
             name_str = f"@{top_username}" if top_username else f"User {top_id}"
             icon = E['MEDAL1'] if idx == 1 else (E['MEDAL2'] if idx == 2 else (E['MEDAL3'] if idx == 3 else E['CHECK_ANIMATED']))
-            msg += f"{icon} <b>Top {idx}:</b> {name_str} — <code>{ref_count:,}</code> bạn bè\n"
+            msg += f"{icon} <b>Top {idx}:</b> {name_str} — <code>{ref_count:,}</code> bạn bè hợp lệ\n"
 
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     elif clean_text in ["nhom ho tro", "nhóm hỗ trợ"] or "hỗ trợ" in raw_text.lower():
-        await message.reply_text(f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}\n\n{E['SIX']} <b>ADMIN:</b> @echcutodz", parse_mode="HTML", reply_markup=get_main_keyboard())
+        await message.reply_text(f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}", parse_mode="HTML", reply_markup=get_main_keyboard())
 
     elif clean_text in ["lich su", "lich su giao dịch", "lịch sử giao dịch", "lịch sử"] or "lịch sử" in raw_text.lower():
         txs = await db_query("SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10", (user.id,), fetchall=True)
@@ -1471,8 +1464,8 @@ async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_
         try: await query.answer("❌ Không tìm thấy thông tin user này.", show_alert=True)
         except Exception: pass
         return
-    res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
-    invited_count = res[0]
+    res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (target_id,), fetchone=True)
+    invited_count = res[0] if res else 0
     username = f"@{u[1]}" if u[1] else "Chưa đặt"
     bank = u[3] if u[3] else "Chưa liên kết"
     referrer = u[4] if u[4] is not None else "Không có"
@@ -1484,7 +1477,7 @@ async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_
         f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
         f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
         f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
-        f"{E['COOL']} Tổng đã mời: <code>{invited_count}</code> người\n"
+        f"{E['COOL']} Tổng đã mời hợp lệ: <code>{invited_count}</code> người\n"
         f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[10] else 'KHÔNG'}</b>\n"
         f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[11] else 'KHÔNG'}</b>\n"
         f"{E['CALENDAR']} Tham gia: <code>{u[12]}</code>"
@@ -1675,7 +1668,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             total_withdraw = res_withdraw[0] if res_withdraw else 0
 
-            res_ref = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
+            res_ref = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (target_id,), fetchone=True)
             total_refs = res_ref[0] if res_ref else 0
 
             name_str = f"@{u[1]}" if u[1] else "Chưa đặt username"
@@ -1687,7 +1680,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['COOL']} <b>@name:</b> {name_str}\n"
                 f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
                 f"{E['DOWN']} <b>Tổng rút:</b> <code>{total_withdraw:,}đ</code>\n"
-                f"{E['REFRESH']} <b>Tổng mời ref:</b> <code>{total_refs}</code> người\n"
+                f"{E['REFRESH']} <b>Tổng mời ref hợp lệ:</b> <code>{total_refs}</code> người\n"
                 f"{E['LOCK']} <b>Ngân hàng liên kết:</b> <code>{bank_info}</code>\n"
                 f"{E['CHECK_ANIMATED']} <b>Trạng thái:</b> {status_str}"
             )
@@ -1799,6 +1792,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     msg += f"└ <b>Kênh CHƯA VÀO ({len(missing_ch)}):</b> <i>{', '.join(missing_ch)}</i>\n"
 
+                msg += f"• <b>Trạng thái tính thưởng:</b> {'✅ Hợp lệ (Đã nhận tiền)' if ref_rewarded == 1 else '❌ Chưa đủ điều kiện'}\n"
                 msg += "----------------------------------\n"
                 if len(msg) > 3500:
                     await message.reply_text(msg, parse_mode="HTML")
@@ -1845,7 +1839,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text("❌ Không tìm thấy user này trong hệ thống.")
                 return
             
-            res_ref = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
+            res_ref = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (target_id,), fetchone=True)
             invited_count = res_ref[0] if res_ref else 0
 
             res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (target_id,), fetchone=True)
@@ -1873,7 +1867,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{E['DOWN']} <b>Tổng tiền đã rút:</b> <code>{total_withdrawn:,}đ</code>\n"
                 f"{E['LOCK']} <b>Ngân hàng:</b> <code>{bank_info_str}</code>\n"
                 f"{E['CLIP']} <b>Người giới thiệu:</b> {referrer_str}\n"
-                f"{E['COOL']} <b>Tổng số đã mời:</b> <code>{invited_count}</code> bạn bè\n"
+                f"{E['COOL']} <b>Tổng số đã mời hợp lệ:</b> <code>{invited_count}</code> bạn bè\n"
                 f"{E['GAME']} <b>Trạng thái Captcha:</b> {captcha_status}\n"
                 f"{E['CHECK_ANIMATED']} <b>Trạng thái SĐT:</b> {phone_status}\n"
                 f"🌐 <b>Địa chỉ IP:</b> <code>{ip_str}</code>\n"
