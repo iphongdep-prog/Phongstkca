@@ -80,7 +80,7 @@ E = {
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
     "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗</tg-emoji>',
     "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
-    "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉️️</tg-emoji>',
+    "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
     "ALERT1": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
     "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
@@ -139,6 +139,7 @@ TEMP_BAN_MINUTES = 2
 user_msg_tracker = defaultdict(list)
 temp_bans = {}
 user_withdraw_state = {}
+admin_checkdl_state = {} # Lưu trạng thái chờ admin nhập ngày cho /checkdl id
 
 # ============================================================
 # LOG
@@ -1015,6 +1016,75 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_user = await get_fresh_user(user.id)
     user_withdraw_state.pop(user.id, None)
 
+    # Xử lý nhập ngày cho lệnh /checkdl id nếu admin đang ở trạng thái chờ
+    if user.id in ADMIN_IDS and user.id in admin_checkdl_state:
+        target_id = admin_checkdl_state.pop(user.id)
+        date_str = message.text.strip()
+        
+        target_user = await db_query("SELECT user_id, username FROM users WHERE user_id=%s", (target_id,), fetchone=True)
+        if not target_user:
+            await message.reply_text(f"❌ Không tìm thấy user ID <code>{target_id}</code> trong hệ thống.", parse_mode="HTML")
+            return
+
+        # Lấy danh sách bạn bè được giới thiệu từ ngày chỉ định trở đi
+        # Định dạng ngày user nhập vào dạng YYYY-MM-DD hoặc DD-MM-YYYY hoặc so sánh chuỗi tương đối
+        # Ở đây ta lọc dựa trên chuỗi hoặc chuyển đổi linh hoạt
+        invited_users = await db_query(
+            "SELECT user_id, username, is_captcha_passed, is_phone_verified, joined_at FROM users WHERE referrer_id=%s AND joined_at >= %s ORDER BY joined_at DESC", 
+            (target_id, date_str), fetchall=True
+        )
+        
+        # Nếu câu lệnh SQL trên kén định dạng, ta lấy tất cả rồi lọc theo python cho chắc chắn:
+        all_invited = await db_query("SELECT user_id, username, is_captcha_passed, is_phone_verified, joined_at FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
+        
+        filtered_invited = []
+        for inv in all_invited:
+            joined_full = inv[4] or ""
+            if date_str in joined_full or joined_full >= date_str:
+                filtered_invited.append(inv)
+
+        referrer_uname = f"@{target_user[1]}" if target_user[1] else f"<code>{target_id}</code>"
+        
+        if not filtered_invited:
+            await message.reply_text(f"{E['ALERT1']} Người giới thiệu <b>{referrer_uname}</b> (ID: <code>{target_id}</code>) không mời được ai từ ngày <b>{date_str}</b> trở đi.", parse_mode="HTML")
+            return
+
+        msg = f"{E['CHART']} <b>CHI TIẾT NGƯỜI GIỚI THIỆU & ĐƯỢC GIỚI THIỆU</b>\n━━━━━━━━━━━━━━━━━━\n"
+        msg += f"👑 <b>Người giới thiệu:</b> {referrer_uname} (ID: <code>{target_id}</code>)\n"
+        msg += f"🗓 <b>Lọc từ ngày:</b> <code>{date_str}</code>\n"
+        msg += f"👥 <b>Tổng số lượng mời được:</b> <b>{len(filtered_invited)}</b> người\n\n"
+
+        for inv_id, inv_username, is_captcha, is_phone, joined_at in filtered_invited:
+            inv_uname = f"@{inv_username}" if inv_username else f"<code>{inv_id}</code>"
+            
+            # Kiểm tra chưa tham gia nhóm nào (chưa vào các kênh bắt buộc)
+            try:
+                missing_ch = await get_missing_channels(context.bot, inv_id)
+            except Exception:
+                missing_ch = REQUIRED_CHECK_CHANNELS.copy()
+
+            msg += f"👤 <b>Người được giới thiệu:</b> {inv_uname} (<code>{inv_id}</code>)\n"
+            msg += f"🗓 <b>Thời gian tham gia:</b> <code>{joined_at or 'N/A'}</code>\n"
+            msg += f"• <b>SĐT:</b> {'✅ Đã xác minh' if is_phone else '❌ Chưa xác minh'}\n"
+            msg += f"• <b>Captcha:</b> {'✅ Đã giải' if is_captcha else '❌ Chưa giải'}\n"
+            
+            if not missing_ch:
+                msg += f"• <b>Trạng thái nhóm:</b> Đã tham gia đầy đủ các nhóm bắt buộc\n"
+            else:
+                msg += f"• <b>Chưa gia nhập các nhóm ({len(missing_ch)}):</b> <i>{', '.join(missing_ch)}</i>\n"
+            
+            msg += f"• <b>Chưa xác minh cái gì khác:</b> {'Đã hoàn tất mọi thứ' if (is_phone and is_captcha and not missing_ch) else 'Chưa hoàn tất đầy đủ'}\n"
+            msg += "----------------------------------\n"
+            
+            if len(msg) > 3500:
+                await message.reply_text(msg, parse_mode="HTML")
+                msg = ""
+            await asyncio.sleep(0.05)
+
+        if msg.strip():
+            await message.reply_text(msg, parse_mode="HTML")
+        return
+
     if await is_maintenance() and user.id not in ADMIN_IDS:
         await message.reply_text(f"{E['STOP']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n{E['GEAR']} Vui lòng quay lại sau!", parse_mode="HTML")
         return
@@ -1042,7 +1112,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['CHECK_ANIMATED']} <b>Xác minh:</b> <code>Đã hoàn tất</code>\n"
             f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
             f"{E['COOL']} <b>Đã mời:</b> <code>{invited_count}</code> người\n"
-            f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
+            f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ}</code>"
         )
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
@@ -1475,6 +1545,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_msg_tracker.clear()
             temp_bans.clear()
             user_withdraw_state.clear()
+            admin_checkdl_state.clear()
             await db_query("INSERT INTO users (user_id, username, balance, joined_at) VALUES (%s, %s, 0, %s) ON CONFLICT (user_id) DO NOTHING", (message.from_user.id, message.from_user.username or "", get_now_str()), commit=True)
             await message.reply_text(
                 f"{E['REFRESH']} <b>ĐÃ RESET TOÀN BỘ HỆ THỐNG!</b>\n"
@@ -1482,6 +1553,62 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• Bạn và người dùng cũ giờ đây đã có thể ấn nút hoặc dùng lại link ref bình thường.",
                 parse_mode="HTML"
             )
+        elif cmd == "/sd":
+            users_with_balance = await db_query(
+                "SELECT user_id, username, balance, phone_number, bank_info, joined_at FROM users WHERE balance > 0 ORDER BY balance DESC",
+                fetchall=True
+            )
+            if not users_with_balance:
+                await message.reply_text(f"{E['ALERT1']} <b>Không có người dùng nào còn số dư trong hệ thống.</b>", parse_mode="HTML")
+                return
+
+            msg = f"{E['MONEY']} <b>DANH SÁCH NGƯỜI DÙNG CÒN SỐ DƯ</b>\n━━━━━━━━━━━━━━━━━━\n"
+            msg += f"• Tổng số tài khoản còn số dư: <b>{len(users_with_balance)}</b>\n\n"
+
+            for u_id, u_username, u_balance, u_phone, u_bank, u_joined in users_with_balance:
+                uname = f"@{u_username}" if u_username else f"<code>{u_id}</code>"
+                msg += f"👤 <b>User:</b> {uname} (<code>{u_id}</code>)\n"
+                msg += f"• {E['UP']} <b>Số dư:</b> <code>{u_balance:,}đ</code>\n"
+                msg += f"• {E['PHONE']} <b>SĐT:</b> <code>{u_phone or 'Chưa xác minh'}</code>\n"
+                msg += f"• {E['LOCK']} <b>Ngân hàng:</b> <code>{u_bank or 'Chưa liên kết'}</code>\n"
+                msg += f"• {E['CALENDAR']} <b>Tham gia:</b> <code>{u_joined or 'N/A'}</code>\n"
+                msg += "----------------------------------\n"
+
+                if len(msg) > 3500:
+                    await message.reply_text(msg, parse_mode="HTML")
+                    msg = ""
+                await asyncio.sleep(0.02)
+
+            if msg.strip():
+                await message.reply_text(msg, parse_mode="HTML")
+
+        elif cmd == "/xoasdall":
+            await db_query("UPDATE users SET balance = 0", commit=True)
+            await message.reply_text(f"{E['THUMB']} <b>Đã xóa toàn bộ số dư của tất cả người dùng về 0đ thành công!</b>", parse_mode="HTML")
+
+        elif cmd == "/checkdl":
+            if len(args) < 1:
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/checkdl USER_ID</code>", parse_mode="HTML")
+                return
+            try:
+                target_id = int(args[0])
+            except (ValueError, TypeError):
+                await message.reply_text("❌ USER_ID không hợp lệ.")
+                return
+
+            target_user = await db_query("SELECT user_id, username FROM users WHERE user_id=%s", (target_id,), fetchone=True)
+            if not target_user:
+                await message.reply_text(f"❌ Không tìm thấy user ID <code>{target_id}</code>.", parse_mode="HTML")
+                return
+
+            admin_checkdl_state[message.from_user.id] = target_id
+            await message.reply_text(
+                f"{E['CALENDAR']} <b>YÊU CẦU NHẬP NGÀY THÁNG NĂM</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"Bạn đang kiểm tra danh sách mời của ID: <code>{target_id}</code>\n\n"
+                f"{E['ARROW_DOWN']} Vui lòng gửi ngày tháng năm (Ví dụ: <code>1-10-2026</code> hoặc <code>2026-10-01</code>) để bot lọc danh sách:",
+                parse_mode="HTML"
+            )
+
         elif cmd == "/tong":
             res = await db_query("SELECT COUNT(*) FROM users", fetchone=True)
             total_users = res[0]
@@ -1530,13 +1657,11 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await message.reply_text(f"❌ Không tìm thấy người dùng có ID <code>{target_id}</code>.", parse_mode="HTML")
                 return
 
-            # Lấy số dư, tổng rút, tổng mời ref, ngân hàng, trạng thái
             balance = u[2]
             bank_info = u[3] if u[3] else "Chưa liên kết"
             is_banned = u[10]
             is_withdraw_banned = u[11]
 
-            # Trạng thái hiển thị
             if is_banned == 1:
                 status_str = "🔴 Bị khóa vĩnh viễn"
             elif is_withdraw_banned == 1:
@@ -1544,14 +1669,12 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 status_str = "🟢 Hoạt động bình thường"
 
-            # Tổng rút thành công
             res_withdraw = await db_query(
                 "SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'",
                 (target_id,), fetchone=True
             )
             total_withdraw = res_withdraw[0] if res_withdraw else 0
 
-            # Tổng mời ref
             res_ref = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s", (target_id,), fetchone=True)
             total_refs = res_ref[0] if res_ref else 0
 
@@ -1938,7 +2061,7 @@ def main():
     admin_cmds = [
         "resetall", "tong", "tongrut", "rutid", "tb", "tt", "bb", "ban", "moban",
         "cam", "mocam", "rutls", "ruttc", "nap", "tru", "lsgd", "baotri",
-        "resetbank", "dl", "ttf", "checkmt"
+        "resetbank", "dl", "ttf", "checkmt", "sd", "xoasdall", "checkdl"
     ]
     for command in admin_cmds:
         app.add_handler(CommandHandler(command, admin_commands))
