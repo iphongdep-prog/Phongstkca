@@ -54,13 +54,14 @@ REQUIRED_CHECK_CHANNELS = [
     "@vtc345",
     "@vtc567",
     "@hocviencbm",
-    "@chungnaomoidu",
-    "@khuyenmaionline",
+    "@hit88cm",
+    "@icbm988",
+    "@hocviencb",
 ]
 
 OPTIONAL_DISPLAY_CHANNELS = []
 
-SUPPORT_GROUP = "https://t.me/conmuamenmenl"
+SUPPORT_GROUP = "https://t.me/hocviencbm"
 
 MIN_WITHDRAW = 15000
 MAX_WITHDRAW = 300000
@@ -436,7 +437,6 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
     check_phn = not await get_setting("check_phone") or db_user[9] == 1
     check_ip_cond = not await get_setting("check_ip") or db_user[13] is not None or db_user[14] == 1
     
-    # Kiểm tra thêm điều kiện đã tham gia đủ kênh hay chưa
     missing_channels = await get_missing_channels(context.bot, user_id)
     check_chan = len(missing_channels) == 0 if await get_setting("check_channels") else True
 
@@ -1094,7 +1094,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if clean_text in ["tai khoan", "tài khoản"] or "tài khoản" in raw_text.lower():
         balance = db_user[2]
-        # Chỉ đếm số lượng bạn bè đã hoàn thành đầy đủ các điều kiện (ref_rewarded = 1)
         res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (user.id,), fetchone=True)
         invited_count = res[0] if res else 0
         res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (user.id,), fetchone=True)
@@ -1159,7 +1158,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
 
     elif clean_text in ["nhom ho tro", "nhóm hỗ trợ"] or "hỗ trợ" in raw_text.lower():
-        await message.reply_text(f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}", parse_mode="HTML", reply_markup=get_main_keyboard())
+        await message.reply_text(
+            f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}\nadmin hỗ trợ @dgfrutil",
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard()
+        )
 
     elif clean_text in ["lich su", "lich su giao dịch", "lịch sử giao dịch", "lịch sử"] or "lịch sử" in raw_text.lower():
         txs = await db_query("SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10", (user.id,), fetchall=True)
