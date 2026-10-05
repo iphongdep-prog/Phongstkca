@@ -56,6 +56,7 @@ REQUIRED_CHECK_CHANNELS = [
     "@hit88cm",
     "@icbm988",
     "@hocviencb",
+    "@xomhit88",
 ]
 
 OPTIONAL_DISPLAY_CHANNELS = []
