@@ -80,7 +80,7 @@ E = {
     "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔</tg-emoji>',
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
     "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗</tg-emoji>',
-    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️</tg-emoji>',
+    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️️</tg-emoji>',
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
     "ALERT1": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
@@ -970,11 +970,11 @@ async def force_verify_all_callback(update: Update, context: ContextTypes.DEFAUL
     except Exception:
         pass
 
-async def bo_ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update): return
     args = context.args or []
     if not args:
-        await update.effective_message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/bo USER_ID</code>", parse_mode="HTML")
+        await update.effective_message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/ip USER_ID</code>", parse_mode="HTML")
         return
     try:
         target_id = int(args[0])
@@ -985,11 +985,11 @@ async def bo_ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db_query("UPDATE users SET skip_ip_check=1 WHERE user_id=%s", (target_id,), commit=True)
     await update.effective_message.reply_text(f"{E['THUMB']} <b>Đã thiết lập BỎ QUA KIỂM TRA IP cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
 
-async def mo_ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ipx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update): return
     args = context.args or []
     if not args:
-        await update.effective_message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/moip USER_ID</code>", parse_mode="HTML")
+        await update.effective_message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/ipx USER_ID</code>", parse_mode="HTML")
         return
     try:
         target_id = int(args[0])
@@ -1487,7 +1487,7 @@ async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_
     )
     await context.bot.send_message(chat_id=query.from_user.id, text=msg, parse_mode="HTML")
 
-async def checkmt_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
@@ -1536,7 +1536,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cmd = (message.text or "").split()[0].split("@")[0].lower()
     args = context.args or []
     try:
-        if cmd == "/resetall":
+        if cmd == "/reset":
             await db_query("TRUNCATE TABLE users, transactions RESTART IDENTITY", commit=True)
             user_msg_tracker.clear()
             temp_bans.clear()
@@ -1578,10 +1578,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if msg.strip():
                 await message.reply_text(msg, parse_mode="HTML")
 
-        elif cmd == "/xoasdall":
-            await db_query("UPDATE users SET balance = 0", commit=True)
-            await message.reply_text(f"{E['THUMB']} <b>Đã xóa toàn bộ số dư của tất cả người dùng về 0đ thành công!</b>", parse_mode="HTML")
-
         elif cmd == "/checkdl":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/checkdl USER_ID</code>", parse_mode="HTML")
@@ -1608,25 +1604,11 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif cmd == "/tong":
             res = await db_query("SELECT COUNT(*) FROM users", fetchone=True)
             total_users = res[0]
-            users = await db_query("SELECT user_id, username FROM users ORDER BY joined_at DESC LIMIT 50", fetchall=True)
             msg = (
                 f"{E['CHART']} <b>THỐNG KÊ TỔNG NGUỜI DÙNG</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['COOL']} Tổng số người dùng trong hệ thống: <b>{total_users:,}</b>\n\n"
-                f"{E['ARROW_DOWN']} <b>Bấm vào nút ID bên dưới để kiểm tra full thông tin:</b>"
+                f"{E['COOL']} Tổng số người dùng trong hệ thống: <b>{total_users:,}</b>"
             )
-            buttons = []
-            row = []
-            for u_id, u_name in users:
-                btn_text = f"🆔 {u_id}"
-                if u_name:
-                    btn_text += f" (@{u_name})"
-                row.append(InlineKeyboardButton(btn_text, callback_data=f"userinfo_{u_id}"))
-                if len(row) == 2:
-                    buttons.append(row)
-                    row = []
-            if row:
-                buttons.append(row)
-            await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons) if buttons else None, parse_mode="HTML")
+            await message.reply_text(msg, parse_mode="HTML")
 
         elif cmd == "/tongrut":
             res = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT, COUNT(*) FROM transactions WHERE type='Rút Tiền' AND status='Thành công'", fetchone=True)
@@ -1638,9 +1620,9 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await message.reply_text(msg, parse_mode="HTML")
 
-        elif cmd == "/checkmt":
+        elif cmd == "/check":
             if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/checkmt USER_ID</code>", parse_mode="HTML")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/check USER_ID</code>", parse_mode="HTML")
                 return
             try:
                 target_id = int(args[0])
@@ -1689,14 +1671,14 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📜 Kiểm tra toàn bộ lịch sử giao dịch", callback_data=f"checkmt_hist_{target_id}")]
+                [InlineKeyboardButton("📜 Kiểm tra toàn bộ lịch sử giao dịch", callback_data=f"check_hist_{target_id}")]
             ])
 
             await message.reply_text(msg, reply_markup=keyboard, parse_mode="HTML")
 
-        elif cmd == "/rutid":
+        elif cmd == "/kt":
             if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/rutid USER_ID</code>", parse_mode="HTML")
+                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/kt USER_ID</code>", parse_mode="HTML")
                 return
             try: target_id = int(args[0])
             except (ValueError, TypeError):
@@ -1827,68 +1809,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.02)
             await message.reply_text(f"{E['THUMB']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.", parse_mode="HTML")
 
-        elif cmd in ("/tt", "/ttf"):
-            if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>{cmd} USER_ID</code>", parse_mode="HTML")
-                return
-            try:
-                target_id = int(args[0])
-            except (ValueError, TypeError):
-                await message.reply_text("❌ USER_ID không hợp lệ.")
-                return
-            
-            u = await db_query(USER_SELECT_QUERY, (target_id,), fetchone=True)
-            if not u:
-                await message.reply_text("❌ Không tìm thấy user này trong hệ thống.")
-                return
-            
-            res_ref = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (target_id,), fetchone=True)
-            invited_count = res_ref[0] if res_ref else 0
-
-            res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (target_id,), fetchone=True)
-            total_withdrawn = res_withdraw[0] if res_withdraw else 0
-
-            recent_txs = await db_query("SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 5", (target_id,), fetchall=True)
-
-            username_str = f"@{u[1]}" if u[1] else "Chưa đặt"
-            bank_info_str = u[3] if u[3] else "Chưa liên kết"
-            referrer_str = f"<code>{u[4]}</code>" if u[4] else "Không có"
-            phone_str = u[5] if u[5] else "Chưa xác minh"
-            captcha_status = "Đã giải" if u[7] == 1 else "Chưa giải"
-            phone_status = "Đã xác minh" if u[9] == 1 else "Chưa xác minh"
-            banned_status = "CÓ (Bị khóa vĩnh viễn)" if u[10] == 1 else "KHÔNG"
-            withdraw_banned_status = "CÓ (Bị cấm rút tiền)" if u[11] == 1 else "KHÔNG"
-            joined_date = u[12] if u[12] else "N/A"
-            ip_str = u[13] if u[13] else "Chưa xác minh"
-
-            msg = (
-                f"{E['CROWN']} <b>TRA CỨU TOÀN BỘ THÔNG TIN USER</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['EYES']} <b>ID:</b> <code>{u[0]}</code>\n"
-                f"{E['COOL']} <b>Username:</b> {username_str}\n"
-                f"{E['PHONE']} <b>Số điện thoại:</b> <code>{phone_str}</code>\n"
-                f"{E['UP']} <b>Số dư hiện tại:</b> <code>{u[2]:,}đ</code>\n"
-                f"{E['DOWN']} <b>Tổng tiền đã rút:</b> <code>{total_withdrawn:,}đ</code>\n"
-                f"{E['LOCK']} <b>Ngân hàng:</b> <code>{bank_info_str}</code>\n"
-                f"{E['CLIP']} <b>Người giới thiệu:</b> {referrer_str}\n"
-                f"{E['COOL']} <b>Tổng số đã mời hợp lệ:</b> <code>{invited_count}</code> bạn bè\n"
-                f"{E['GAME']} <b>Trạng thái Captcha:</b> {captcha_status}\n"
-                f"{E['CHECK_ANIMATED']} <b>Trạng thái SĐT:</b> {phone_status}\n"
-                f"🌐 <b>Địa chỉ IP:</b> <code>{ip_str}</code>\n"
-                f"{E['BAN']} <b>Khóa tài khoản:</b> <b>{banned_status}</b>\n"
-                f"{E['STOP']} <b>Cấm rút tiền:</b> <b>{withdraw_banned_status}</b>\n"
-                f"{E['CALENDAR']} <b>Ngày tham gia:</b> <code>{joined_date}</code>\n\n"
-                f"{E['CHART']} <b>5 Giao dịch gần nhất:</b>\n"
-            )
-
-            if recent_txs:
-                for tx_type, amount, status, created_at in recent_txs:
-                    icon = E['THUMB'] if status == "Thành công" else (E['BAN'] if status == "Từ chối" else E['CALENDAR'])
-                    msg += f"• {icon} <b>{tx_type}</b>: <code>{amount:,}đ</code> ({status}) — <code>{created_at}</code>\n"
-            else:
-                msg += "• Chưa có giao dịch nào.\n"
-
-            await message.reply_text(msg, parse_mode="HTML")
-
         elif cmd == "/bb":
             if len(args) < 1:
                 await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/bb USER_ID</code>", parse_mode="HTML")
@@ -1915,7 +1835,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_withdraw_state.pop(target_id, None)
             await message.reply_text(f"{E['BAN']} Đã cấm vĩnh viễn user <code>{target_id}</code>.", parse_mode="HTML")
 
-        elif cmd == "/moban":
+        elif cmd == "/unban":
             if len(args) < 1: return
             target_id = int(args[0])
             await db_query("UPDATE users SET is_banned=0 WHERE user_id=%s", (target_id,), commit=True)
@@ -1928,7 +1848,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_withdraw_state.pop(target_id, None)
             await message.reply_text(f"{E['STOP']} Đã cấm rút tiền ID <code>{target_id}</code>.", parse_mode="HTML")
 
-        elif cmd == "/mocam":
+        elif cmd == "/un":
             if len(args) < 1: return
             target_id = int(args[0])
             await db_query("UPDATE users SET is_withdraw_banned=0 WHERE user_id=%s", (target_id,), commit=True)
@@ -1955,7 +1875,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await message.reply_text("❌ Số dư user không đủ để trừ.")
 
-        elif cmd == "/rutls":
+        elif cmd == "/rut":
             txs = await db_query("SELECT id, user_id, amount, details, created_at FROM transactions WHERE type='Rút Tiền' AND status='Chờ duyệt' ORDER BY id ASC", fetchall=True)
             if not txs:
                 await message.reply_text(f"{E['LOVE']} Không có yêu cầu rút tiền nào đang chờ duyệt!")
@@ -1987,17 +1907,23 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 await asyncio.sleep(0.15)
 
-        elif cmd == "/ruttc":
-            txs = await db_query("SELECT id, user_id, amount, created_at FROM transactions WHERE type='Rút Tiền' AND status='Thành công' ORDER BY id DESC LIMIT 15", fetchall=True)
+        elif cmd == "/tc":
+            txs = await db_query("SELECT id, user_id, amount, created_at FROM transactions WHERE type='Rút Tiền' AND status='Thành công' ORDER BY id DESC", fetchall=True)
             if not txs:
                 await message.reply_text("📜 Chưa có lệnh rút nào được duyệt.")
                 return
-            msg = f"{E['CHART']} <b>LỆNH RÚT ĐÃ DUYỆT GẦN ĐÂY:</b>\n\n"
+            
+            msg = f"{E['CHART']} <b>TẤT CẢ LỆNH RÚT ĐÃ DUYỆT THÀNH CÔNG:</b>\n\n"
             for tx_id, target_id, amount, created_at in txs:
-                msg += f"{E['THUMB']} #{tx_id} | <code>{target_id}</code> | <code>{amount:,}đ</code> | <code>{created_at}</code>\n"
-            await message.reply_text(msg, parse_mode="HTML")
+                line = f"{E['THUMB']} #{tx_id} | <code>{target_id}</code> | <code>{amount:,}đ</code> | <code>{created_at}</code>\n"
+                if len(msg) + len(line) > 3800:
+                    await message.reply_text(msg, parse_mode="HTML")
+                    msg = ""
+                msg += line
+            if msg.strip():
+                await message.reply_text(msg, parse_mode="HTML")
 
-        elif cmd == "/lsgd":
+        elif cmd == "/gd":
             if len(args) < 1: return
             target_id = int(args[0])
             txs = await db_query("SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10", (target_id,), fetchall=True)
@@ -2052,13 +1978,13 @@ def main():
     app.add_handler(CommandHandler("lk", link_bank_command))
     
     app.add_handler(CommandHandler("menu", admin_menu_panel))
-    app.add_handler(CommandHandler("bo", bo_ip_command))
-    app.add_handler(CommandHandler("moip", mo_ip_command))
+    app.add_handler(CommandHandler("ip", ip_command))
+    app.add_handler(CommandHandler("ipx", ipx_command))
 
     admin_cmds = [
-        "resetall", "tong", "tongrut", "rutid", "tb", "tt", "bb", "ban", "moban",
-        "cam", "mocam", "rutls", "ruttc", "nap", "tru", "lsgd", "baotri",
-        "resetbank", "dl", "ttf", "checkmt", "sd", "xoasdall", "checkdl"
+        "reset", "tong", "tongrut", "kt", "tb", "bb", "ban", "unban",
+        "cam", "un", "rut", "tc", "nap", "tru", "gd", "baotri",
+        "resetbank", "dl", "check", "sd", "checkdl"
     ]
     for command in admin_cmds:
         app.add_handler(CommandHandler(command, admin_commands))
@@ -2069,7 +1995,7 @@ def main():
     app.add_handler(CallbackQueryHandler(cancel_withdraw_callback, pattern=r"^cancel_withdraw$"))
     app.add_handler(CallbackQueryHandler(admin_withdraw_callback, pattern=r"^(approve|reject)_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_userinfo_callback, pattern=r"^userinfo_\d+$"))
-    app.add_handler(CallbackQueryHandler(checkmt_history_callback, pattern=r"^checkmt_hist_\d+$"))
+    app.add_handler(CallbackQueryHandler(check_history_callback, pattern=r"^check_hist_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_toggle_callback, pattern=r"^toggle_"))
     app.add_handler(CallbackQueryHandler(force_verify_all_callback, pattern=r"^force_verify_all$"))
 
