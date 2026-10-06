@@ -140,7 +140,7 @@ user_msg_tracker = defaultdict(list)
 temp_bans = {}
 user_withdraw_state = {}
 admin_checkdl_state = {}
-admin_spl_state = {}   # STATE CHO LỆNH /spl
+admin_spl_state = {}
 
 # ============================================================
 # LOG
@@ -257,7 +257,6 @@ def _init_db_sync():
             cursor.execute("CREATE TABLE IF NOT EXISTS groups (chat_id BIGINT PRIMARY KEY);")
             cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
 
-            # Bảng lưu lịch sử user đã từng dùng bot (để chặn tính ref sau reset)
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users_history (
@@ -454,7 +453,6 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
     if not db_user:
         return
 
-    # Nếu user này bị đánh dấu skip ref sau reset → không bao giờ tính thưởng ref
     if len(db_user) > 15 and db_user[15] == 1:
         return
 
@@ -609,7 +607,6 @@ async def ensure_user_exists(update: Update):
         if row[1] != current_username:
             await db_query("UPDATE users SET username=%s WHERE user_id=%s", (current_username, user.id), commit=True)
     else:
-        # Kiểm tra user này đã từng dùng bot trước đây chưa (trước khi reset)
         hist = await db_query("SELECT user_id FROM users_history WHERE user_id=%s", (user.id,), fetchone=True)
 
         skip_ref = 1 if hist else 0
@@ -621,7 +618,6 @@ async def ensure_user_exists(update: Update):
             commit=True,
         )
 
-        # Đảm bảo user_id này nằm trong users_history cho lần reset sau
         await db_query(
             "INSERT INTO users_history (user_id, first_seen_at) VALUES (%s, %s) "
             "ON CONFLICT (user_id) DO NOTHING",
@@ -655,8 +651,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await handle_anti_spam(update, context):
         return
     user = update.effective_user
-    chat = update.effective_chat    if not user or not chat:
+    chat = update.effective_chat
+    
+    if not user or not chat:
         return
+        
     if chat.type != "private":
         await db_query("INSERT INTO groups(chat_id) VALUES(%s) ON CONFLICT (chat_id) DO NOTHING", (chat.id,), commit=True)
         return
@@ -670,7 +669,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>", parse_mode="HTML")
         return
 
-    # Nếu user đã từng dùng bot (skip_ref_once=1) thì KHÔNG gán ref nữa
     skip_ref = db_user[15] if len(db_user) > 15 else 0
 
     if context.args and not db_user[4] and skip_ref == 0:
@@ -1056,7 +1054,6 @@ async def ipx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 def parse_date_input(text: str):
-    """Chấp nhận dd-mm-yyyy, d-m-yyyy, yyyy-mm-dd, dd/mm/yyyy. Trả về YYYY-MM-DD."""
     if not text:
         return None
     text = text.strip()
@@ -1075,7 +1072,6 @@ def parse_date_input(text: str):
     return None
 
 async def spl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh /spl - Bắt đầu flow xóa lịch sử mời bạn bè."""
     if not is_admin(update):
         return
     message = update.effective_message
@@ -1122,7 +1118,6 @@ async def spl_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass
 
 async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback khi admin bấm nút XÁC NHẬN XÓA trong flow /spl."""
     query = update.callback_query
     if not query or query.from_user.id not in ADMIN_IDS:
         return
@@ -1132,7 +1127,6 @@ async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
 
     data = query.data or ""
-    # data có dạng: spl_confirm_YYYY-MM-DD
     parts = data.split("_", 2)
     if len(parts) < 3:
         return
@@ -1149,7 +1143,6 @@ async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             pass
         return
 
-    # Thực hiện xóa
     try:
         def do_delete(cursor):
             cursor.execute(
@@ -1228,7 +1221,6 @@ async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         pass
 
 async def spl_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Xử lý text khi admin đang trong flow /spl (nhập ngày)."""
     message = update.effective_message
     user = update.effective_user
     if not message or not user:
@@ -1610,7 +1602,7 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
         return True
     if not bank_info:
         user_withdraw_state.pop(user.id, None)
-        await message.reply_text("⚠️ Chưa liên kết ngân hàng. Dùng /lk trước.")
+        await message.reply_text("⚠️️ Chưa liên kết ngân hàng. Dùng /lk trước.")
         return True
     if amount < MIN_WITHDRAW or amount > MAX_WITHDRAW:
         await message.reply_text(f"{E['BAN']} Số tiền rút phải từ <b>{MIN_WITHDRAW:,}đ</b> đến <b>{MAX_WITHDRAW:,}đ</b>!", parse_mode="HTML")
@@ -1829,7 +1821,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     try:
         if cmd == "/reset":
-            # Bước 1: Lưu toàn bộ user hiện tại vào users_history TRƯỚC khi xóa
             await db_query(
                 """
                 INSERT INTO users_history (user_id, first_seen_at)
@@ -1840,17 +1831,14 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 commit=True,
             )
 
-            # Bước 2: Xóa toàn bộ user + transactions
             await db_query("TRUNCATE TABLE users, transactions RESTART IDENTITY", commit=True)
 
-            # Bước 3: Xóa các state trong bộ nhớ
             user_msg_tracker.clear()
             temp_bans.clear()
             user_withdraw_state.clear()
             admin_checkdl_state.clear()
             admin_spl_state.clear()
 
-            # Bước 4: Tạo lại admin với skip_ref_once=1 (vì admin cũng là user cũ)
             await db_query(
                 "INSERT INTO users (user_id, username, balance, joined_at, skip_ref_once) "
                 "VALUES (%s, %s, 0, %s, 1) ON CONFLICT (user_id) DO NOTHING",
@@ -1869,7 +1857,6 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif cmd == "/resetcung":
-            # Reset cứng: xóa cả users_history
             await db_query("TRUNCATE TABLE users, transactions, users_history RESTART IDENTITY", commit=True)
             user_msg_tracker.clear()
             temp_bans.clear()
@@ -2298,7 +2285,6 @@ async def text_message_dispatcher(update: Update, context: ContextTypes.DEFAULT_
     if not update.effective_message or await handle_anti_spam(update, context):
         return
 
-    # Ưu tiên xử lý flow /spl của admin trước
     user = update.effective_user
     if user and user.id in ADMIN_IDS and user.id in admin_spl_state:
         handled = await spl_process_text(update, context)
@@ -2331,7 +2317,7 @@ def main():
     app.add_handler(CommandHandler("menu", admin_menu_panel))
     app.add_handler(CommandHandler("ip", ip_command))
     app.add_handler(CommandHandler("ipx", ipx_command))
-    app.add_handler(CommandHandler("spl", spl_command))  # LỆNH /spl
+    app.add_handler(CommandHandler("spl", spl_command))
 
     admin_cmds = [
         "reset", "resetcung", "tong", "tongrut", "kt", "tb", "bb", "ban", "unban",
@@ -2351,7 +2337,6 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_toggle_callback, pattern=r"^toggle_"))
     app.add_handler(CallbackQueryHandler(force_verify_all_callback, pattern=r"^force_verify_all$"))
 
-    # Callbacks cho /spl
     app.add_handler(CallbackQueryHandler(spl_cancel_callback, pattern=r"^spl_cancel$"))
     app.add_handler(CallbackQueryHandler(spl_confirm_callback, pattern=r"^spl_confirm_\d{4}-\d{2}-\d{2}$"))
 
