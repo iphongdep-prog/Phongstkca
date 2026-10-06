@@ -63,7 +63,7 @@ OPTIONAL_DISPLAY_CHANNELS = []
 
 SUPPORT_GROUP = "https://t.me/hocviencbm"
 
-MIN_WITHDRAW = 10000  # Đã hạ min rút xuống 10k
+MIN_WITHDRAW = 10000
 MAX_WITHDRAW = 300000
 
 # ============================================================
@@ -140,6 +140,7 @@ user_msg_tracker = defaultdict(list)
 temp_bans = {}
 user_withdraw_state = {}
 admin_checkdl_state = {}
+admin_spl_state = {}   # STATE CHO LỆNH /spl
 
 # ============================================================
 # LOG
@@ -296,19 +297,12 @@ async def is_maintenance():
 # ============================================================
 
 def get_random_referral_reward() -> int:
-    """
-    Random phần thưởng giới thiệu từ 1000 đến 1500 theo các tỷ lệ yêu cầu:
-    - 1500: 10%
-    - 1400: 20%
-    - 1300: 30%
-    - Các giá trị còn lại (1000, 1100, 1200): Chia đều cho 40% còn lại (~13.33% mỗi mức)
-    """
-    rand_val = random.random() * 100  # 0 đến 100
+    rand_val = random.random() * 100
     if rand_val < 10:
         return 1500
-    elif rand_val < 30:  # 10 + 20
+    elif rand_val < 30:
         return 1400
-    elif rand_val < 60:  # 30 + 30
+    elif rand_val < 60:
         return 1300
     else:
         return random.choice([1000, 1100, 1200])
@@ -489,7 +483,7 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
             logger.exception("Lỗi transaction thưởng giới thiệu: %s", exc)
 
 # ============================================================
-# KIỂM TRA THAM GIA KÊNH & CHAT MEMBER UPDATED
+# KIỂM TRA THAM GIA KÊNH
 # ============================================================
 
 async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -912,7 +906,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await message.reply_text(f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 # ============================================================
-# LỆNH ADMIN
+# LỆNH ADMIN PANEL
 # ============================================================
 
 async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1017,6 +1011,259 @@ async def ipx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await db_query("UPDATE users SET is_banned=0, skip_ip_check=1, ip_address=NULL WHERE user_id=%s", (target_id,), commit=True)
     await update.effective_message.reply_text(f"{E['THUMB']} <b>Đã MỞ KHÓA trùng IP & BỎ QUA KIỂM TRA IP cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
+
+# ============================================================
+# LỆNH /spl - XÓA LỊCH SỬ MỜI BẠN BÈ THEO NGÀY
+# ============================================================
+
+def parse_date_input(text: str):
+    """Chấp nhận dd-mm-yyyy, d-m-yyyy, yyyy-mm-dd, dd/mm/yyyy. Trả về YYYY-MM-DD."""
+    if not text:
+        return None
+    text = text.strip()
+    patterns = [
+        ("%d-%m-%Y", r"^\d{1,2}-\d{1,2}-\d{4}$"),
+        ("%Y-%m-%d", r"^\d{4}-\d{1,2}-\d{1,2}$"),
+        ("%d/%m/%Y", r"^\d{1,2}/\d{1,2}/\d{4}$"),
+    ]
+    for fmt, regex in patterns:
+        if re.match(regex, text):
+            try:
+                dt = datetime.strptime(text, fmt)
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                return None
+    return None
+
+
+async def spl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /spl - Bắt đầu flow xóa lịch sử mời bạn bè."""
+    if not is_admin(update):
+        return
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user:
+        return
+
+    admin_spl_state[user.id] = {"step": "WAITING_DATE"}
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ HỦY THAO TÁC", callback_data="spl_cancel")]
+    ])
+
+    await message.reply_text(
+        f"{E['ALERT1']} <b>XÁC NHẬN XÓA LỊCH SỬ MỜI BẠN BÈ</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{E['WARN1']} Thao tác này sẽ <b>XÓA VĨNH VIỄN</b> toàn bộ lịch sử mời bạn bè!\n"
+        f"{E['CALENDAR']} Bot sẽ xóa tất cả người được mời <b>từ ngày bạn nhập trở đi</b>.\n\n"
+        f"{E['ARROW_DOWN']} Vui lòng nhập ngày bắt đầu xóa.\n"
+        f"<b>Ví dụ:</b> <code>01-10-2026</code>\n\n"
+        f"{E['CLIP']} Các định dạng hỗ trợ:\n"
+        f"• <code>01-10-2026</code> (dd-mm-yyyy)\n"
+        f"• <code>2026-10-01</code> (yyyy-mm-dd)\n"
+        f"• <code>01/10/2026</code> (dd/mm/yyyy)",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+
+async def spl_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or query.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    admin_spl_state.pop(query.from_user.id, None)
+    try:
+        await query.edit_message_text(
+            f"{E['BAN']} <b>Đã hủy thao tác xóa lịch sử mời bạn bè.</b>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback khi admin bấm nút XÁC NHẬN XÓA trong flow /spl."""
+    query = update.callback_query
+    if not query or query.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    data = query.data or ""
+    # data có dạng: spl_confirm_YYYY-MM-DD
+    parts = data.split("_", 2)
+    if len(parts) < 3:
+        return
+    date_iso = parts[2]
+
+    state = admin_spl_state.get(query.from_user.id)
+    if not state or state.get("step") != "WAITING_CONFIRM":
+        try:
+            await query.edit_message_text(
+                f"{E['ALERT1']} <b>Yêu cầu đã hết hạn hoặc không hợp lệ. Vui lòng dùng /spl lại.</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+
+    # Thực hiện xóa
+    try:
+        def do_delete(cursor):
+            # Lấy danh sách user được mời từ date_iso trở đi (joined_at >= date_iso 00:00:00)
+            cursor.execute(
+                """
+                SELECT user_id, referrer_id
+                FROM users
+                WHERE referrer_id IS NOT NULL
+                  AND referrer_id <> 0
+                  AND joined_at IS NOT NULL
+                  AND joined_at >= %s
+                """,
+                (date_iso + " 00:00:00",)
+            )
+            rows = cursor.fetchall()
+
+            removed_count = 0
+            referrer_affected = set()
+            total_reward_removed = 0
+
+            for inv_id, ref_id in rows:
+                if ref_id:
+                    referrer_affected.add(ref_id)
+
+                # Lấy các giao dịch thưởng mời bạn liên quan đến inv_id
+                cursor.execute(
+                    """
+                    SELECT id, amount FROM transactions
+                    WHERE type = 'Thưởng Mời Bạn'
+                      AND user_id = %s
+                      AND details LIKE %s
+                    """,
+                    (ref_id, f"%Mời {inv_id} %")
+                )
+                tx_rows = cursor.fetchall()
+                for tx_id_row, tx_amt in tx_rows:
+                    # Trừ lại tiền thưởng đã cộng cho referrer (nếu còn)
+                    cursor.execute(
+                        "UPDATE users SET balance = balance - %s WHERE user_id = %s",
+                        (tx_amt, ref_id)
+                    )
+                    total_reward_removed += tx_amt
+                    # Xóa giao dịch
+                    cursor.execute("DELETE FROM transactions WHERE id = %s", (tx_id_row,))
+
+                # Gỡ liên kết giới thiệu của user được mời
+                cursor.execute(
+                    "UPDATE users SET referrer_id = NULL, ref_rewarded = 0 WHERE user_id = %s",
+                    (inv_id,)
+                )
+                removed_count += 1
+
+            return removed_count, len(referrer_affected), total_reward_removed
+
+        removed_count, ref_count, reward_removed = await db_transaction(do_delete)
+    except Exception as exc:
+        logger.exception("Lỗi /spl xóa lịch sử mời: %s", exc)
+        try:
+            await query.edit_message_text(
+                f"{E['BAN']} <b>Có lỗi xảy ra khi xóa lịch sử mời bạn bè.</b>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        admin_spl_state.pop(query.from_user.id, None)
+        return
+
+    admin_spl_state.pop(query.from_user.id, None)
+
+    try:
+        await query.edit_message_text(
+            f"{E['CHECK_ANIMATED']} <b>ĐÃ XÓA LỊCH SỬ MỜI BẠN BÈ THÀNH CÔNG!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['CALENDAR']} <b>Từ ngày:</b> <code>{date_iso}</code>\n"
+            f"{E['EYES']} <b>Số người được mời đã gỡ:</b> <code>{removed_count}</code>\n"
+            f"{E['COOL']} <b>Số referrer bị ảnh hưởng:</b> <code>{ref_count}</code>\n"
+            f"{E['MONEY']} <b>Tổng tiền thưởng đã thu hồi:</b> <code>{reward_removed:,}đ</code>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
+async def spl_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Xử lý text khi admin đang trong flow /spl (nhập ngày)."""
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user:
+        return False
+
+    state = admin_spl_state.get(user.id)
+    if not state:
+        return False
+
+    if state.get("step") != "WAITING_DATE":
+        return False
+
+    raw = (message.text or "").strip()
+    date_iso = parse_date_input(raw)
+    if not date_iso:
+        await message.reply_text(
+            f"{E['BAN']} <b>Ngày không hợp lệ!</b>\n"
+            f"Vui lòng nhập theo định dạng:\n"
+            f"• <code>01-10-2026</code> (dd-mm-yyyy)\n"
+            f"• <code>2026-10-01</code> (yyyy-mm-dd)\n"
+            f"• <code>01/10/2026</code> (dd/mm/yyyy)\n\n"
+            f"Hoặc bấm <b>❌ HỦY THAO TÁC</b> để thoát.",
+            parse_mode="HTML"
+        )
+        return True
+
+    # Đếm số user sẽ bị ảnh hưởng
+    try:
+        res = await db_query(
+            """
+            SELECT COUNT(*)
+            FROM users
+            WHERE referrer_id IS NOT NULL
+              AND referrer_id <> 0
+              AND joined_at IS NOT NULL
+              AND joined_at >= %s
+            """,
+            (date_iso + " 00:00:00",),
+            fetchone=True
+        )
+        count_preview = res[0] if res else 0
+    except Exception:
+        count_preview = 0
+
+    # Chuyển state
+    admin_spl_state[user.id] = {"step": "WAITING_CONFIRM", "date": date_iso}
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ XÁC NHẬN XÓA", callback_data=f"spl_confirm_{date_iso}")],
+        [InlineKeyboardButton("❌ HỦY THAO TÁC", callback_data="spl_cancel")]
+    ])
+
+    await message.reply_text(
+        f"{E['ALERT1']} <b>XÁC NHẬN LẦN CUỐI</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{E['CALENDAR']} <b>Ngày bắt đầu xóa:</b> <code>{date_iso}</code>\n"
+        f"{E['EYES']} <b>Số người được mời sẽ bị gỡ:</b> <code>{count_preview}</code>\n\n"
+        f"{E['WARN1']} Tiền thưởng mời bạn liên quan cũng sẽ bị <b>thu hồi</b>.\n"
+        f"{E['WARN2']} Hành động này <b>KHÔNG THỂ HOÀN TÁC</b>!\n\n"
+        f"{E['ARROW_DOWN']} Bấm <b>✅ XÁC NHẬN XÓA</b> để tiếp tục hoặc <b>❌ HỦY</b> để thoát.",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    return True
+
 
 # ============================================================
 # MENU HANDLER
@@ -1462,7 +1709,7 @@ async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_
                 await update_admin_message(ref, update_text)
 
 # ============================================================
-# ADMIN USER INFO & CHECKMT HIST CALLBACKS
+# ADMIN USER INFO & CHECK HIST CALLBACKS
 # ============================================================
 
 async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1560,6 +1807,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             temp_bans.clear()
             user_withdraw_state.clear()
             admin_checkdl_state.clear()
+            admin_spl_state.clear()
             await db_query("INSERT INTO users (user_id, username, balance, joined_at) VALUES (%s, %s, 0, %s) ON CONFLICT (user_id) DO NOTHING", (message.from_user.id, message.from_user.username or "", get_now_str()), commit=True)
             await message.reply_text(
                 f"{E['REFRESH']} <b>ĐÃ RESET TOÀN BỘ HỆ THỐNG!</b>\n"
@@ -1972,6 +2220,14 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_message_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message or await handle_anti_spam(update, context):
         return
+
+    # Ưu tiên xử lý flow /spl của admin trước
+    user = update.effective_user
+    if user and user.id in ADMIN_IDS and user.id in admin_spl_state:
+        handled = await spl_process_text(update, context)
+        if handled:
+            return
+
     if await handle_withdraw_amount(update, context):
         return
     await menu_handler(update, context)
@@ -1998,6 +2254,7 @@ def main():
     app.add_handler(CommandHandler("menu", admin_menu_panel))
     app.add_handler(CommandHandler("ip", ip_command))
     app.add_handler(CommandHandler("ipx", ipx_command))
+    app.add_handler(CommandHandler("spl", spl_command))  # LỆNH /spl
 
     admin_cmds = [
         "reset", "tong", "tongrut", "kt", "tb", "bb", "ban", "unban",
@@ -2016,6 +2273,10 @@ def main():
     app.add_handler(CallbackQueryHandler(check_history_callback, pattern=r"^check_hist_\d+$"))
     app.add_handler(CallbackQueryHandler(admin_toggle_callback, pattern=r"^toggle_"))
     app.add_handler(CallbackQueryHandler(force_verify_all_callback, pattern=r"^force_verify_all$"))
+
+    # Callbacks cho /spl
+    app.add_handler(CallbackQueryHandler(spl_cancel_callback, pattern=r"^spl_cancel$"))
+    app.add_handler(CallbackQueryHandler(spl_confirm_callback, pattern=r"^spl_confirm_\d{4}-\d{2}-\d{2}$"))
 
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
     app.add_handler(MessageHandler(filters.CONTACT, contact_handler))
