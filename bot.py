@@ -63,9 +63,8 @@ OPTIONAL_DISPLAY_CHANNELS = []
 
 SUPPORT_GROUP = "https://t.me/hocviencbm"
 
-MIN_WITHDRAW = 15000
+MIN_WITHDRAW = 10000  # Đã hạ min rút xuống 10k
 MAX_WITHDRAW = 300000
-REFERRAL_REWARD = 1000
 
 # ============================================================
 # EMOJI
@@ -80,7 +79,7 @@ E = {
     "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔</tg-emoji>',
     "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
     "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗</tg-emoji>',
-    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼️️</tg-emoji>',
+    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼</tg-emoji>',
     "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉</tg-emoji>',
     "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
     "ALERT1": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
@@ -293,8 +292,26 @@ async def is_maintenance():
     return await get_setting("maintenance", "0")
 
 # ============================================================
-# UTILS & VIETQR
+# UTILS & VIETQR & RANDOM REWARD
 # ============================================================
+
+def get_random_referral_reward() -> int:
+    """
+    Random phần thưởng giới thiệu từ 1000 đến 1500 theo các tỷ lệ yêu cầu:
+    - 1500: 10%
+    - 1400: 20%
+    - 1300: 30%
+    - Các giá trị còn lại (1000, 1100, 1200): Chia đều cho 40% còn lại (~13.33% mỗi mức)
+    """
+    rand_val = random.random() * 100  # 0 đến 100
+    if rand_val < 10:
+        return 1500
+    elif rand_val < 30:  # 10 + 20
+        return 1400
+    elif rand_val < 60:  # 30 + 30
+        return 1300
+    else:
+        return random.choice([1000, 1100, 1200])
 
 def generate_vietqr_url(bank_info: str, amount: int, memo: str = "lixi trung thu") -> str:
     if not bank_info:
@@ -441,6 +458,7 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
     check_chan = len(missing_channels) == 0 if await get_setting("check_channels") else True
 
     if referrer_id and ref_rewarded == 0 and check_cap and check_phn and check_ip_cond and check_chan:
+        earned_reward = get_random_referral_reward()
         try:
             def reward_referrer(cursor):
                 cursor.execute("SELECT ref_rewarded FROM users WHERE user_id=%s", (user_id,))
@@ -450,9 +468,9 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
 
                 cursor.execute(
                     "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (referrer_id, "Thưởng Mời Bạn", REFERRAL_REWARD, "Thành công", get_now_str(), f"Mời {user_id}"),
+                    (referrer_id, "Thưởng Mời Bạn", earned_reward, "Thành công", get_now_str(), f"Mời {user_id} (Random trúng {earned_reward})"),
                 )
-                cursor.execute("UPDATE users SET balance = balance + %s WHERE user_id=%s", (REFERRAL_REWARD, referrer_id))
+                cursor.execute("UPDATE users SET balance = balance + %s WHERE user_id=%s", (earned_reward, referrer_id))
                 cursor.execute("UPDATE users SET ref_rewarded = 1 WHERE user_id=%s", (user_id,))
                 return True
 
@@ -462,7 +480,7 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
                 try:
                     await context.bot.send_message(
                         chat_id=referrer_id,
-                        text=f"{E['LOVE']} <b>THƯỞNG MỜI BẠN BÈ!</b>\n{E['UP']} Bạn nhận được <b>+{REFERRAL_REWARD:,}đ</b>\n{E['EYES']} Từ người dùng xác thực thành công: <b>{uname}</b>",
+                        text=f"{E['LOVE']} <b>THƯỞNG MỜI BẠN BÈ THÀNH CÔNG!</b>\n{E['UP']} Bạn nhận được ngẫu nhiên: <b>+{earned_reward:,}đ</b>\n{E['EYES']} Từ người dùng xác thực thành công: <b>{uname}</b>",
                         parse_mode="HTML"
                     )
                 except Exception as exc:
@@ -1124,7 +1142,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['FREE']} <b>CHƯƠNG TRÌNH MỜI BẠN BÈ</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"{E['CLIP']} <b>Link giới thiệu của bạn:</b>\n<code>{ref_link}</code>\n\n"
             f"{E['CALENDAR']} <b>Thể lệ nhận thưởng:</b>\n"
-            f"• {E['LIGHTNING']} Nhận ngay: <b>+{REFERRAL_REWARD:,}đ</b> / lượt mời thành công.\n"
+            f"• {E['LIGHTNING']} Nhận ngẫu nhiên từ <b>1,000đ - 1,500đ</b> / lượt mời thành công.\n"
             f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh, giải CAPTCHA & xác minh SĐT.\n"
             f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
             f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
