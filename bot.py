@@ -223,7 +223,8 @@ def _init_db_sync():
                     is_withdraw_banned INTEGER NOT NULL DEFAULT 0,
                     joined_at TEXT,
                     ip_address TEXT,
-                    skip_ip_check INTEGER NOT NULL DEFAULT 0
+                    skip_ip_check INTEGER NOT NULL DEFAULT 0,
+                    skip_ref_once INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -238,6 +239,7 @@ def _init_db_sync():
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_at TEXT;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ip_address TEXT;")
             cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS skip_ip_check INTEGER NOT NULL DEFAULT 0;")
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS skip_ref_once INTEGER NOT NULL DEFAULT 0;")
 
             cursor.execute(
                 """
@@ -254,7 +256,17 @@ def _init_db_sync():
             )
             cursor.execute("CREATE TABLE IF NOT EXISTS groups (chat_id BIGINT PRIMARY KEY);")
             cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
-            
+
+            # Bảng lưu lịch sử user đã từng dùng bot (để chặn tính ref sau reset)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users_history (
+                    user_id BIGINT PRIMARY KEY,
+                    first_seen_at TEXT NOT NULL
+                )
+                """
+            )
+
             defaults = [
                 ('maintenance', '0'),
                 ('check_channels', '1'),
@@ -313,10 +325,10 @@ def generate_vietqr_url(bank_info: str, amount: int, memo: str = "lixi trung thu
     parts = bank_info.strip().split()
     if len(parts) < 2:
         return ""
-    
+
     stk = parts[0]
     bank_code = parts[1].upper()
-    
+
     bank_mapping = {
         "VCB": "vietcombank", "VIETCOMBANK": "vietcombank", "TCB": "techcombank",
         "TECHCOMBANK": "techcombank", "MB": "mbbank", "MBBANK": "mbbank",
@@ -327,7 +339,7 @@ def generate_vietqr_url(bank_info: str, amount: int, memo: str = "lixi trung thu
         "SHB": "shb", "MSB": "msb", "LPB": "lienvietpostbank",
         "LPBANK": "lienvietpostbank", "OCB": "ocb", "HDB": "hdbank", "HDBANK": "hdbank",
     }
-    
+
     code = bank_mapping.get(bank_code, bank_code.lower())
     encoded_memo = urllib.parse.quote(memo)
     return f"https://img.vietqr.io/image/{code}-{stk}-compact2.png?amount={amount}&addInfo={encoded_memo}"
@@ -442,12 +454,16 @@ async def trigger_referral_reward_if_eligible(user_id: int, context: ContextType
     if not db_user:
         return
 
+    # Nếu user này bị đánh dấu skip ref sau reset → không bao giờ tính thưởng ref
+    if len(db_user) > 15 and db_user[15] == 1:
+        return
+
     referrer_id, ref_rewarded = db_user[4], db_user[6]
 
     check_cap = not await get_setting("check_captcha") or db_user[7] == 1
     check_phn = not await get_setting("check_phone") or db_user[9] == 1
     check_ip_cond = not await get_setting("check_ip") or db_user[13] is not None or db_user[14] == 1
-    
+
     missing_channels = await get_missing_channels(context.bot, user_id)
     check_chan = len(missing_channels) == 0 if await get_setting("check_channels") else True
 
@@ -537,7 +553,7 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return False
 
     now = datetime.now()
-    
+
     ban_until = temp_bans.get(user.id)
     if ban_until:
         if now < ban_until:
@@ -578,7 +594,8 @@ async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 USER_SELECT_QUERY = (
     "SELECT user_id, username, balance, bank_info, referrer_id, "
     "phone_number, ref_rewarded, is_captcha_passed, is_text_verified, "
-    "is_phone_verified, is_banned, is_withdraw_banned, joined_at, ip_address, skip_ip_check "
+    "is_phone_verified, is_banned, is_withdraw_banned, joined_at, ip_address, skip_ip_check, "
+    "skip_ref_once "
     "FROM users WHERE user_id=%s"
 )
 
@@ -592,11 +609,26 @@ async def ensure_user_exists(update: Update):
         if row[1] != current_username:
             await db_query("UPDATE users SET username=%s WHERE user_id=%s", (current_username, user.id), commit=True)
     else:
+        # Kiểm tra user này đã từng dùng bot trước đây chưa (trước khi reset)
+        hist = await db_query("SELECT user_id FROM users_history WHERE user_id=%s", (user.id,), fetchone=True)
+
+        skip_ref = 1 if hist else 0
+
         await db_query(
-            "INSERT INTO users (user_id, username, balance, joined_at) VALUES (%s, %s, 0, %s) ON CONFLICT (user_id) DO NOTHING",
-            (user.id, user.username or "", get_now_str()),
+            "INSERT INTO users (user_id, username, balance, joined_at, skip_ref_once) "
+            "VALUES (%s, %s, 0, %s, %s) ON CONFLICT (user_id) DO NOTHING",
+            (user.id, user.username or "", get_now_str(), skip_ref),
             commit=True,
         )
+
+        # Đảm bảo user_id này nằm trong users_history cho lần reset sau
+        await db_query(
+            "INSERT INTO users_history (user_id, first_seen_at) VALUES (%s, %s) "
+            "ON CONFLICT (user_id) DO NOTHING",
+            (user.id, get_now_str()),
+            commit=True,
+        )
+
         row = await db_query(USER_SELECT_QUERY, (user.id,), fetchone=True)
     return row
 
@@ -623,8 +655,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await handle_anti_spam(update, context):
         return
     user = update.effective_user
-    chat = update.effective_chat
-    if not user or not chat:
+    chat = update.effective_chat    if not user or not chat:
         return
     if chat.type != "private":
         await db_query("INSERT INTO groups(chat_id) VALUES(%s) ON CONFLICT (chat_id) DO NOTHING", (chat.id,), commit=True)
@@ -639,11 +670,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>", parse_mode="HTML")
         return
 
-    if context.args and not db_user[4]:
+    # Nếu user đã từng dùng bot (skip_ref_once=1) thì KHÔNG gán ref nữa
+    skip_ref = db_user[15] if len(db_user) > 15 else 0
+
+    if context.args and not db_user[4] and skip_ref == 0:
         try:
             ref_id = int(context.args[0])
             if ref_id != user.id:
-                await db_query("UPDATE users SET referrer_id=%s WHERE user_id=%s AND (referrer_id IS NULL OR referrer_id=0)", (ref_id, user.id), commit=True)
+                await db_query(
+                    "UPDATE users SET referrer_id=%s "
+                    "WHERE user_id=%s AND (referrer_id IS NULL OR referrer_id=0) AND skip_ref_once=0",
+                    (ref_id, user.id),
+                    commit=True,
+                )
         except (ValueError, TypeError):
             pass
 
@@ -674,7 +713,7 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     phone_number = contact.phone_number.strip()
-    
+
     normalized_phone = phone_number
     if phone_number.startswith("84"):
         normalized_phone = "+" + phone_number
@@ -893,7 +932,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     await db_query("UPDATE users SET ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
-    
+
     await message.reply_text(
         f"{E['CHECK_ANIMATED']} Xác minh IP thành công!\n\n"
         f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
@@ -1035,7 +1074,6 @@ def parse_date_input(text: str):
                 return None
     return None
 
-
 async def spl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /spl - Bắt đầu flow xóa lịch sử mời bạn bè."""
     if not is_admin(update):
@@ -1066,7 +1104,6 @@ async def spl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-
 async def spl_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or query.from_user.id not in ADMIN_IDS:
@@ -1083,7 +1120,6 @@ async def spl_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
     except Exception:
         pass
-
 
 async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Callback khi admin bấm nút XÁC NHẬN XÓA trong flow /spl."""
@@ -1116,7 +1152,6 @@ async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # Thực hiện xóa
     try:
         def do_delete(cursor):
-            # Lấy danh sách user được mời từ date_iso trở đi (joined_at >= date_iso 00:00:00)
             cursor.execute(
                 """
                 SELECT user_id, referrer_id
@@ -1138,7 +1173,6 @@ async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 if ref_id:
                     referrer_affected.add(ref_id)
 
-                # Lấy các giao dịch thưởng mời bạn liên quan đến inv_id
                 cursor.execute(
                     """
                     SELECT id, amount FROM transactions
@@ -1150,16 +1184,13 @@ async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
                 tx_rows = cursor.fetchall()
                 for tx_id_row, tx_amt in tx_rows:
-                    # Trừ lại tiền thưởng đã cộng cho referrer (nếu còn)
                     cursor.execute(
                         "UPDATE users SET balance = balance - %s WHERE user_id = %s",
                         (tx_amt, ref_id)
                     )
                     total_reward_removed += tx_amt
-                    # Xóa giao dịch
                     cursor.execute("DELETE FROM transactions WHERE id = %s", (tx_id_row,))
 
-                # Gỡ liên kết giới thiệu của user được mời
                 cursor.execute(
                     "UPDATE users SET referrer_id = NULL, ref_rewarded = 0 WHERE user_id = %s",
                     (inv_id,)
@@ -1196,7 +1227,6 @@ async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         pass
 
-
 async def spl_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Xử lý text khi admin đang trong flow /spl (nhập ngày)."""
     message = update.effective_message
@@ -1225,7 +1255,6 @@ async def spl_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return True
 
-    # Đếm số user sẽ bị ảnh hưởng
     try:
         res = await db_query(
             """
@@ -1243,7 +1272,6 @@ async def spl_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception:
         count_preview = 0
 
-    # Chuyển state
     admin_spl_state[user.id] = {"step": "WAITING_CONFIRM", "date": date_iso}
 
     kb = InlineKeyboardMarkup([
@@ -1263,7 +1291,6 @@ async def spl_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         parse_mode="HTML"
     )
     return True
-
 
 # ============================================================
 # MENU HANDLER
@@ -1288,14 +1315,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id in ADMIN_IDS and user.id in admin_checkdl_state:
         target_id = admin_checkdl_state.pop(user.id)
         date_str = message.text.strip()
-        
+
         target_user = await db_query("SELECT user_id, username FROM users WHERE user_id=%s", (target_id,), fetchone=True)
         if not target_user:
             await message.reply_text(f"❌ Không tìm thấy user ID <code>{target_id}</code> trong hệ thống.", parse_mode="HTML")
             return
 
         all_invited = await db_query("SELECT user_id, username, is_captcha_passed, is_phone_verified, joined_at FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
-        
+
         filtered_invited = []
         for inv in all_invited:
             joined_full = inv[4] or ""
@@ -1303,7 +1330,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 filtered_invited.append(inv)
 
         referrer_uname = f"@{target_user[1]}" if target_user[1] else f"<code>{target_id}</code>"
-        
+
         if not filtered_invited:
             await message.reply_text(f"{E['ALERT1']} Người giới thiệu <b>{referrer_uname}</b> (ID: <code>{target_id}</code>) không mời được ai từ ngày <b>{date_str}</b> trở đi.", parse_mode="HTML")
             return
@@ -1315,7 +1342,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for inv_id, inv_username, is_captcha, is_phone, joined_at in filtered_invited:
             inv_uname = f"@{inv_username}" if inv_username else f"<code>{inv_id}</code>"
-            
+
             try:
                 missing_ch = await get_missing_channels(context.bot, inv_id)
             except Exception:
@@ -1325,14 +1352,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"🗓 <b>Thời gian tham gia:</b> <code>{joined_at or 'N/A'}</code>\n"
             msg += f"• <b>SĐT:</b> {'✅ Đã xác minh' if is_phone else '❌ Chưa xác minh'}\n"
             msg += f"• <b>Captcha:</b> {'✅ Đã giải' if is_captcha else '❌ Chưa giải'}\n"
-            
+
             if not missing_ch:
                 msg += f"• <b>Trạng thái nhóm:</b> Đã tham gia đầy đủ các nhóm bắt buộc\n"
             else:
                 msg += f"• <b>Chưa gia nhập các nhóm ({len(missing_ch)}):</b> <i>{', '.join(missing_ch)}</i>\n"
-            
+
             msg += "----------------------------------\n"
-            
+
             if len(msg) > 3500:
                 await message.reply_text(msg, parse_mode="HTML")
                 msg = ""
@@ -1766,7 +1793,7 @@ async def check_history_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer()
     except Exception:
         pass
-    
+
     data = query.data or ""
     try:
         target_id = int(data.split("_")[2])
@@ -1802,19 +1829,69 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args or []
     try:
         if cmd == "/reset":
+            # Bước 1: Lưu toàn bộ user hiện tại vào users_history TRƯỚC khi xóa
+            await db_query(
+                """
+                INSERT INTO users_history (user_id, first_seen_at)
+                SELECT user_id, COALESCE(joined_at, %s) FROM users
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                (get_now_str(),),
+                commit=True,
+            )
+
+            # Bước 2: Xóa toàn bộ user + transactions
             await db_query("TRUNCATE TABLE users, transactions RESTART IDENTITY", commit=True)
+
+            # Bước 3: Xóa các state trong bộ nhớ
             user_msg_tracker.clear()
             temp_bans.clear()
             user_withdraw_state.clear()
             admin_checkdl_state.clear()
             admin_spl_state.clear()
-            await db_query("INSERT INTO users (user_id, username, balance, joined_at) VALUES (%s, %s, 0, %s) ON CONFLICT (user_id) DO NOTHING", (message.from_user.id, message.from_user.username or "", get_now_str()), commit=True)
+
+            # Bước 4: Tạo lại admin với skip_ref_once=1 (vì admin cũng là user cũ)
+            await db_query(
+                "INSERT INTO users (user_id, username, balance, joined_at, skip_ref_once) "
+                "VALUES (%s, %s, 0, %s, 1) ON CONFLICT (user_id) DO NOTHING",
+                (message.from_user.id, message.from_user.username or "", get_now_str()),
+                commit=True,
+            )
+
             await message.reply_text(
                 f"{E['REFRESH']} <b>ĐÃ RESET TOÀN BỘ HỆ THỐNG!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
                 f"• Toàn bộ người dùng & lịch sử giao dịch đã được xóa hoàn toàn.\n"
-                f"• Bạn và người dùng cũ giờ đây đã có thể ấn nút hoặc dùng lại link ref bình thường.",
+                f"• Những người <b>đã từng dùng bot</b> sẽ <b>KHÔNG được tính ref</b> khi bấm lại link của người khác.\n"
+                f"• Chỉ người dùng <b>hoàn toàn mới</b> mới được tính ref bình thường.\n"
+                f"• Nếu muốn reset cứng (cho phép user cũ tính ref lại), dùng <code>/resetcung</code>.",
                 parse_mode="HTML"
             )
+
+        elif cmd == "/resetcung":
+            # Reset cứng: xóa cả users_history
+            await db_query("TRUNCATE TABLE users, transactions, users_history RESTART IDENTITY", commit=True)
+            user_msg_tracker.clear()
+            temp_bans.clear()
+            user_withdraw_state.clear()
+            admin_checkdl_state.clear()
+            admin_spl_state.clear()
+
+            await db_query(
+                "INSERT INTO users (user_id, username, balance, joined_at, skip_ref_once) "
+                "VALUES (%s, %s, 0, %s, 0) ON CONFLICT (user_id) DO NOTHING",
+                (message.from_user.id, message.from_user.username or "", get_now_str()),
+                commit=True,
+            )
+
+            await message.reply_text(
+                f"{E['REFRESH']} <b>ĐÃ RESET CỨNG TOÀN BỘ (kể cả lịch sử user)!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"• Từ giờ <b>mọi người dùng đều được tính ref như user mới</b>.\n"
+                f"• Bot đã quên hoàn toàn lịch sử user cũ.",
+                parse_mode="HTML"
+            )
+
         elif cmd == "/sd":
             users_with_balance = await db_query(
                 "SELECT user_id, username, balance, phone_number, bank_info, joined_at FROM users WHERE balance > 0 ORDER BY balance DESC",
@@ -1954,10 +2031,10 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not u:
                 await message.reply_text("❌ Không tìm thấy user này.")
                 return
-            
+
             stats = await db_query(
                 """
-                SELECT 
+                SELECT
                     COALESCE(COUNT(*), 0)::BIGINT,
                     COALESCE(SUM(CASE WHEN status='Thành công' THEN amount ELSE 0 END), 0)::BIGINT,
                     COALESCE(COUNT(CASE WHEN status='Thành công' THEN 1 END), 0)::BIGINT,
@@ -1968,7 +2045,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 """,
                 (target_id,), fetchone=True
             )
-            
+
             if not stats:
                 total_attempts, success_amount, success_count, pending_count, reject_count = 0, 0, 0, 0, 0
             else:
@@ -1978,7 +2055,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bank = u[3] if u[3] else "Chưa liên kết"
             referrer = u[4] if u[4] is not None else "Không có"
             withdraw_txs = await db_query("SELECT id, amount, status, created_at FROM transactions WHERE user_id=%s AND type='Rút Tiền' ORDER BY id DESC LIMIT 10", (target_id,), fetchall=True)
-            
+
             msg = (
                 f"{E['EYES']} <b>THÔNG TIN RÚT TIỀN CỦA USER <code>{target_id}</code></b>\n━━━━━━━━━━━━━━━━━━\n"
                 f"{E['COOL']} Username: {username}\n"
@@ -2146,23 +2223,23 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not txs:
                 await message.reply_text(f"{E['LOVE']} Không có yêu cầu rút tiền nào đang chờ duyệt!")
                 return
-            
+
             await message.reply_text(f"{E['REFRESH']} Đang tải {len(txs)} lệnh rút tiền đang chờ duyệt...", parse_mode="HTML")
-            
+
             for tx_id, target_id, amount, details, created_at in txs:
                 btns = [[
                     InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{tx_id}"),
                     InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{tx_id}")
                 ]]
                 msg_text = f"{E['EYES']} <b>Lệnh:</b> #{tx_id}\n{E['COOL']} <b>User:</b> <code>{target_id}</code>\n{E['UP']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n{E['LOCK']} <b>Bank:</b> <code>{details or 'N/A'}</code>"
-                
+
                 qr_url = generate_vietqr_url(details, amount, memo="lixi trung thu") if details else ""
                 try:
                     if qr_url:
                         sent_msg = await message.reply_photo(photo=qr_url, caption=msg_text, reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
                     else:
                         sent_msg = await message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
-                    
+
                     refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
                     refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": bool(qr_url)})
                 except Exception as exc:
@@ -2170,7 +2247,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sent_msg = await message.reply_text(msg_text + f"\n\n⚠ <i>(Không tải được ảnh QR VietQR)</i>", reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
                     refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
                     refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": False})
-                
+
                 await asyncio.sleep(0.15)
 
         elif cmd == "/tc":
@@ -2178,7 +2255,7 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not txs:
                 await message.reply_text("📜 Chưa có lệnh rút nào được duyệt.")
                 return
-            
+
             msg = f"{E['CHART']} <b>TẤT CẢ LỆNH RÚT ĐÃ DUYỆT THÀNH CÔNG:</b>\n\n"
             for tx_id, target_id, amount, created_at in txs:
                 line = f"{E['THUMB']} #{tx_id} | <code>{target_id}</code> | <code>{amount:,}đ</code> | <code>{created_at}</code>\n"
@@ -2250,14 +2327,14 @@ def main():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("lk", link_bank_command))
-    
+
     app.add_handler(CommandHandler("menu", admin_menu_panel))
     app.add_handler(CommandHandler("ip", ip_command))
     app.add_handler(CommandHandler("ipx", ipx_command))
     app.add_handler(CommandHandler("spl", spl_command))  # LỆNH /spl
 
     admin_cmds = [
-        "reset", "tong", "tongrut", "kt", "tb", "bb", "ban", "unban",
+        "reset", "resetcung", "tong", "tongrut", "kt", "tb", "bb", "ban", "unban",
         "cam", "un", "rut", "tc", "nap", "tru", "gd", "baotri",
         "resetbank", "dl", "check", "sd", "checkdl"
     ]
