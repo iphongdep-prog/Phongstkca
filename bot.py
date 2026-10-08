@@ -41,6 +41,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://iphongdep-prog.github.io/Phongstkca/").strip()
 
+# Nhóm nhận thông báo khi phát hiện VPN/Proxy hoặc trùng IP
+LOG_ALERT_GROUP = "https://t.me/checkstkbot199"
+# Nếu bạn cần chat_id số nguyên cho nhóm (nếu bot đã có trong nhóm đó), hãy thay thế vào đây hoặc bot sẽ tự gửi bằng username/link nếu hỗ trợ. 
+# Khuyến nghị nếu bot gửi trực tiếp qua chat_id, bạn có thể cấu hình dạng số hoặc dùng username công khai.
+
 ADMIN_IDS = [5633649201]
 
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
@@ -304,8 +309,29 @@ async def is_maintenance():
     return await get_setting("maintenance", "0")
 
 # ============================================================
-# UTILS & VIETQR & RANDOM REWARD
+# UTILS & VIETQR & HÀM GỬI THÔNG BÁO BỊ KHÓA VÀO NHÓM
 # ============================================================
+
+async def send_ban_alert_to_group(bot, user_id: int, username: str, ip_address: str, reason: str):
+    """Gửi thông tin người dùng bị khóa vĩnh viễn do VPN/Proxy hoặc trùng IP vào nhóm chỉ định."""
+    uname_str = f"@{username}" if username else "Không có"
+    alert_msg = (
+        f"{E['BAN']} <b>HỆ THỐNG KHÓA TÀI KHOẢN VĨNH VIỄN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Thành viên:</b> {uname_str} (<code>{user_id}</code>)\n"
+        f"🌐 <b>Địa chỉ IP:</b> <code>{ip_address or 'N/A'}</code>\n"
+        f"📌 <b>Lý do khóa:</b> <b>{reason}</b>\n"
+        f"🗓 <b>Thời gian:</b> <code>{get_now_str()}</code>"
+    )
+    try:
+        # Nếu LOG_ALERT_GROUP là một @username công khai hoặc link dạng t.me/...
+        target = LOG_ALERT_GROUP
+        if target.startswith("https://t.me/"):
+            target = "@" + target.split("t.me/")[-1].strip("/")
+        
+        await bot.send_message(chat_id=target, text=alert_msg, parse_mode="HTML")
+    except Exception as exc:
+        logger.error("Không gửi được thông báo khóa tài khoản vào nhóm %s: %s", LOG_ALERT_GROUP, exc)
 
 def get_random_referral_reward() -> int:
     rand_val = random.random() * 100
@@ -399,7 +425,7 @@ async def send_ip_verification_challenge(update_or_message, context: ContextType
         f"{E['ALERT1']} <b>BƯỚC XÁC MINH MẠNG (CHECK IP MINIAPP)</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"Vui lòng nhấn vào nút <b>🌐 XÁC MINH IP QUA MINIAPP</b> ở bàn phím bên dưới để xác minh địa chỉ IP của bạn:\n"
-        f"<i>(Lưu ý: Mỗi tài khoản chỉ được dùng 1 IP duy nhất. Tài khoản trùng IP sẽ bị khóa vĩnh viễn!)</i>"
+        f"<i>(Lưu ý: Nghiêm cấm sử dụng VPN/Proxy hoặc trùng IP. Phát hiện sẽ bị khóa vĩnh viễn!)</i>"
     )
     kb = ReplyKeyboardMarkup(
         [[KeyboardButton("🌐 XÁC MINH IP QUA MINIAPP", web_app=WebAppInfo(url=WEBAPP_URL))]],
@@ -882,7 +908,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(chat_id=user.id, text=f"{E['LAUGH1']} <b>Bạn đã hoàn tất tất cả xác minh!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 # ============================================================
-# MINIAPP CHECK IP
+# MINIAPP CHECK IP, VPN & PROXY
 # ============================================================
 
 async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -892,9 +918,18 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     raw_data = message.web_app_data.data
+    ip_addr = ""
+    is_vpn_proxy = False
+
     try:
         data_json = json.loads(raw_data)
-        ip_addr = data_json.get("ip") or data_json.get("ip_address")
+        ip_addr = data_json.get("ip") or data_json.get("ip_address") or ""
+        # Kiểm tra cờ VPN hoặc Proxy từ Mini App gửi lên (Ví dụ: is_vpn=True, is_proxy=True, vpn=True, proxy=True)
+        is_vpn_proxy = bool(
+            data_json.get("is_vpn") or data_json.get("vpn") or 
+            data_json.get("is_proxy") or data_json.get("proxy") or
+            data_json.get("tor")
+        )
     except Exception:
         ip_addr = raw_data.strip()
 
@@ -904,6 +939,22 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     db_user = await get_fresh_user(user.id)
     if not db_user:
+        return
+
+    # 1. Phát hiện bật VPN hoặc Proxy -> Khóa vĩnh viễn và gửi thông tin vào nhóm
+    if is_vpn_proxy:
+        await db_query("UPDATE users SET is_banned=1, ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
+        user_withdraw_state.pop(user.id, None)
+        
+        reason = "Phát hiện sử dụng VPN hoặc Proxy ẩn danh qua Mini App"
+        await send_ban_alert_to_group(context.bot, user.id, user.username, ip_addr, reason)
+
+        await message.reply_text(
+            f"{E['BAN']} <b>HỆ THỐNG PHÁT HIỆN SỬ DỤNG VPN/PROXY!</b>\n━━━━━━━━━━━━━━━━━━\n"
+            f"{E['STOP']} Bạn đang sử dụng mạng ẩn danh (VPN/Proxy) để truy cập.\n"
+            f"{E['ALERT1']} <b>Tài khoản của bạn đã bị khóa vĩnh viễn và gửi báo cáo về hệ thống!</b>",
+            parse_mode="HTML"
+        )
         return
 
     if db_user[14] == 1:
@@ -916,11 +967,16 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    # 2. Phát hiện trùng IP -> Khóa vĩnh viễn và gửi thông tin vào nhóm
     existing_ip_user = await db_query("SELECT user_id FROM users WHERE ip_address=%s AND user_id != %s AND skip_ip_check = 0", (ip_addr, user.id), fetchone=True)
 
     if existing_ip_user:
-        await db_query("UPDATE users SET is_banned=1 WHERE user_id=%s", (user.id,), commit=True)
+        await db_query("UPDATE users SET is_banned=1, ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
         user_withdraw_state.pop(user.id, None)
+
+        reason = f"Trùng địa chỉ IP với tài khoản ID: {existing_ip_user[0]}"
+        await send_ban_alert_to_group(context.bot, user.id, user.username, ip_addr, reason)
+
         await message.reply_text(
             f"{E['BAN']} <b>HỆ THỐNG PHÁT HIỆN TRÙNG IP!</b>\n━━━━━━━━━━━━━━━━━━\n"
             f"{E['STOP']} Địa chỉ IP <code>{ip_addr}</code> đã trùng với tài khoản <code>{existing_ip_user[0]}</code>.\n"
@@ -1602,7 +1658,7 @@ async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_T
         return True
     if not bank_info:
         user_withdraw_state.pop(user.id, None)
-        await message.reply_text("⚠️️ Chưa liên kết ngân hàng. Dùng /lk trước.")
+        await message.reply_text("⚠ Chưa liên kết ngân hàng. Dùng /lk trước.")
         return True
     if amount < MIN_WITHDRAW or amount > MAX_WITHDRAW:
         await message.reply_text(f"{E['BAN']} Số tiền rút phải từ <b>{MIN_WITHDRAW:,}đ</b> đến <b>{MAX_WITHDRAW:,}đ</b>!", parse_mode="HTML")
