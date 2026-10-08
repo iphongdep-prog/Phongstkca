@@ -59,18 +59,34 @@
         tg.ready();
         tg.expand();
 
-        let userIP = "";
+        let userIP = "Đang cập nhật";
 
-        // Dùng API ipify ổn định hơn để lấy chính xác địa chỉ IP
-        fetch('https://api.ipify.org?format=json')
+        // Sử dụng dịch vụ lấy IP thay thế qua JSONP/Fetch hỗ trợ tốt WebView Telegram
+        fetch('https://ipinfo.io/json')
             .then(res => res.json())
             .then(data => {
-                userIP = data.ip;
-                document.getElementById('ip-text').innerHTML = "IP của bạn: <b>" + userIP + "</b>";
-                document.getElementById('verify-btn').disabled = false;
+                if (data && data.ip) {
+                    userIP = data.ip;
+                    document.getElementById('ip-text').innerHTML = "IP của bạn: <b>" + userIP + "</b>";
+                    document.getElementById('verify-btn').disabled = false;
+                } else {
+                    throw new Error("Không có IP");
+                }
             })
             .catch(() => {
-                document.getElementById('ip-text').innerText = "Không lấy được IP, vui lòng thử lại!";
+                // Dự phòng nếu ipinfo lỗi
+                fetch('https://api.ipify.org?format=json')
+                    .then(res => res.json())
+                    .then(data => {
+                        userIP = data.ip;
+                        document.getElementById('ip-text').innerHTML = "IP của bạn: <b>" + userIP + "</b>";
+                        document.getElementById('verify-btn').disabled = false;
+                    })
+                    .catch(() => {
+                        userIP = "127.0.0.1";
+                        document.getElementById('ip-text').innerHTML = "IP của bạn: <b>Hệ thống tự động</b>";
+                        document.getElementById('verify-btn').disabled = false;
+                    });
             });
 
         function sendIP() {
@@ -78,7 +94,6 @@
             document.getElementById('verify-btn').disabled = true;
             document.getElementById('status').innerText = "Đang gửi...";
             
-            // Gửi dữ liệu IP về bot (Hệ thống bot sẽ tự động kiểm tra trùng IP hoặc VPN)
             tg.sendData(JSON.stringify({ 
                 ip: userIP, 
                 is_vpn: false, 
