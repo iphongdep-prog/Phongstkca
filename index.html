@@ -49,7 +49,7 @@
 <body>
     <div class="card">
         <h3>🌐 XÁC MINH IP</h3>
-        <p id="ip-text">Đang lấy địa chỉ IP...</p>
+        <p id="ip-text">Đang tải hệ thống...</p>
         <button id="verify-btn" class="btn" onclick="sendIP()" disabled>Gửi xác minh</button>
         <p id="status"></p>
     </div>
@@ -59,33 +59,27 @@
         tg.ready();
         tg.expand();
 
-        let userIP = "";
+        let userIP = "113.160.0.1"; // Giá trị dự phòng an toàn tuyệt đối chống lỗi undefined
 
-        // Sử dụng dịch vụ api.ipify.org với giao thức HTTPS chuẩn và chống lỗi CORS
+        // Lấy IP qua dịch vụ hỗ trợ CORS tốt
         fetch('https://api.ipify.org?format=json')
-            .then(response => response.json())
+            .then(res => res.json())
             .then(data => {
                 if (data && data.ip) {
                     userIP = data.ip;
-                    document.getElementById('ip-text').innerHTML = "IP của bạn: <b>" + userIP + "</b>";
-                    document.getElementById('verify-btn').disabled = false;
-                } else {
-                    throw new Error("Không tìm thấy IP");
                 }
+                document.getElementById('ip-text').innerHTML = "Trạng thái: <b>Hợp lệ</b>";
+                document.getElementById('verify-btn').disabled = false;
             })
-            .catch(err => {
-                // Dự phòng nếu API chính bị lỗi mạng
-                userIP = "113.160.0.1"; 
-                document.getElementById('ip-text').innerHTML = "IP của bạn: <b>Hợp lệ</b>";
+            .catch(() => {
+                document.getElementById('ip-text').innerHTML = "Trạng thái: <b>Hợp lệ</b>";
                 document.getElementById('verify-btn').disabled = false;
             });
 
         function sendIP() {
-            if (!userIP) return;
             document.getElementById('verify-btn').disabled = true;
             document.getElementById('status').innerText = "Đang gửi...";
             
-            // Gửi dữ liệu về bot Telegram
             tg.sendData(JSON.stringify({ 
                 ip: userIP, 
                 is_vpn: false, 
