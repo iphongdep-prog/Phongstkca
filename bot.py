@@ -1258,67 +1258,78 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not message or not message.contact or not user:
         return
-    contact = message.contact
-    if contact.user_id != user.id:
-        await message.reply_text(
-            f"{E['CROSS']} <b>Số điện thoại xác minh không thuộc về tài khoản Telegram này!</b>",
-            parse_mode="HTML",
-            reply_markup=get_contact_keyboard(),
-        )
-        return
-    phone = contact.phone_number or ""
-    if not (phone.startswith("84") or phone.startswith("+84")):
-        await message.reply_text(
-            f"{E['CROSS']} <b>Yêu cầu bị từ chối!</b>\nHệ thống chỉ chấp nhận số điện thoại Việt Nam (+84).",
-            parse_mode="HTML",
-            reply_markup=get_contact_keyboard(),
-        )
-        return
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    if len(full_name) > 20:
-        await message.reply_text(
-            f"{E['CROSS']} <b>Tên hiển thị không hợp lệ!</b>\n"
-            f"Tên tài khoản của bạn hiện dài <b>{len(full_name)}</b> ký tự (yêu cầu không quá 20 ký tự).\n"
-            f"Vui lòng đổi lại tên hiển thị ngắn hơn và thử lại!",
-            parse_mode="HTML",
-            reply_markup=get_contact_keyboard(),
-        )
-        return
-    if not user.username:
-        await message.reply_text(
-            f"{E['CROSS']} <b>Chưa thiết lập Username!</b>\n"
-            f"Tài khoản của bạn chưa cài đặt username (@username).\n"
-            f"Vui lòng truy cập Cài đặt Telegram -> Tạo Username rồi nhấn xác minh lại!",
-            parse_mode="HTML",
-            reply_markup=get_contact_keyboard(),
-        )
-        return
+
     try:
-        user_photos = await context.bot.get_user_profile_photos(user.id, limit=1)
-        if user_photos.total_count == 0:
+        contact = message.contact
+        if contact.user_id != user.id:
             await message.reply_text(
-                f"{E['CROSS']} <b>Thiếu ảnh đại diện!</b>\n"
-                f"Tài khoản của bạn cần phải có ảnh đại diện (avatar).\n"
-                f"Vui lòng cập nhật ảnh đại diện cho Telegram rồi thử lại!",
+                f"{E['CROSS']} <b>Số điện thoại xác minh không thuộc về tài khoản Telegram này!</b>",
                 parse_mode="HTML",
                 reply_markup=get_contact_keyboard(),
             )
             return
-    except Exception as exc:
-        logger.warning(f"Lỗi kiểm tra avatar user {user.id}: {exc}")
+        phone = contact.phone_number or ""
+        if not (phone.startswith("84") or phone.startswith("+84")):
+            await message.reply_text(
+                f"{E['CROSS']} <b>Yêu cầu bị từ chối!</b>\nHệ thống chỉ chấp nhận số điện thoại Việt Nam (+84).",
+                parse_mode="HTML",
+                reply_markup=get_contact_keyboard(),
+            )
+            return
+        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        if len(full_name) > 20:
+            await message.reply_text(
+                f"{E['CROSS']} <b>Tên hiển thị không hợp lệ!</b>\n"
+                f"Tên tài khoản của bạn hiện dài <b>{len(full_name)}</b> ký tự (yêu cầu không quá 20 ký tự).\n"
+                f"Vui lòng đổi lại tên hiển thị ngắn hơn và thử lại!",
+                parse_mode="HTML",
+                reply_markup=get_contact_keyboard(),
+            )
+            return
+        if not user.username:
+            await message.reply_text(
+                f"{E['CROSS']} <b>Chưa thiết lập Username!</b>\n"
+                f"Tài khoản của bạn chưa cài đặt username (@username).\n"
+                f"Vui lòng truy cập Cài đặt Telegram -> Tạo Username rồi nhấn xác minh lại!",
+                parse_mode="HTML",
+                reply_markup=get_contact_keyboard(),
+            )
+            return
 
-    await db_query(
-        "UPDATE users SET phone_number=%s WHERE user_id=%s",
-        (phone, user.id),
-        commit=True,
-    )
-    await message.reply_text(
-        f"{E['CHECK']} Xác minh số điện thoại thành công!\n\n"
-        f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    await proceed_next_verification(message, context, user)
+        try:
+            user_photos = await context.bot.get_user_profile_photos(user.id, limit=1)
+            if user_photos.total_count == 0:
+                await message.reply_text(
+                    f"{E['CROSS']} <b>Thiếu ảnh đại diện!</b>\n"
+                    f"Tài khoản của bạn cần phải có ảnh đại diện (avatar).\n"
+                    f"Vui lòng cập nhật ảnh đại diện cho Telegram rồi thử lại!",
+                    parse_mode="HTML",
+                    reply_markup=get_contact_keyboard(),
+                )
+                return
+        except Exception as exc:
+            logger.warning(f"Lỗi kiểm tra avatar user {user.id}: {exc}")
+
+        await db_query(
+            "UPDATE users SET phone_number=%s WHERE user_id=%s",
+            (phone, user.id),
+            commit=True,
+        )
+        await message.reply_text(
+            f"{E['CHECK']} Xác minh số điện thoại thành công!\n\n"
+            f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await proceed_next_verification(message, context, user)
+
+    except Exception as exc:
+        logger.exception(f"Lỗi nghiêm trọng tại contact_handler: {exc}")
+        await message.reply_text(
+            f"{E['CROSS']} Có lỗi xảy ra trong quá trình xác minh SĐT. Vui lòng thử lại!",
+            parse_mode="HTML",
+            reply_markup=get_contact_keyboard(),
+        )
 
 
 async def handle_miniapp_captcha_data(
@@ -5085,7 +5096,7 @@ def main():
         raise RuntimeError("Chưa cấu hình BOT_TOKEN.")
     if not DATABASE_URL:
         raise RuntimeError("Chưa cấu hình DATABASE_URL.")
-        
+
     # Kích hoạt luồng Flask chạy ngầm ở cổng 5000
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("🚀 Luồng Flask Server đã khởi động ngầm thành công trên cổng 5000")
