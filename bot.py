@@ -45,7 +45,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = ":AAFwnIGRMQeIWVqeYMXM-fxIaK7QGBh6iXg"
+BOT_TOKEN = "8866702396:AAFwnIGRMQeIWVqeYMXM-fxIaK7QGBh6iXg"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
@@ -297,6 +297,7 @@ AI = {
     "TRAM": ("6208671312823456804", "🚊"),
     "RAISED_BROW": ("6208304964998010180", "🤨"),
     "LOVE8": ("6208631494181655806", "🥰"),
+    "GLOBE": ("5447410659077661506", "🌐"),
 }
 
 def ai(key: str) -> str:
