@@ -45,7 +45,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = "8969844386:AAF3ilSkXGaUbqOPZKc_549qXxTApJMQa20"
+BOT_TOKEN = "8866702396:AAFwnIGRMQeIWVqeYMXM-fxIaK7QGBh6iXg"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
@@ -1258,78 +1258,67 @@ async def contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not message or not message.contact or not user:
         return
-
-    try:
-        contact = message.contact
-        if contact.user_id != user.id:
-            await message.reply_text(
-                f"{E['CROSS']} <b>Số điện thoại xác minh không thuộc về tài khoản Telegram này!</b>",
-                parse_mode="HTML",
-                reply_markup=get_contact_keyboard(),
-            )
-            return
-        phone = contact.phone_number or ""
-        if not (phone.startswith("84") or phone.startswith("+84")):
-            await message.reply_text(
-                f"{E['CROSS']} <b>Yêu cầu bị từ chối!</b>\nHệ thống chỉ chấp nhận số điện thoại Việt Nam (+84).",
-                parse_mode="HTML",
-                reply_markup=get_contact_keyboard(),
-            )
-            return
-        full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-        if len(full_name) > 20:
-            await message.reply_text(
-                f"{E['CROSS']} <b>Tên hiển thị không hợp lệ!</b>\n"
-                f"Tên tài khoản của bạn hiện dài <b>{len(full_name)}</b> ký tự (yêu cầu không quá 20 ký tự).\n"
-                f"Vui lòng đổi lại tên hiển thị ngắn hơn và thử lại!",
-                parse_mode="HTML",
-                reply_markup=get_contact_keyboard(),
-            )
-            return
-        if not user.username:
-            await message.reply_text(
-                f"{E['CROSS']} <b>Chưa thiết lập Username!</b>\n"
-                f"Tài khoản của bạn chưa cài đặt username (@username).\n"
-                f"Vui lòng truy cập Cài đặt Telegram -> Tạo Username rồi nhấn xác minh lại!",
-                parse_mode="HTML",
-                reply_markup=get_contact_keyboard(),
-            )
-            return
-
-        try:
-            user_photos = await context.bot.get_user_profile_photos(user.id, limit=1)
-            if user_photos.total_count == 0:
-                await message.reply_text(
-                    f"{E['CROSS']} <b>Thiếu ảnh đại diện!</b>\n"
-                    f"Tài khoản của bạn cần phải có ảnh đại diện (avatar).\n"
-                    f"Vui lòng cập nhật ảnh đại diện cho Telegram rồi thử lại!",
-                    parse_mode="HTML",
-                    reply_markup=get_contact_keyboard(),
-                )
-                return
-        except Exception as exc:
-            logger.warning(f"Lỗi kiểm tra avatar user {user.id}: {exc}")
-
-        await db_query(
-            "UPDATE users SET phone_number=%s WHERE user_id=%s",
-            (phone, user.id),
-            commit=True,
-        )
+    contact = message.contact
+    if contact.user_id != user.id:
         await message.reply_text(
-            f"{E['CHECK']} Xác minh số điện thoại thành công!\n\n"
-            f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
-            parse_mode="HTML",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-        await proceed_next_verification(message, context, user)
-
-    except Exception as exc:
-        logger.exception(f"Lỗi nghiêm trọng tại contact_handler: {exc}")
-        await message.reply_text(
-            f"{E['CROSS']} Có lỗi xảy ra trong quá trình xác minh SĐT. Vui lòng thử lại!",
+            f"{E['CROSS']} <b>Số điện thoại xác minh không thuộc về tài khoản Telegram này!</b>",
             parse_mode="HTML",
             reply_markup=get_contact_keyboard(),
         )
+        return
+    phone = contact.phone_number or ""
+    if not (phone.startswith("84") or phone.startswith("+84")):
+        await message.reply_text(
+            f"{E['CROSS']} <b>Yêu cầu bị từ chối!</b>\nHệ thống chỉ chấp nhận số điện thoại Việt Nam (+84).",
+            parse_mode="HTML",
+            reply_markup=get_contact_keyboard(),
+        )
+        return
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if len(full_name) > 20:
+        await message.reply_text(
+            f"{E['CROSS']} <b>Tên hiển thị không hợp lệ!</b>\n"
+            f"Tên tài khoản của bạn hiện dài <b>{len(full_name)}</b> ký tự (yêu cầu không quá 20 ký tự).\n"
+            f"Vui lòng đổi lại tên hiển thị ngắn hơn và thử lại!",
+            parse_mode="HTML",
+            reply_markup=get_contact_keyboard(),
+        )
+        return
+    if not user.username:
+        await message.reply_text(
+            f"{E['CROSS']} <b>Chưa thiết lập Username!</b>\n"
+            f"Tài khoản của bạn chưa cài đặt username (@username).\n"
+            f"Vui lòng truy cập Cài đặt Telegram -> Tạo Username rồi nhấn xác minh lại!",
+            parse_mode="HTML",
+            reply_markup=get_contact_keyboard(),
+        )
+        return
+    try:
+        user_photos = await context.bot.get_user_profile_photos(user.id, limit=1)
+        if user_photos.total_count == 0:
+            await message.reply_text(
+                f"{E['CROSS']} <b>Thiếu ảnh đại diện!</b>\n"
+                f"Tài khoản của bạn cần phải có ảnh đại diện (avatar).\n"
+                f"Vui lòng cập nhật ảnh đại diện cho Telegram rồi thử lại!",
+                parse_mode="HTML",
+                reply_markup=get_contact_keyboard(),
+            )
+            return
+    except Exception as exc:
+        logger.warning(f"Lỗi kiểm tra avatar user {user.id}: {exc}")
+
+    await db_query(
+        "UPDATE users SET phone_number=%s WHERE user_id=%s",
+        (phone, user.id),
+        commit=True,
+    )
+    await message.reply_text(
+        f"{E['CHECK']} Xác minh số điện thoại thành công!\n\n"
+        f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await proceed_next_verification(message, context, user)
 
 
 async def handle_miniapp_captcha_data(
@@ -1476,6 +1465,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
                 return
 
+        # === LƯU IP TRỰC TIẾP VÀO THÔNG TIN TÀI KHOẢN ===
         await db_query(
             "UPDATE users SET ip_address=%s WHERE user_id=%s",
             (user_ip, user.id),
@@ -2460,6 +2450,7 @@ async def adm_panel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{E['RIGHT']} <b>/ban / unban:</b> Quản lý trạng thái khóa tài khoản.\n"
         f"{E['RIGHT']} <b>/banwd / unbanwd:</b> Quản lý trạng thái cấm rút code.\n\n"
         f"{E['STAR']} <b>LỆNH MỚI:</b>\n"
+        f"{E['RIGHT']} <b>/checkip:</b> Kiểm tra toàn bộ tài khoản trùng IP / SĐT / @name.\n"
         f"{E['RIGHT']} <b>/biofriends ID:</b> Kiểm tra bạn bè được mời có tiểu sử @Lienminhvietnam.\n"
         f"{E['RIGHT']} <b>/stats:</b> Bảng thống kê tổng quan hệ thống.\n"
         f"{E['RIGHT']} <b>/find từ_khóa:</b> Tìm user theo ID / @username / SĐT / IP.\n"
@@ -2721,6 +2712,7 @@ ADMIN_PAGES = [
             "• <b>/info</b> – thông tin cơ bản user\n"
             "• <b>/detail</b> – thông tin chi tiết + người giới thiệu\n"
             "• <b>/lookup</b> – tra cứu IP / SĐT / @name + gửi ảnh camera\n"
+            "• <b>/checkip</b> – ⭐ kiểm tra TOÀN BỘ tài khoản trùng IP / SĐT / @name\n"
             "• <b>/find</b> – tìm theo ID / @username / SĐT / IP\n"
             "• <b>/friends</b> – danh sách bạn bè do user mời\n"
             "• <b>/users</b> – tổng thành viên + nút xem nhanh\n"
@@ -2730,6 +2722,7 @@ ADMIN_PAGES = [
             ("/info", "i", "info", "BULB"),
             ("/detail", "i", "detail", "SHIELD2"),
             ("/lookup", "i", "lookup", "IMAGE"),
+            ("/checkip", "i", "checkip", "GLOBE"),
             ("/find", "i", "find", "TARGET"),
             ("/friends", "i", "friends", "NEXT"),
             ("/users", "r", "users", "PC"),
@@ -2809,6 +2802,10 @@ ADMIN_INPUT_PROMPTS = {
     "unip": "Nhập <b>USER_ID</b> cần mở khóa trùng IP:",
     "info": "Nhập <b>USER_ID</b> cần xem thông tin cơ bản:",
     "detail": "Nhập <b>USER_ID</b> cần xem thông tin chi tiết:",
+    "checkip": (
+        "Nhập <b>IP / Số điện thoại / @username / USER_ID</b> cần check trùng IP:\n"
+        "<i>VD: <code>113.161.1.1</code> hoặc <code>+84901234567</code> hoặc <code>@username</code></i>"
+    ),
     "find": "Nhập từ khóa: <b>ID / @username / SĐT / IP</b>",
     "lookup": "Nhập <b>IP / SĐT / @username / USER_ID</b> để tra cứu + xem ảnh camera:",
     "friends": "Nhập <b>USER_ID</b> cần xem danh sách bạn bè đã mời:",
@@ -2992,7 +2989,7 @@ async def admin_confirm_callback(
         return
     if not is_admin(update):
         await query.answer(
-            "Bạn không có quyền thực hiện thao tác này!", show_alert=True
+            "Bạn không có quyền thực hi!", show_alert=True
         )
         return
     try:
@@ -3069,6 +3066,7 @@ async def admin_commands(
             "unban",
             "banwd",
             "unbanwd",
+            "checkip",
         ):
             parts = text_input.split()
             if parts:
@@ -3076,7 +3074,7 @@ async def admin_commands(
                 raw_text = f"/{cmd_type} {parts[0]}"
             else:
                 await message.reply_text(
-                    f"{E['CROSS']} Vui lòng nhập ID hợp lệ.", parse_mode="HTML"
+                    f"{E['CROSS']} Vui lòng nhập dữ liệu hợp lệ.", parse_mode="HTML"
                 )
                 return
         else:
@@ -3564,6 +3562,106 @@ async def admin_commands(
                 )
                 return
             await message.reply_text(text, parse_mode="HTML")
+
+        elif cmd == "/checkip":
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>/checkip IP_HOẶC_SĐT_HOẶC_@username_HOẶC_USER_ID</code>",
+                    parse_mode="HTML",
+                )
+                return
+            keyword = " ".join(args).strip().replace("@", "").strip()
+            if not keyword:
+                await message.reply_text(
+                    f"{E['CROSS']} Vui lòng nhập IP / SĐT / @username / USER_ID hợp lệ.",
+                    parse_mode="HTML",
+                )
+                return
+
+            target_ip = None
+            searched_by = ""
+            ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
+            if re.fullmatch(ip_pattern, keyword):
+                target_ip = keyword
+                searched_by = "IP"
+            else:
+                user_row = None
+                if keyword.isdigit() and len(keyword) >= 8:
+                    user_row = await db_query(
+                        "SELECT user_id, ip_address, phone_number FROM users WHERE user_id=%s",
+                        (int(keyword),),
+                        fetchone=True,
+                    )
+                    if user_row:
+                        searched_by = "USER_ID"
+                    else:
+                        user_row = await db_query(
+                            "SELECT user_id, ip_address, phone_number FROM users WHERE phone_number LIKE %s LIMIT 1",
+                            (f"%{keyword}%",),
+                            fetchone=True,
+                        )
+                        searched_by = "SĐT"
+                else:
+                    user_row = await db_query(
+                        "SELECT user_id, ip_address, phone_number FROM users WHERE username ILIKE %s LIMIT 1",
+                        (keyword,),
+                        fetchone=True,
+                    )
+                    searched_by = "USERNAME"
+
+                if user_row:
+                    target_ip = user_row[1]
+                    if not target_ip:
+                        await message.reply_text(
+                            f"{E['WARN']} Tài khoản <code>{user_row[0]}</code> chưa xác minh IP. Không thể tìm trùng IP.",
+                            parse_mode="HTML",
+                        )
+                        return
+
+            if not target_ip:
+                await message.reply_text(
+                    f"{E['CROSS']} Không tìm thấy IP tương ứng với: <code>{keyword}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            users_with_ip = await db_query(
+                "SELECT user_id, username, phone_number, ip_address, is_banned, "
+                "is_withdraw_banned, balance, joined_at, referrer_id "
+                "FROM users WHERE ip_address=%s ORDER BY joined_at ASC",
+                (target_ip,),
+                fetchall=True,
+            ) or []
+
+            if not users_with_ip:
+                await message.reply_text(
+                    f"{E['BANDAGE']} Không có tài khoản nào dùng IP <code>{target_ip}</code>.",
+                    parse_mode="HTML",
+                )
+                return
+
+            msg = (
+                f"{E['GLOBE']} <b>KẾT QUẢ CHECK TRÙNG IP</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['TARGET']} IP: <code>{target_ip}</code>\n"
+                f"{E['INFO']} Tìm theo: <b>{searched_by}</b> — Từ khóa: <code>{keyword}</code>\n"
+                f"{E['CROWN']} Tổng tài khoản trùng: <b>{len(users_with_ip)}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n\n"
+            )
+            for u_id, u_name, u_phone, u_ip, u_ban, u_wd, u_bal, u_joined, u_ref in users_with_ip:
+                uname_str = f"@{u_name}" if u_name else "N/A"
+                ban_str = "🔴 BỊ KHÓA" if u_ban else "🟢 BÌNH THƯỜNG"
+                wd_str = "🔴 CẤM RÚT" if u_wd else "🟢 OK"
+                msg += (
+                    f"{E['RIGHT']} <b>{uname_str}</b> | ID: <code>{u_id}</code>\n"
+                    f"   {E['PHONE']} SĐT: <code>{u_phone or 'N/A'}</code>\n"
+                    f"   {E['MONEY']} Số dư: <code>{u_bal:,}đ</code>\n"
+                    f"   {E['CROSS']} {ban_str} | {E['WARN']} {wd_str}\n"
+                    f"   {E['HOURGLASS']} Tham gia: <code>{u_joined or 'N/A'}</code>\n"
+                    f"   {E['ROCKET']} Ref by: <code>{u_ref or 'Không'}</code>\n"
+                    "   ────────────────────────────\n"
+                )
+            await send_split_message(context.bot, chat_id, msg, parse_mode="HTML")
 
         elif cmd == "/detail":
             if not args:
@@ -5096,7 +5194,7 @@ def main():
         raise RuntimeError("Chưa cấu hình BOT_TOKEN.")
     if not DATABASE_URL:
         raise RuntimeError("Chưa cấu hình DATABASE_URL.")
-
+        
     # Kích hoạt luồng Flask chạy ngầm ở cổng 5000
     threading.Thread(target=run_flask, daemon=True).start()
     logger.info("🚀 Luồng Flask Server đã khởi động ngầm thành công trên cổng 5000")
@@ -5140,7 +5238,7 @@ def main():
         "delhistory", "buyhistory", "addbal", "subbal", "zerobal",
         "ban", "unban", "banwd", "unbanwd", "unall", "uncap",
         "skipip", "unip", "resetverify", "info", "detail", "find",
-        "lookup",
+        "lookup", "checkip",
         "txlog", "txfull", "checkfriends", "friends", "users", "stats",
         "banlist", "wdbanlist", "topbal", "dupip", "dupphone",
         "biofriends", "scanbio", "banbuff", "checkref", "broadcast",
