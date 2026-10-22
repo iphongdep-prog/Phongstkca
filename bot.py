@@ -46,7 +46,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = ":-fxIaK7QGBh6iXg"
+BOT_TOKEN = "8866702396:AAFwnIGRMQeIWVqeYMXM-fxIaK7QGBh6iXg"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
@@ -690,14 +690,7 @@ def _register_ip_sync(user_id: int, raw_ip, notify_user: bool = False):
         for admin_id in ADMIN_IDS:
             _send_tg_sync(admin_id, text)
 
-    if notify_user:
-        _send_tg_sync(
-            user_id,
-            f"{E['GLOBE']} <b>PHÁT HIỆN TRÙNG IP!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"IP của bạn đang được tài khoản khác sử dụng.\n"
-            f"Tài khoản đã bị <b>khóa rút code</b>. Cần hỗ trợ vui lòng liên hệ Admin.",
-        )
+    # Âm thầm: KHÔNG báo gì cho người dùng, chỉ báo về admin (ở trên).
     return result
 
 
@@ -1589,23 +1582,15 @@ async def handle_miniapp_captcha_data(
     # Lưu IP vào hệ thống + kiểm tra trùng + tự khóa rút code + báo admin
     result = await register_user_ip(uid, user_ip) if user_ip else None
     if result and result["duplicate"]:
+        # Âm thầm khóa rút code + báo admin, KHÔNG báo gì cho người dùng
         for locked_id in result["locked_ids"]:
             user_withdraw_state.pop(locked_id, None)
-        await message.reply_text(
-            f"{E['GLOBE']} <b>PHÁT HIỆN TRÙNG IP!</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"IP của bạn đang được tài khoản khác sử dụng.\n"
-            f"Tài khoản đã bị <b>khóa rút code</b> và đã báo về Admin.",
-            parse_mode="HTML",
-            reply_markup=ReplyKeyboardRemove(),
-        )
-    else:
-        await message.reply_text(
-            f"{E['CHECK']} Xác minh Captcha, Camera & IP thành công!\n\n"
-            f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
-            parse_mode="HTML",
-            reply_markup=ReplyKeyboardRemove(),
-        )
+    await message.reply_text(
+        f"{E['CHECK']} Xác minh Captcha, Camera & IP thành công!\n\n"
+        f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove(),
+    )
     await proceed_next_verification(message, context, user)
 
 
@@ -1668,23 +1653,15 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # IP lưu ở bảng ip_logs (không ghi vào thông tin tài khoản)
         result = await register_user_ip(user.id, user_ip)
         if result and result["duplicate"]:
+            # Âm thầm khóa rút code + báo admin, KHÔNG báo gì cho người dùng
             for locked_id in result["locked_ids"]:
                 user_withdraw_state.pop(locked_id, None)
-            await message.reply_text(
-                f"{E['GLOBE']} <b>PHÁT HIỆN TRÙNG IP!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"IP của bạn đang được tài khoản khác sử dụng.\n"
-                f"Tài khoản đã bị <b>khóa rút code</b> và đã báo về Admin.",
-                parse_mode="HTML",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-        else:
-            await message.reply_text(
-                f"{E['CHECK']} Xác minh IP thành công!\n\n"
-                f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
-                parse_mode="HTML",
-                reply_markup=ReplyKeyboardRemove(),
-            )
+        await message.reply_text(
+            f"{E['CHECK']} Xác minh IP thành công!\n\n"
+            f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
         await proceed_next_verification(message, context, user)
 
     except Exception as exc:
@@ -5541,7 +5518,7 @@ def save_photo():
                 # + kiểm tra trùng (tự khóa rút code, báo admin)
                 if ip:
                     pending_miniapp_ip[user_id] = ip
-                    _register_ip_sync(user_id, ip, notify_user=True)
+                    _register_ip_sync(user_id, ip, notify_user=False)
                 print(f"✅ Đã xử lý IP/token cho user {user_id}: ip={ip}, token={token}")
             except Exception as e:
                 print(f"❌ Lỗi lưu IP/token cho user {user_id}: {e}")
