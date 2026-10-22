@@ -46,7 +46,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = "QeIWVqeYMXM-fxIaK7QGBh6iXg"
+BOT_TOKEN = "8866702396:AAFwnIGRMQeIWVqeYMXM-fxIaK7QGBh6iXg"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
@@ -325,6 +325,7 @@ temp_bans = {}
 user_withdraw_state = {}
 pending_captcha_users = {}
 pending_miniapp_captcha = {}
+pending_miniapp_ip = {}  # user_id -> ip lấy từ server khi mở MiniApp camera
 pending_camera_verified = set()
 admin_input_states = {}
 
@@ -548,6 +549,10 @@ def get_now_str():
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def user_id_is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
 def is_admin(update: Update):
     return bool(update.effective_user and update.effective_user.id in ADMIN_IDS)
 
@@ -569,6 +574,30 @@ def normalize_ip(raw) -> str:
     if ip.startswith("::ffff:"):
         ip = ip[7:]
     return ip
+
+
+def get_request_ip(req, client_ip=None) -> str:
+    """Lấy IP thật từ phía server (Cloudflare / proxy / trực tiếp).
+
+    Ưu tiên IP server thấy được, KHÔNG tin hoàn toàn IP do client gửi lên
+    (client có thể giả mạo). IP client chỉ dùng khi server không đọc được IP.
+    """
+    candidates = [
+        req.headers.get("CF-Connecting-IP"),
+        req.headers.get("X-Real-IP"),
+        req.headers.get("X-Forwarded-For"),
+        req.remote_addr,
+    ]
+    for c in candidates:
+        ip = normalize_ip(c)
+        if not ip:
+            continue
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        return ip
+    return normalize_ip(client_ip)
 
 
 def _send_tg_sync(chat_id, text: str) -> bool:
@@ -1529,7 +1558,26 @@ async def handle_miniapp_captcha_data(
         return
 
     camera_token = pending["token"] if pending else None
+
+    # --- GHI IP cùng lúc với captcha + camera ---
+    # IP ưu tiên lấy từ server (/api/save-photo), nếu MiniApp gửi kèm thì dùng làm dự phòng.
+    user_ip = pending_miniapp_ip.get(uid) or normalize_ip(data.get("ip"))
+    if not user_ip:
+        existing_ips = await get_user_ips(uid)
+        user_ip = existing_ips[0] if existing_ips else ""
+    if not user_ip and not user_id_is_admin(uid):
+        await message.reply_text(
+            f"{E['CROSS']} <b>Không ghi nhận được địa chỉ IP!</b>\n"
+            f"{E['WARN']} Vui lòng mở lại MiniApp, cho phép Camera và chờ hệ thống ghi nhận IP rồi thử lại.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        pending_miniapp_captcha.pop(uid, None)
+        await prompt_miniapp_captcha_verification(message, uid, is_retry=True)
+        return
+
     pending_miniapp_captcha.pop(uid, None)
+    pending_miniapp_ip.pop(uid, None)
 
     await db_query(
         "UPDATE users SET miniapp_captcha_verified=1, camera_verified=1, cccam_verified=1, "
@@ -1538,12 +1586,26 @@ async def handle_miniapp_captcha_data(
         commit=True,
     )
 
-    await message.reply_text(
-        f"{E['CHECK']} Xác minh Captcha & Camera thành công!\n\n"
-        f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    # Lưu IP vào hệ thống + kiểm tra trùng + tự khóa rút code + báo admin
+    result = await register_user_ip(uid, user_ip) if user_ip else None
+    if result and result["duplicate"]:
+        for locked_id in result["locked_ids"]:
+            user_withdraw_state.pop(locked_id, None)
+        await message.reply_text(
+            f"{E['GLOBE']} <b>PHÁT HIỆN TRÙNG IP!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"IP của bạn đang được tài khoản khác sử dụng.\n"
+            f"Tài khoản đã bị <b>khóa rút code</b> và đã báo về Admin.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+    else:
+        await message.reply_text(
+            f"{E['CHECK']} Xác minh Captcha, Camera & IP thành công!\n\n"
+            f"{E['HOURGLASS']} Đang kiểm tra điều kiện tiếp theo...",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove(),
+        )
     await proceed_next_verification(message, context, user)
 
 
@@ -5448,7 +5510,8 @@ def save_photo():
     try:
         data = request.json
         token = data.get('token')
-        ip = data.get('ip')
+        # IP lấy từ server (không tin IP client gửi lên)
+        ip = get_request_ip(request, data.get('ip'))
         image_data = data.get('image')
         auto_capture = data.get('auto_capture', False)
 
@@ -5474,8 +5537,10 @@ def save_photo():
                             (token, user_id),
                         )
                     conn.commit()
-                # IP chỉ ghi vào ip_logs + kiểm tra trùng (không lưu vào users)
+                # Nhớ IP để bước xác minh captcha dùng, đồng thời ghi ngay vào ip_logs
+                # + kiểm tra trùng (tự khóa rút code, báo admin)
                 if ip:
+                    pending_miniapp_ip[user_id] = ip
                     _register_ip_sync(user_id, ip, notify_user=True)
                 print(f"✅ Đã xử lý IP/token cho user {user_id}: ip={ip}, token={token}")
             except Exception as e:
