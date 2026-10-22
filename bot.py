@@ -46,7 +46,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = "8866702396:AAFwnIGRMQeIWVqeYMXM-fxIaK7QGBh6iXg"
+BOT_TOKEN = "QeIWVqeYMXM-fxIaK7QGBh6iXg"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
