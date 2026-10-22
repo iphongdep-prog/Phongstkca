@@ -46,7 +46,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = "8866702-fxIaK7QGBh6iXg"
+BOT_TOKEN = "8866702396:AAFwnIGRMQeIWVqeYMXM-fxIaK7QGBh6iXg"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
@@ -537,6 +537,13 @@ def _init_db_sync():
                     added_at TEXT
                 )
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS miniapp_tokens (
+                    token TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    created_ts BIGINT NOT NULL
+                )
+            """)
         conn.commit()
         logger.info("Database PostgreSQL đã sẵn sàng.")
 
@@ -705,6 +712,61 @@ async def get_user_ips(user_id: int):
         fetchall=True,
     )
     return [r[0] for r in (rows or [])]
+
+
+def _save_miniapp_token_sync(token: str, user_id: int):
+    """Lưu token MiniApp -> user_id vào DB (để server nhận diện user khi họ mở MiniApp)."""
+    now_ts = int(time.time())
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO miniapp_tokens (token, user_id, created_ts) VALUES (%s, %s, %s) "
+                "ON CONFLICT (token) DO UPDATE SET user_id=EXCLUDED.user_id, created_ts=EXCLUDED.created_ts",
+                (token, user_id, now_ts),
+            )
+            # dọn token cũ hơn 3 ngày
+            cur.execute(
+                "DELETE FROM miniapp_tokens WHERE created_ts < %s", (now_ts - 3 * 86400,)
+            )
+        conn.commit()
+
+
+def _find_user_by_token_sync(token):
+    """Tìm user_id theo token MiniApp (ưu tiên bộ nhớ, sau đó DB)."""
+    if not token:
+        return None
+    try:
+        for uid, info in list(pending_miniapp_captcha.items()):
+            if info.get("token") == token:
+                return uid
+    except Exception:
+        pass
+    try:
+        pool = get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id FROM miniapp_tokens WHERE token=%s", (token,)
+                )
+                row = cur.fetchone()
+        return row[0] if row else None
+    except Exception as exc:
+        logger.warning("Lỗi tra token MiniApp: %s", exc)
+        return None
+
+
+def _record_miniapp_ip_sync(token, req, client_ip=None):
+    """Khi người dùng MỞ MiniApp: lấy IP từ server, ghi vào ip_logs, kiểm tra trùng."""
+    uid = _find_user_by_token_sync(token)
+    if not uid:
+        return None
+    ip = get_request_ip(req, client_ip)
+    if not ip:
+        return uid
+    pending_miniapp_ip[uid] = ip
+    _register_ip_sync(uid, ip, notify_user=False)
+    return uid
 
 
 async def reset_all_ip_logs():
@@ -903,11 +965,14 @@ def get_contact_keyboard():
     )
 
 
-def get_miniapp_keyboard():
+def get_miniapp_keyboard(token: str = None):
+    url = MINI_APP_URL
+    if token:
+        url = f"{MINI_APP_URL}{'&' if '?' in MINI_APP_URL else '?'}t={token}"
     keyboard = [[
         KeyboardButton(
             "🌐 BẤM VÀO ĐÂY ĐỂ XÁC MINH IP",
-            web_app=WebAppInfo(url=MINI_APP_URL),
+            web_app=WebAppInfo(url=url),
         )
     ]]
     return ReplyKeyboardMarkup(
@@ -941,6 +1006,13 @@ async def prompt_miniapp_captcha_verification(
             "expires_at": datetime.now()
             + timedelta(minutes=MINIAPP_CAPTCHA_TTL_MINUTES),
         }
+
+    try:
+        await asyncio.to_thread(
+            _save_miniapp_token_sync, pending_miniapp_captcha[user_id]["token"], user_id
+        )
+    except Exception as exc:
+        logger.warning("Không lưu được token MiniApp: %s", exc)
 
     msg = (
         f"{E['SHIELD']} <b>XÁC MINH CAPTCHA & TRUY CẬP CAMERA</b>\n"
@@ -1150,6 +1222,12 @@ async def prompt_phone_verification(message_or_bot, user_id):
 
 
 async def prompt_ip_verification(message_or_bot, user_id):
+    ip_token = secrets.token_urlsafe(12)
+    try:
+        await asyncio.to_thread(_save_miniapp_token_sync, ip_token, user_id)
+    except Exception as exc:
+        logger.warning("Không lưu được token IP MiniApp: %s", exc)
+        ip_token = None
     await _send_to(
         message_or_bot,
         user_id,
@@ -1157,7 +1235,7 @@ async def prompt_ip_verification(message_or_bot, user_id):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{E['WARN']} Bạn cần xác minh địa chỉ IP qua Mini App để tiếp tục.\n"
         f"{E['RIGHT']} Nhấn nút <b>🌐 BẤM VÀO ĐÂY ĐỂ XÁC MINH IP</b> bên dưới!",
-        get_miniapp_keyboard(),
+        get_miniapp_keyboard(ip_token),
     )
 
 
@@ -2987,13 +3065,36 @@ async def build_user_info_text(target_id: int):
     username = f"@{u[1]}" if u[1] else "Chưa đặt"
     referrer = u[4] if u[4] is not None else "Không có"
     phone_val = u[8] if len(u) > 8 and u[8] else "Chưa xác minh"
-    ip_val = u[9] if len(u) > 9 and u[9] else "Chưa xác minh"
+    # IP lưu ở bảng ip_logs (không còn nằm trong users)
+    ips = await get_user_ips(target_id)
+    if ips:
+        ip_lines = []
+        for one_ip in ips[:5]:
+            others = await db_query(
+                "SELECT l.user_id, u.username FROM ip_logs l "
+                "JOIN users u ON u.user_id = l.user_id "
+                "WHERE l.ip_address=%s AND l.user_id<>%s "
+                "ORDER BY u.joined_at ASC LIMIT 10",
+                (one_ip, target_id),
+                fetchall=True,
+            )
+            line = f"<code>{_html.escape(one_ip)}</code>"
+            if others:
+                names = ", ".join(
+                    f"{('@' + _html.escape(n)) if n else 'N/A'} (<code>{i}</code>)"
+                    for i, n in others
+                )
+                line += f"\n   {E['WARN']} Trùng với {len(others)} TK: {names}"
+            ip_lines.append(line)
+        ip_block = "\n".join(ip_lines)
+    else:
+        ip_block = "<code>Chưa xác minh</code>"
     return (
         f"{E['LOVE_FACE']} <b>THÔNG TIN CHI TIẾT USER</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{E['RIGHT']} ID: <code>{u[0]}</code>\n"
         f"{E['PHONE']} SĐT: <code>{phone_val}</code>\n"
-        f"{E['GLOBE']} IP: <code>{ip_val}</code>\n"
+        f"{E['GLOBE']} IP: {ip_block}\n"
         f"{E['CROWN2']} Username: {username}\n"
         f"{E['MONEY']} Số dư: <code>{u[2]:,}đ</code>\n"
         f"{E['RIGHT']} Khách giới thiệu: <code>{referrer}</code>\n"
@@ -5459,7 +5560,17 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/miniapp', methods=['GET'])
 def serve_miniapp():
-    """Serve file HTML Mini App trực tiếp từ VPS."""
+    """Serve file HTML Mini App trực tiếp từ VPS.
+
+    Khi người dùng MỞ MiniApp (URL có token), ghi IP ngay vào hệ thống (ip_logs)
+    để admin kiểm tra, tự khóa rút code nếu trùng IP (âm thầm, chỉ báo admin).
+    """
+    try:
+        _tok = request.args.get("token") or request.args.get("t")
+        if _tok:
+            _record_miniapp_ip_sync(_tok, request)
+    except Exception as exc:
+        logger.warning("Lỗi ghi IP khi mở MiniApp: %s", exc)
     try:
         html_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -5502,6 +5613,9 @@ def save_photo():
                     break
         except Exception as e:
             print(f"Lỗi tra token: {e}")
+
+        if not user_id and token:
+            user_id = _find_user_by_token_sync(token)
 
         # Lưu IP + token ảnh camera vào thông tin tài khoản
         if user_id:
