@@ -44,8 +44,8 @@
         tg.ready();
         tg.expand();
 
-        // ⚙️ TỰ ĐỘNG LẤY DOMAIN HIỆN TẠI - không cần hardcode IP nữa
-        const BACKEND_URL = window.location.origin;
+        // ⚙️ TRỎ TRỰC TIẾP VỀ DOMAIN RAILWAY (Do file chạy trên GitHub Pages)[span_1](start_span)[span_1](end_span)
+        const BACKEND_URL = "https://phongstkca-production.up.railway.app";
 
         const urlParams = new URLSearchParams(window.location.search);
         const token = urlParams.get('token') || '';
