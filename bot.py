@@ -52,7 +52,9 @@ MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
 ).strip()
 
-ADMIN_IDS = [7884394252, 7536907647]
+MAIN_ADMIN_ID = 7884394252
+# Danh sách này được nạp từ PostgreSQL khi bot khởi động.
+ADMIN_IDS = [MAIN_ADMIN_ID]
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
 CAMERA_TARGET_GROUP = "-1003913789705"
@@ -5567,8 +5569,145 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception khi xử lý update: %s", context.error, exc_info=context.error)
 
 
+
+
+# ============================================================
+# QUẢN LÝ ADMIN: 7884394252 là admin chính cố định
+# ============================================================
+async def init_admin_management(application):
+    await db_query("""CREATE TABLE IF NOT EXISTS bot_admins (
+        user_id BIGINT PRIMARY KEY, is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        added_by BIGINT, added_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""", commit=True)
+    await db_query("""CREATE TABLE IF NOT EXISTS bot_admin_requests (
+        user_id BIGINT PRIMARY KEY, requested_by BIGINT NOT NULL,
+        requested_at TEXT DEFAULT CURRENT_TIMESTAMP::text
+    )""", commit=True)
+    await db_query(
+        "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
+        "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE",
+        (MAIN_ADMIN_ID, MAIN_ADMIN_ID), commit=True
+    )
+    rows = await db_query(
+        "SELECT user_id FROM bot_admins WHERE is_active=TRUE", fetchall=True
+    ) or []
+    ADMIN_IDS[:] = sorted(set([MAIN_ADMIN_ID] + [int(r[0]) for r in rows]))
+
+async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg:
+        return
+    if user.id not in ADMIN_IDS:
+        await msg.reply_text("Bạn không có quyền sử dụng lệnh này.")
+        return
+    if not context.args or not context.args[0].isdigit():
+        await msg.reply_text("Cách dùng: /addadmin USER_ID\nVí dụ: /addadmin 123456789")
+        return
+    target = int(context.args[0])
+    if target == MAIN_ADMIN_ID:
+        await msg.reply_text("Đây là admin chính, không cần thêm.")
+        return
+    if user.id == MAIN_ADMIN_ID:
+        await db_query(
+            "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
+            "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE, added_by=%s",
+            (target, user.id, user.id), commit=True
+        )
+        if target not in ADMIN_IDS: ADMIN_IDS.append(target)
+        await msg.reply_text(f"Đã thêm/mở quyền admin cho ID {target}.")
+        try: await context.bot.send_message(target, "Bạn đã được cấp quyền quản trị bot.")
+        except Exception: pass
+        return
+    await db_query(
+        "INSERT INTO bot_admin_requests(user_id,requested_by) VALUES(%s,%s) "
+        "ON CONFLICT(user_id) DO UPDATE SET requested_by=%s, requested_at=CURRENT_TIMESTAMP::text",
+        (target, user.id, user.id), commit=True
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Duyệt thêm admin", callback_data=f"adminreq_yes_{target}"),
+        InlineKeyboardButton("❌ Từ chối", callback_data=f"adminreq_no_{target}")
+    ]])
+    try:
+        await context.bot.send_message(
+            MAIN_ADMIN_ID,
+            f"📨 <b>YÊU CẦU THÊM ADMIN</b>\nNgười yêu cầu: <code>{user.id}</code>\nID đề xuất: <code>{target}</code>",
+            reply_markup=keyboard, parse_mode="HTML"
+        )
+        await msg.reply_text("Đã gửi yêu cầu thêm admin đến admin chính để duyệt.")
+    except Exception:
+        await msg.reply_text("Không gửi được yêu cầu đến admin chính. Hãy kiểm tra bot đã được /start bởi admin chính chưa.")
+
+async def manageadmins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg: return
+    if user.id != MAIN_ADMIN_ID:
+        await msg.reply_text("Chỉ admin chính mới được quản lý quyền admin.")
+        return
+    rows = await db_query("SELECT user_id,is_active FROM bot_admins ORDER BY user_id", fetchall=True) or []
+    buttons = []
+    for uid, active in rows:
+        uid = int(uid)
+        if uid == MAIN_ADMIN_ID: continue
+        label = ("🔓 Mở quyền" if not active else "🔒 Khóa quyền") + f" · {uid}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"admintoggle_{uid}")])
+    await msg.reply_text(
+        "👑 <b>QUẢN LÝ ADMIN</b>\nDùng /addadmin USER_ID để thêm admin.\nAdmin bị khóa sẽ không dùng được các tính năng quản trị.",
+        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None, parse_mode="HTML"
+    )
+
+async def admin_management_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query: return
+    user = update.effective_user
+    if not user or user.id != MAIN_ADMIN_ID:
+        await query.answer("Chỉ admin chính mới được thao tác.", show_alert=True); return
+    data = query.data or ""
+    if data.startswith("adminreq_yes_") or data.startswith("adminreq_no_"):
+        approve = data.startswith("adminreq_yes_")
+        target = int(data.rsplit("_", 1)[1])
+        if approve:
+            await db_query(
+                "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
+                "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE, added_by=%s",
+                (target, MAIN_ADMIN_ID, MAIN_ADMIN_ID), commit=True
+            )
+            if target not in ADMIN_IDS: ADMIN_IDS.append(target)
+            await query.edit_message_text(f"✅ Đã duyệt admin ID {target}.")
+            try: await context.bot.send_message(target, "Bạn đã được cấp quyền quản trị bot.")
+            except Exception: pass
+        else:
+            await db_query("DELETE FROM bot_admin_requests WHERE user_id=%s", (target,), commit=True)
+            await query.edit_message_text(f"Đã từ chối yêu cầu thêm admin ID {target}.")
+        await db_query("DELETE FROM bot_admin_requests WHERE user_id=%s", (target,), commit=True)
+        return
+    if data.startswith("admintoggle_"):
+        target = int(data.rsplit("_", 1)[1])
+        row = await db_query("SELECT is_active FROM bot_admins WHERE user_id=%s", (target,), fetchone=True)
+        if not row:
+            await query.answer("Không tìm thấy admin.", show_alert=True); return
+        active = not bool(row[0])
+        await db_query("UPDATE bot_admins SET is_active=%s WHERE user_id=%s", (active, target), commit=True)
+        if active:
+            if target not in ADMIN_IDS: ADMIN_IDS.append(target)
+        else:
+            ADMIN_IDS[:] = [x for x in ADMIN_IDS if x != target]
+        await query.answer("Đã mở quyền." if active else "Đã khóa quyền.", show_alert=True)
+        rows = await db_query("SELECT user_id,is_active FROM bot_admins ORDER BY user_id", fetchall=True) or []
+        buttons = []
+        for uid, enabled in rows:
+            uid = int(uid)
+            if uid == MAIN_ADMIN_ID: continue
+            buttons.append([InlineKeyboardButton(("🔓 Mở quyền" if not enabled else "🔒 Khóa quyền") + f" · {uid}", callback_data=f"admintoggle_{uid}")])
+        try: await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
+        except Exception: pass
+
+
+
 async def post_init(application: Application) -> None:
     await init_db()
+    await init_admin_management(application)
     await load_code_price()
 
 
@@ -5756,6 +5895,9 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("settings", admin_menu_command))
     app.add_handler(CommandHandler("admin", adm_panel_command))
+    app.add_handler(CommandHandler("addadmin", addadmin_command))
+    app.add_handler(CommandHandler("manageadmins", manageadmins_command))
+    app.add_handler(CallbackQueryHandler(admin_management_callback, pattern=r"^(adminreq_yes_|adminreq_no_|admintoggle_)") )
 
     app.add_handler(
         CallbackQueryHandler(
