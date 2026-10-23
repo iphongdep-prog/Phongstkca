@@ -4,3 +4,4 @@ psycopg[binary,pool]>=3.1
 python-dotenv
 flask
 Pillow
+flask-cors
