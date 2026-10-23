@@ -3280,9 +3280,23 @@ ADMIN_PAGES = [
             ("/downprice", "i", "downprice", "NEXT"),
         ],
     },
+    {
+        "icon": "SHIELD2",
+        "title": "QUẢN LÝ ADMIN",
+        "desc": (
+            "• <b>/addadmin USER_ID</b> – thêm admin (admin phụ gửi yêu cầu đến admin chính duyệt)\\n"
+            "• <b>/manageadmins</b> – xem danh sách admin, khóa/mở quyền admin phụ\\n"
+            "• Chỉ admin chính mới được duyệt yêu cầu và khóa/mở quyền admin khác."
+        ),
+        "items": [
+            ("/addadmin", "i", "addadmin", "PLUS"),
+            ("/manageadmins", "r", "manageadmins", "SHIELD"),
+        ],
+    },
 ]
 
 ADMIN_INPUT_PROMPTS = {
+    "addadmin": "Nhập <b>USER_ID</b> cần thêm làm admin. Ví dụ: <code>123456789</code>\\n<i>Admin phụ sẽ gửi yêu cầu đến admin chính để duyệt.</i>",
     "addstock": "Nhập danh sách code (cách nhau bằng khoảng trắng hoặc xuống dòng):",
     "addbal": "Nhập: <code>USER_ID SỐ_TIỀN</code>\n<i>Ví dụ: 5633649201 50000</i>",
     "subbal": "Nhập: <code>USER_ID SỐ_TIỀN</code>\n<i>Ví dụ: 5633649201 20000</i>",
@@ -3338,6 +3352,7 @@ ADMIN_TAB_NAMES = [
     "Tra Cứu",
     "Hệ Thống",
     "Nhóm & Giá",
+    "Quản lý Admin",
 ]
 ADMIN_NAV_TEXTS = {"Trang Trước", "Trang Sau", "Đóng Menu"}
 admin_menu_page = {}
@@ -3459,7 +3474,10 @@ async def admin_keyboard_handler(
             )
         elif mode == "r":
             admin_input_states.pop(uid, None)
-            await admin_commands(update, context, override_cmd=f"/{cmd}")
+            if cmd == "manageadmins":
+                await manageadmins_command(update, context)
+            else:
+                await admin_commands(update, context, override_cmd=f"/{cmd}")
         elif mode == "c":
             admin_input_states.pop(uid, None)
             warn = ADMIN_CONFIRM_TEXT.get(cmd, "THỰC HIỆN LỆNH NÀY")
@@ -3586,6 +3604,53 @@ async def admin_commands(
             args = text_input.split()
             raw_text = f"/{cmd_type} {text_input}"
         cmd = f"/{cmd_type}"
+
+    # Nút /addadmin trong menu dùng cùng quy trình cấp quyền như lệnh trực tiếp.
+    if cmd == "/addadmin":
+        if not args or not str(args[0]).isdigit():
+            admin_input_states[user_id] = "addadmin"
+            await message.reply_text(
+                "Sai định dạng. Vui lòng nhập USER_ID dạng số, ví dụ <code>123456789</code>.",
+                parse_mode="HTML",
+            )
+            return
+        target = int(args[0])
+        if target == MAIN_ADMIN_ID:
+            await message.reply_text("Đây là admin chính, không cần thêm.")
+            return
+        if user_id == MAIN_ADMIN_ID:
+            await db_query(
+                "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
+                "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE, added_by=%s",
+                (target, user_id, user_id), commit=True
+            )
+            if target not in ADMIN_IDS:
+                ADMIN_IDS.append(target)
+            await message.reply_text(f"Đã thêm/mở quyền admin cho ID {target}.")
+            try:
+                await context.bot.send_message(target, "Bạn đã được cấp quyền quản trị bot.")
+            except Exception:
+                pass
+        else:
+            await db_query(
+                "INSERT INTO bot_admin_requests(user_id,requested_by) VALUES(%s,%s) "
+                "ON CONFLICT(user_id) DO UPDATE SET requested_by=%s, requested_at=CURRENT_TIMESTAMP::text",
+                (target, user_id, user_id), commit=True
+            )
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Duyệt thêm admin", callback_data=f"adminreq_yes_{target}"),
+                InlineKeyboardButton("❌ Từ chối", callback_data=f"adminreq_no_{target}")
+            ]])
+            try:
+                await context.bot.send_message(
+                    MAIN_ADMIN_ID,
+                    f"📨 <b>YÊU CẦU THÊM ADMIN</b>\\nNgười yêu cầu: <code>{user_id}</code>\\nID đề xuất: <code>{target}</code>",
+                    reply_markup=keyboard, parse_mode="HTML"
+                )
+                await message.reply_text("Đã gửi yêu cầu thêm admin đến admin chính để duyệt.")
+            except Exception:
+                await message.reply_text("Không gửi được yêu cầu đến admin chính. Hãy kiểm tra bot đã được /start bởi admin chính chưa.")
+        return
 
     try:
         if cmd == "/addstock":
