@@ -46,7 +46,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = "8925181290:AAGjC5HqDQA7A1fb_JGLasAi5FaSILMnSWs"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "8925181290:AAGjC5HqDQA7A1fb_JGLasAi5FaSILMnSWs"  # NÊN đổi token mới và đặt vào .env
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "http://116.99.252.192:5000/miniapp"
@@ -338,6 +338,8 @@ pending_camera_verified = set()
 admin_input_states = {}
 
 _last_cam_alert_ts = 0.0
+_last_miniapp_alert_ts = 0.0
+_err_notice_ts = {}
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -702,8 +704,9 @@ def _register_ip_sync(user_id: int, raw_ip, notify_user: bool = False):
             f"━━━━━━━━━━━━━━━━━━\n{listing}\n"
             f"{E['INFO']} Mở lại: <code>/unbanwd ID</code> • Miễn kiểm tra IP: <code>/skipip ID</code> • Xem chi tiết: <code>/checkip {_html.escape(ip)}</code>"
         )
-        for admin_id in ADMIN_IDS:
-            _send_tg_sync(admin_id, text)
+        for admin_id in list(ADMIN_IDS):
+            if can_use_cmd(admin_id, "checkip")[0]:
+                _send_tg_sync(admin_id, text)
 
     # Âm thầm: KHÔNG báo gì cho người dùng, chỉ báo về admin (ở trên).
     return result
@@ -936,6 +939,70 @@ async def check_bot_admin(bot, ref: str):
         return False, f"lỗi: {exc}", None
 
 
+
+# ============================================================
+# BẢO VỆ KHI GỬI NÚT MINI APP (Telegram chỉ nhận link HTTPS)
+# ============================================================
+def miniapp_url_is_https() -> bool:
+    return MINI_APP_URL.lower().startswith("https://")
+
+
+async def _alert_miniapp_problem(exc):
+    """Báo admin chính (tối đa 10 phút/lần) khi không gửi được nút MiniApp."""
+    global _last_miniapp_alert_ts
+    now = time.time()
+    if now - _last_miniapp_alert_ts < 600:
+        return
+    _last_miniapp_alert_ts = now
+    text = (
+        "🚨 <b>KHÔNG GỬI ĐƯỢC NÚT XÁC MINH MINI APP CHO NGƯỜI DÙNG</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"Link hiện tại: <code>{_html.escape(MINI_APP_URL)}</code>\n"
+        f"Lỗi: <code>{_html.escape(str(exc))[:300]}</code>\n\n"
+        "Telegram CHỈ chấp nhận Mini App dùng link <b>https://</b> (có tên miền + chứng chỉ SSL). "
+        "Link <code>http://IP:5000</code> sẽ bị từ chối nên người dùng thường không dùng được bot, "
+        "admin thì không bị hỏi xác minh nên vẫn dùng bình thường.\n\n"
+        "Cách xử lý nhanh: vào /settings tắt <b>Xác minh CCCAM</b>, <b>Captcha &amp; Camera MiniApp</b>, "
+        "<b>Xác minh IP Mini App</b> để người dùng dùng được ngay. "
+        "Sau đó đặt <code>MINI_APP_URL=https://ten-mien-cua-ban/miniapp</code> trong file .env rồi bật lại."
+    )
+    await asyncio.to_thread(_send_tg_sync, MAIN_ADMIN_ID, text)
+
+
+async def _handle_miniapp_send_failure(message_or_bot, user_id, exc):
+    logger.error("Không gửi được nút MiniApp cho user %s: %s", user_id, exc)
+    await _alert_miniapp_problem(exc)
+    text = (
+        f"{E['WARN']} <b>Hệ thống xác minh đang bảo trì kỹ thuật.</b>\n"
+        f"Vui lòng thử lại sau ít phút hoặc liên hệ admin để được hỗ trợ."
+    )
+    try:
+        if hasattr(message_or_bot, "reply_text"):
+            await message_or_bot.reply_text(text, parse_mode="HTML")
+        else:
+            await message_or_bot.send_message(
+                chat_id=user_id, text=text, parse_mode="HTML"
+            )
+    except Exception:
+        pass
+
+
+async def prompt_miniapp_captcha_verification(
+    message_or_bot, user_id, is_retry=False
+):
+    try:
+        await _prompt_miniapp_captcha_raw(message_or_bot, user_id, is_retry)
+    except Exception as exc:
+        await _handle_miniapp_send_failure(message_or_bot, user_id, exc)
+
+
+async def prompt_ip_verification(message_or_bot, user_id):
+    try:
+        await _prompt_ip_verification_raw(message_or_bot, user_id)
+    except Exception as exc:
+        await _handle_miniapp_send_failure(message_or_bot, user_id, exc)
+
+
 def _menu_btn(text: str, key: str) -> KeyboardButton:
     return KeyboardButton(
         text, api_kwargs={"icon_custom_emoji_id": MENU_ICON_IDS[key]}
@@ -1001,7 +1068,7 @@ def get_miniapp_captcha_keyboard(token: str):
     )
 
 
-async def prompt_miniapp_captcha_verification(
+async def _prompt_miniapp_captcha_raw(
     message_or_bot, user_id, is_retry=False
 ):
     existing = pending_miniapp_captcha.get(user_id)
@@ -1229,7 +1296,7 @@ async def prompt_phone_verification(message_or_bot, user_id):
     )
 
 
-async def prompt_ip_verification(message_or_bot, user_id):
+async def _prompt_ip_verification_raw(message_or_bot, user_id):
     ip_token = secrets.token_urlsafe(12)
     try:
         await asyncio.to_thread(_save_miniapp_token_sync, ip_token, user_id)
@@ -2186,9 +2253,12 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin_action = data.startswith(
         ("approve_code_", "reject_code_", "approve_order_", "reject_order_")
     )
-    if is_admin_action and user.id not in ADMIN_IDS:
+    if is_admin_action and not perm_allowed(user.id, PERM_ORDERS):
         await query.answer(
-            "Bạn không có quyền thực hiện thao tác này!", show_alert=True
+            "🔒 " + LOCKED_CMD_TEXT
+            if user.id in ADMIN_IDS
+            else "Bạn không có quyền thực hiện thao tác này!",
+            show_alert=True,
         )
         return
     try:
@@ -2527,7 +2597,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 abtn("Từ chối", "CROSS", callback_data=f"reject_order_{order_id}"),
             ]])
             sent_ok = 0
-            for admin_id in ADMIN_IDS:
+            for admin_id in order_admin_ids():
                 try:
                     await context.bot.send_message(
                         chat_id=admin_id,
@@ -2705,6 +2775,12 @@ async def admin_menu_command(
 ):
     if not is_admin(update):
         return
+    _uid = update.effective_user.id
+    if _uid != MAIN_ADMIN_ID:
+        ok_perm, why_perm = can_use_cmd(_uid, "settings")
+        if not ok_perm:
+            await notify_locked(update, why_perm)
+            return
     text, reply_markup = await build_admin_menu()
     await update.message.reply_text(
         text, reply_markup=reply_markup, parse_mode="HTML"
@@ -2726,6 +2802,13 @@ async def admin_toggle_callback(
             pass
         return
     data = query.data or ""
+
+    if query.from_user.id != MAIN_ADMIN_ID:
+        _need = "resetverify" if data == "admin_verify_all" else "settings"
+        ok_perm, why_perm = can_use_cmd(query.from_user.id, _need)
+        if not ok_perm:
+            await notify_locked(update, why_perm)
+            return
 
     if data == "admin_verify_all":
         await db_query(
@@ -2944,6 +3027,12 @@ async def adm_step_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     data = query.data or ""
     user_id = query.from_user.id
+    if user_id != MAIN_ADMIN_ID:
+        _c = data.replace("adm_act_", "").replace("adm_step_", "")
+        ok_perm, why_perm = can_use_cmd(user_id, _c)
+        if not ok_perm:
+            await notify_locked(update, why_perm)
+            return
     try:
         await query.answer()
     except Exception:
@@ -3118,6 +3207,11 @@ async def userinfo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not is_admin(update):
         return
+    if query.from_user.id != MAIN_ADMIN_ID:
+        ok_perm, why_perm = can_use_cmd(query.from_user.id, "info")
+        if not ok_perm:
+            await notify_locked(update, why_perm)
+            return
     try:
         await query.answer()
     except Exception:
@@ -3284,8 +3378,8 @@ ADMIN_PAGES = [
         "icon": "SHIELD2",
         "title": "QUẢN LÝ ADMIN",
         "desc": (
-            "• <b>/addadmin USER_ID</b> – thêm admin (admin phụ gửi yêu cầu đến admin chính duyệt)\\n"
-            "• <b>/manageadmins</b> – xem danh sách admin, khóa/mở quyền admin phụ\\n"
+            "• <b>/addadmin USER_ID</b> – thêm admin (admin phụ gửi yêu cầu đến admin chính duyệt)\n"
+            "• <b>/manageadmins</b> – xem danh sách admin, khóa/mở quyền admin phụ\n"
             "• Chỉ admin chính mới được duyệt yêu cầu và khóa/mở quyền admin khác."
         ),
         "items": [
@@ -3296,7 +3390,7 @@ ADMIN_PAGES = [
 ]
 
 ADMIN_INPUT_PROMPTS = {
-    "addadmin": "Nhập <b>USER_ID</b> cần thêm làm admin. Ví dụ: <code>123456789</code>\\n<i>Admin phụ sẽ gửi yêu cầu đến admin chính để duyệt.</i>",
+    "addadmin": "Nhập <b>USER_ID</b> cần thêm làm admin. Ví dụ: <code>123456789</code>\n<i>Admin phụ sẽ gửi yêu cầu đến admin chính để duyệt.</i>",
     "addstock": "Nhập danh sách code (cách nhau bằng khoảng trắng hoặc xuống dòng):",
     "addbal": "Nhập: <code>USER_ID SỐ_TIỀN</code>\n<i>Ví dụ: 5633649201 50000</i>",
     "subbal": "Nhập: <code>USER_ID SỐ_TIỀN</code>\n<i>Ví dụ: 5633649201 20000</i>",
@@ -3357,6 +3451,167 @@ ADMIN_TAB_NAMES = [
 ADMIN_NAV_TEXTS = {"Trang Trước", "Trang Sau", "Đóng Menu"}
 admin_menu_page = {}
 
+
+# ============================================================
+# PHÂN QUYỀN ADMIN PHỤ (do admin chính quản lý)
+# - Admin chính (MAIN_ADMIN_ID): toàn quyền, không bị khoá.
+# - Admin phụ: khoá/mở theo TỪNG LỆNH và theo TỪNG PHẦN MENU.
+# - Lệnh nguy hiểm mặc định bị khoá với admin phụ (admin chính có thể mở).
+# ============================================================
+ADMIN_PERMS = {}  # admin_id -> {perm_key: bool}
+
+DANGEROUS_CMDS = {
+    "clearstock", "zerobal", "scanbio", "banbuff",
+    "resetverify", "wipeall", "clearallgroup",
+}
+CMD_ALIASES = {"clearstockall": "clearstock", "checkfriends": "friends"}
+PERM_ORDERS = "orders"
+
+
+def _build_perm_registry():
+    page_cmds, cmd_page = [], {}
+    for pi, pg in enumerate(ADMIN_PAGES):
+        lst = []
+        for label, mode, cmd, _icon in pg["items"]:
+            key = "settings" if mode == "s" else cmd
+            if not key or key == "manageadmins":
+                continue
+            lst.append((key, label))
+            cmd_page[key] = pi
+        page_cmds.append(lst)
+    return page_cmds, cmd_page
+
+
+PAGE_CMDS, CMD_PAGE = _build_perm_registry()
+ALL_PERM_KEYS = (
+    [f"page:{i}" for i in range(len(ADMIN_PAGES))]
+    + [f"cmd:{k}" for lst in PAGE_CMDS for k, _ in lst]
+    + [PERM_ORDERS]
+)
+
+
+def canon_cmd(cmd: str) -> str:
+    c = (cmd or "").strip().lstrip("/").lower()
+    return CMD_ALIASES.get(c, c)
+
+
+def _perm_default(key: str) -> bool:
+    if key.startswith("cmd:"):
+        return key[4:] not in DANGEROUS_CMDS
+    return True
+
+
+def perm_value(admin_id: int, key: str) -> bool:
+    """Giá trị quyền đã cấu hình (không quan tâm admin có đang hoạt động hay không)."""
+    v = ADMIN_PERMS.get(admin_id, {}).get(key)
+    return _perm_default(key) if v is None else bool(v)
+
+
+def perm_allowed(admin_id: int, key: str) -> bool:
+    if admin_id == MAIN_ADMIN_ID:
+        return True
+    if admin_id not in ADMIN_IDS:
+        return False
+    return perm_value(admin_id, key)
+
+
+def can_use_cmd(admin_id: int, cmd: str):
+    """Trả về (được_dùng, lý_do). lý_do: '' | 'cmd' | 'page'."""
+    if admin_id == MAIN_ADMIN_ID:
+        return True, ""
+    if admin_id not in ADMIN_IDS:
+        return False, "cmd"
+    c = canon_cmd(cmd)
+    if not c:
+        return True, ""
+    if c == "manageadmins":
+        return False, "cmd"
+    pg = CMD_PAGE.get(c)
+    if pg is not None and not perm_allowed(admin_id, f"page:{pg}"):
+        return False, "page"
+    if not perm_allowed(admin_id, f"cmd:{c}"):
+        return False, "cmd"
+    return True, ""
+
+
+def order_admin_ids():
+    return [a for a in list(ADMIN_IDS) if perm_allowed(a, PERM_ORDERS)]
+
+
+LOCKED_CMD_TEXT = "Bạn đã bị khoá sử dụng lệnh này. Liên hệ admin chính để được mở khoá."
+LOCKED_PAGE_TEXT = "Bạn đã bị khoá sử dụng phần menu này. Liên hệ admin chính để được mở khoá."
+
+
+async def notify_locked(update: Update, why: str = "cmd"):
+    text = LOCKED_PAGE_TEXT if why == "page" else LOCKED_CMD_TEXT
+    q = update.callback_query
+    if q:
+        try:
+            await q.answer("🔒 " + text, show_alert=True)
+            return
+        except Exception:
+            pass
+    msg = update.effective_message
+    if msg:
+        try:
+            await msg.reply_text(
+                f"{E['CROSS']} <b>{text}</b>", parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+
+async def init_admin_perms():
+    await db_query(
+        """CREATE TABLE IF NOT EXISTS admin_perms (
+            admin_id BIGINT NOT NULL,
+            perm_key TEXT NOT NULL,
+            allowed BOOLEAN NOT NULL,
+            PRIMARY KEY (admin_id, perm_key)
+        )""",
+        commit=True,
+    )
+    rows = await db_query(
+        "SELECT admin_id, perm_key, allowed FROM admin_perms", fetchall=True
+    ) or []
+    ADMIN_PERMS.clear()
+    for a, k, v in rows:
+        ADMIN_PERMS.setdefault(int(a), {})[k] = bool(v)
+
+
+async def set_perm(admin_id: int, key: str, allowed: bool):
+    await db_query(
+        "INSERT INTO admin_perms (admin_id, perm_key, allowed) VALUES (%s,%s,%s) "
+        "ON CONFLICT (admin_id, perm_key) DO UPDATE SET allowed=EXCLUDED.allowed",
+        (admin_id, key, allowed),
+        commit=True,
+    )
+    ADMIN_PERMS.setdefault(admin_id, {})[key] = allowed
+
+
+async def set_perms_bulk(admin_id: int, keys, allowed: bool):
+    keys = list(keys)
+
+    def _cb(cur):
+        for k in keys:
+            cur.execute(
+                "INSERT INTO admin_perms (admin_id, perm_key, allowed) VALUES (%s,%s,%s) "
+                "ON CONFLICT (admin_id, perm_key) DO UPDATE SET allowed=EXCLUDED.allowed",
+                (admin_id, k, allowed),
+            )
+
+    await db_transaction(_cb)
+    d = ADMIN_PERMS.setdefault(admin_id, {})
+    for k in keys:
+        d[k] = allowed
+
+
+async def reset_perms(admin_id: int):
+    await db_query(
+        "DELETE FROM admin_perms WHERE admin_id=%s", (admin_id,), commit=True
+    )
+    ADMIN_PERMS.pop(admin_id, None)
+
 ADMIN_KB_ACTIONS = {
     label.lstrip("/"): (mode, cmd)
     for pg in ADMIN_PAGES
@@ -3370,16 +3625,40 @@ def _akb(text: str, key: str) -> KeyboardButton:
     )
 
 
-def get_admin_keyboard(page: int) -> ReplyKeyboardMarkup:
+def _strip_mark(txt: str) -> str:
+    """Bỏ tiền tố '• ' (trang đang chọn) và '🔒 ' (bị khoá) khỏi chữ trên nút."""
+    t = txt
+    changed = True
+    while changed:
+        changed = False
+        for pre in ("• ", "🔒 "):
+            if t.startswith(pre):
+                t = t[len(pre):]
+                changed = True
+    return t
+
+
+def get_admin_keyboard(page: int, uid: int = None) -> ReplyKeyboardMarkup:
     last = len(ADMIN_PAGES) - 1
+
+    def page_locked(i):
+        return uid is not None and not perm_allowed(uid, f"page:{i}")
+
     tabs = [
-        _akb(("• " if i == page else "") + ADMIN_TAB_NAMES[i], p["icon"])
+        _akb(
+            ("• " if i == page else "")
+            + ("🔒 " if page_locked(i) else "")
+            + ADMIN_TAB_NAMES[i],
+            p["icon"],
+        )
         for i, p in enumerate(ADMIN_PAGES)
     ]
     rows = [tabs[:3], tabs[3:]]
     row = []
     for label, mode, cmd, icon in ADMIN_PAGES[page]["items"]:
-        row.append(_akb(label.lstrip("/"), icon))
+        perm_cmd = "settings" if mode == "s" else cmd
+        locked = uid is not None and not can_use_cmd(uid, perm_cmd)[0]
+        row.append(_akb(("🔒 " if locked else "") + label.lstrip("/"), icon))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -3396,8 +3675,11 @@ def get_admin_keyboard(page: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
-def build_admin_page_text(page: int) -> str:
+def build_admin_page_text(page: int, uid: int = None) -> str:
     pg = ADMIN_PAGES[page]
+    note = ""
+    if uid is not None and uid != MAIN_ADMIN_ID:
+        note = "\n<i>🔒 = lệnh / phần menu đã bị admin chính khoá.</i>"
     return (
         f"{E['GEAR']} <b>MENU QUẢN TRỊ — {ai(pg['icon'])} {pg['title']}</b>\n"
         f"Trang <b>{page + 1}/{len(ADMIN_PAGES)}</b>\n"
@@ -3405,11 +3687,12 @@ def build_admin_page_text(page: int) -> str:
         f"{pg['desc']}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"<i>Bấm nút ở bàn phím bên dưới để thao tác. Lệnh cần dữ liệu sẽ hỏi bạn nhập.</i>"
+        f"{note}"
     )
 
 
 def is_admin_kb_text(txt: str) -> bool:
-    raw = txt[2:] if txt.startswith("• ") else txt
+    raw = _strip_mark(txt)
     return (
         raw in ADMIN_TAB_NAMES
         or raw in ADMIN_NAV_TEXTS
@@ -3417,13 +3700,30 @@ def is_admin_kb_text(txt: str) -> bool:
     )
 
 
+def _find_unlocked_page(uid: int, start: int, step: int):
+    i = start + step
+    while 0 <= i < len(ADMIN_PAGES):
+        if perm_allowed(uid, f"page:{i}"):
+            return i
+        i += step
+    return None
+
+
 async def show_admin_page(message, uid: int, page: int):
     page = max(0, min(page, len(ADMIN_PAGES) - 1))
+    if not perm_allowed(uid, f"page:{page}"):
+        alt = _find_unlocked_page(uid, -1, 1)
+        if alt is None:
+            await message.reply_text(
+                f"{E['CROSS']} <b>{LOCKED_PAGE_TEXT}</b>", parse_mode="HTML"
+            )
+            return
+        page = alt
     admin_menu_page[uid] = page
     admin_input_states.pop(uid, None)
     await message.reply_text(
-        build_admin_page_text(page),
-        reply_markup=get_admin_keyboard(page),
+        build_admin_page_text(page, uid),
+        reply_markup=get_admin_keyboard(page, uid),
         parse_mode="HTML",
     )
 
@@ -3436,17 +3736,29 @@ async def admin_keyboard_handler(
     if not user or user.id not in ADMIN_IDS or not message:
         return False
     uid = user.id
-    raw = text[2:] if text.startswith("• ") else text
+    raw = _strip_mark(text)
     cur = admin_menu_page.get(uid, 0)
 
     if raw in ADMIN_TAB_NAMES:
-        await show_admin_page(message, uid, ADMIN_TAB_NAMES.index(raw))
+        idx = ADMIN_TAB_NAMES.index(raw)
+        if not perm_allowed(uid, f"page:{idx}"):
+            await notify_locked(update, "page")
+            return True
+        await show_admin_page(message, uid, idx)
         return True
     if raw == "Trang Sau":
-        await show_admin_page(message, uid, cur + 1)
+        nxt = _find_unlocked_page(uid, cur, 1)
+        if nxt is None:
+            await notify_locked(update, "page")
+            return True
+        await show_admin_page(message, uid, nxt)
         return True
     if raw == "Trang Trước":
-        await show_admin_page(message, uid, cur - 1)
+        prv = _find_unlocked_page(uid, cur, -1)
+        if prv is None:
+            await notify_locked(update, "page")
+            return True
+        await show_admin_page(message, uid, prv)
         return True
     if raw == "Đóng Menu":
         admin_input_states.pop(uid, None)
@@ -3460,6 +3772,14 @@ async def admin_keyboard_handler(
 
     if raw in ADMIN_KB_ACTIONS:
         mode, cmd = ADMIN_KB_ACTIONS[raw]
+        if uid != MAIN_ADMIN_ID and cmd != "manageadmins":
+            ok_perm, why_perm = can_use_cmd(
+                uid, "settings" if mode == "s" else cmd
+            )
+            if not ok_perm:
+                admin_input_states.pop(uid, None)
+                await notify_locked(update, why_perm)
+                return True
         if mode == "s":
             admin_input_states.pop(uid, None)
             t, markup = await build_admin_menu()
@@ -3503,14 +3823,19 @@ async def admin_confirm_callback(
         return
     if not is_admin(update):
         await query.answer(
-            "Bạn không có quyền thực hi!", show_alert=True
+            "Bạn không có quyền thực hiện thao tác này!", show_alert=True
         )
         return
+    data = query.data or ""
+    if data.startswith("amy_") and query.from_user.id != MAIN_ADMIN_ID:
+        ok_perm, why_perm = can_use_cmd(query.from_user.id, data[4:])
+        if not ok_perm:
+            await notify_locked(update, why_perm)
+            return
     try:
         await query.answer()
     except Exception:
         pass
-    data = query.data or ""
     if data == "amcancel":
         try:
             await query.edit_message_text(
@@ -3605,6 +3930,13 @@ async def admin_commands(
             raw_text = f"/{cmd_type} {text_input}"
         cmd = f"/{cmd_type}"
 
+    if user_id != MAIN_ADMIN_ID and cmd:
+        ok_perm, why_perm = can_use_cmd(user_id, cmd)
+        if not ok_perm:
+            admin_input_states.pop(user_id, None)
+            await notify_locked(update, why_perm)
+            return
+
     # Nút /addadmin trong menu dùng cùng quy trình cấp quyền như lệnh trực tiếp.
     if cmd == "/addadmin":
         if not args or not str(args[0]).isdigit():
@@ -3626,7 +3958,10 @@ async def admin_commands(
             )
             if target not in ADMIN_IDS:
                 ADMIN_IDS.append(target)
-            await message.reply_text(f"Đã thêm/mở quyền admin cho ID {target}.")
+            await message.reply_text(
+                f"Đã thêm/mở quyền admin cho ID {target}.\nBấm nút bên dưới để chọn lệnh/menu cho admin này.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Phân quyền admin này", callback_data=f"apm_a_{target}")]]),
+            )
             try:
                 await context.bot.send_message(target, "Bạn đã được cấp quyền quản trị bot.")
             except Exception:
@@ -3644,7 +3979,7 @@ async def admin_commands(
             try:
                 await context.bot.send_message(
                     MAIN_ADMIN_ID,
-                    f"📨 <b>YÊU CẦU THÊM ADMIN</b>\\nNgười yêu cầu: <code>{user_id}</code>\\nID đề xuất: <code>{target}</code>",
+                    f"📨 <b>YÊU CẦU THÊM ADMIN</b>\nNgười yêu cầu: <code>{user_id}</code>\nID đề xuất: <code>{target}</code>",
                     reply_markup=keyboard, parse_mode="HTML"
                 )
                 await message.reply_text("Đã gửi yêu cầu thêm admin đến admin chính để duyệt.")
@@ -5632,6 +5967,24 @@ async def clear_admin_state_handler(
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception khi xử lý update: %s", context.error, exc_info=context.error)
+    try:
+        if (
+            isinstance(update, Update)
+            and update.effective_chat
+            and update.effective_chat.type == "private"
+            and update.effective_user
+            and update.effective_user.id not in ADMIN_IDS
+        ):
+            uid = update.effective_user.id
+            now = time.time()
+            if now - _err_notice_ts.get(uid, 0) > 60:
+                _err_notice_ts[uid] = now
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="⚠️ Hệ thống đang gặp lỗi tạm thời, vui lòng thử lại sau ít phút.",
+                )
+    except Exception:
+        pass
 
 
 
@@ -5666,6 +6019,11 @@ async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in ADMIN_IDS:
         await msg.reply_text("Bạn không có quyền sử dụng lệnh này.")
         return
+    if user.id != MAIN_ADMIN_ID:
+        ok_perm, why_perm = can_use_cmd(user.id, "addadmin")
+        if not ok_perm:
+            await notify_locked(update, why_perm)
+            return
     if not context.args or not context.args[0].isdigit():
         await msg.reply_text("Cách dùng: /addadmin USER_ID\nVí dụ: /addadmin 123456789")
         return
@@ -5680,7 +6038,10 @@ async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (target, user.id, user.id), commit=True
         )
         if target not in ADMIN_IDS: ADMIN_IDS.append(target)
-        await msg.reply_text(f"Đã thêm/mở quyền admin cho ID {target}.")
+        await msg.reply_text(
+            f"Đã thêm/mở quyền admin cho ID {target}.\nBấm nút bên dưới để chọn lệnh/menu cho admin này.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Phân quyền admin này", callback_data=f"apm_a_{target}")]]),
+        )
         try: await context.bot.send_message(target, "Bạn đã được cấp quyền quản trị bot.")
         except Exception: pass
         return
@@ -5703,25 +6064,6 @@ async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await msg.reply_text("Không gửi được yêu cầu đến admin chính. Hãy kiểm tra bot đã được /start bởi admin chính chưa.")
 
-async def manageadmins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg = update.effective_message
-    if not user or not msg: return
-    if user.id != MAIN_ADMIN_ID:
-        await msg.reply_text("Chỉ admin chính mới được quản lý quyền admin.")
-        return
-    rows = await db_query("SELECT user_id,is_active FROM bot_admins ORDER BY user_id", fetchall=True) or []
-    buttons = []
-    for uid, active in rows:
-        uid = int(uid)
-        if uid == MAIN_ADMIN_ID: continue
-        label = ("🔓 Mở quyền" if not active else "🔒 Khóa quyền") + f" · {uid}"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"admintoggle_{uid}")])
-    await msg.reply_text(
-        "👑 <b>QUẢN LÝ ADMIN</b>\nDùng /addadmin USER_ID để thêm admin.\nAdmin bị khóa sẽ không dùng được các tính năng quản trị.",
-        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None, parse_mode="HTML"
-    )
-
 async def admin_management_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query: return
@@ -5739,7 +6081,10 @@ async def admin_management_callback(update: Update, context: ContextTypes.DEFAUL
                 (target, MAIN_ADMIN_ID, MAIN_ADMIN_ID), commit=True
             )
             if target not in ADMIN_IDS: ADMIN_IDS.append(target)
-            await query.edit_message_text(f"✅ Đã duyệt admin ID {target}.")
+            await query.edit_message_text(
+                f"✅ Đã duyệt admin ID {target}.\nBấm nút bên dưới để chọn lệnh/menu cho admin này.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Phân quyền admin này", callback_data=f"apm_a_{target}")]]),
+            )
             try: await context.bot.send_message(target, "Bạn đã được cấp quyền quản trị bot.")
             except Exception: pass
         else:
@@ -5770,10 +6115,348 @@ async def admin_management_callback(update: Update, context: ContextTypes.DEFAUL
 
 
 
+# ============================================================
+# GIAO DIỆN PHÂN QUYỀN ADMIN PHỤ (chỉ admin chính dùng được)
+# ============================================================
+def _pg_name(pi: int) -> str:
+    return ADMIN_TAB_NAMES[pi] if pi < len(ADMIN_TAB_NAMES) else f"Trang {pi + 1}"
+
+
+def _icon(ok: bool) -> str:
+    return "🔓" if ok else "🔒"
+
+
+async def _admin_name(uid: int) -> str:
+    row = await db_query(
+        "SELECT username FROM users WHERE user_id=%s", (uid,), fetchone=True
+    )
+    return f"@{row[0]}" if row and row[0] else str(uid)
+
+
+async def _admin_row(uid: int):
+    return await db_query(
+        "SELECT is_active FROM bot_admins WHERE user_id=%s", (uid,), fetchone=True
+    )
+
+
+async def render_admin_list():
+    rows = await db_query(
+        "SELECT user_id, is_active FROM bot_admins ORDER BY user_id", fetchall=True
+    ) or []
+    buttons = []
+    count = 0
+    for uid, active in rows:
+        uid = int(uid)
+        if uid == MAIN_ADMIN_ID:
+            continue
+        count += 1
+        name = await _admin_name(uid)
+        buttons.append([InlineKeyboardButton(
+            f"{'🟢' if active else '⛔'} {name} · {uid}"[:60],
+            callback_data=f"apm_a_{uid}",
+        )])
+    buttons.append([InlineKeyboardButton("➕ Thêm admin", callback_data="apm_add")])
+    text = (
+        f"{E['CROWN']} <b>QUẢN LÝ ADMIN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👑 Admin chính: <code>{MAIN_ADMIN_ID}</code> (toàn quyền, không bị khoá)\n"
+        f"👥 Số admin phụ: <b>{count}</b>\n\n"
+        f"<i>Bấm vào 1 admin để khoá/mở từng lệnh, khoá cả phần menu, "
+        f"tạm khoá hoặc xoá admin.</i>"
+    )
+    if count == 0:
+        text += "\n\nChưa có admin phụ nào. Bấm <b>➕ Thêm admin</b> để thêm."
+    return text, InlineKeyboardMarkup(buttons)
+
+
+async def render_admin_detail(uid: int):
+    row = await _admin_row(uid)
+    if not row:
+        return None
+    active = bool(row[0])
+    name = _html.escape(await _admin_name(uid))
+    locked_pages = [
+        _pg_name(i) for i in range(len(ADMIN_PAGES))
+        if not perm_value(uid, f"page:{i}")
+    ]
+    all_cmds = [k for lst in PAGE_CMDS for k, _ in lst]
+    locked_cmds = [k for k in all_cmds if not perm_value(uid, f"cmd:{k}")]
+    text = (
+        f"⚙️ <b>PHÂN QUYỀN ADMIN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 {name} — ID: <code>{uid}</code>\n"
+        f"Trạng thái: {'🟢 Đang hoạt động' if active else '⛔ Đang bị tạm khoá toàn bộ'}\n"
+        f"🔒 Phần menu bị khoá: <b>{', '.join(locked_pages) if locked_pages else 'Không'}</b>\n"
+        f"🔒 Lệnh bị khoá: <b>{len(locked_cmds)}/{len(all_cmds)}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<i>🔓 = được dùng • 🔒 = bị khoá. Bấm nút để đổi ngay.\n"
+        f"Bấm 📂 để khoá/mở từng lệnh trong phần menu đó.</i>"
+    )
+    buttons = []
+    for i in range(len(ADMIN_PAGES)):
+        ok = perm_value(uid, f"page:{i}")
+        buttons.append([
+            InlineKeyboardButton(
+                f"{_icon(ok)} {_pg_name(i)}", callback_data=f"apm_tp_{uid}_{i}_a"
+            ),
+            InlineKeyboardButton("📂 Lệnh", callback_data=f"apm_p_{uid}_{i}"),
+        ])
+    ok_o = perm_value(uid, PERM_ORDERS)
+    buttons.append([InlineKeyboardButton(
+        f"{_icon(ok_o)} Duyệt / từ chối đơn mua code", callback_data=f"apm_to_{uid}"
+    )])
+    buttons.append([
+        InlineKeyboardButton("✅ Mở tất cả", callback_data=f"apm_all_{uid}_1"),
+        InlineKeyboardButton("⛔ Khoá tất cả", callback_data=f"apm_all_{uid}_0"),
+    ])
+    buttons.append([InlineKeyboardButton(
+        "♻️ Về mặc định (lệnh nguy hiểm bị khoá)", callback_data=f"apm_def_{uid}"
+    )])
+    buttons.append([InlineKeyboardButton(
+        "⏸ Tạm khoá admin này" if active else "▶️ Mở lại admin này",
+        callback_data=f"apm_act_{uid}",
+    )])
+    buttons.append([InlineKeyboardButton("🗑 Xoá admin", callback_data=f"apm_del_{uid}")])
+    buttons.append([InlineKeyboardButton("◀️ Danh sách admin", callback_data="apm_l")])
+    return text, InlineKeyboardMarkup(buttons)
+
+
+async def render_page_detail(uid: int, pi: int):
+    name = _html.escape(await _admin_name(uid))
+    page_ok = perm_value(uid, f"page:{pi}")
+    text = (
+        f"📂 <b>{_pg_name(pi)}</b> — admin {name}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"Cả phần menu: <b>{'🔓 MỞ' if page_ok else '🔒 ĐANG KHOÁ'}</b>\n"
+        f"<i>🔓 = được dùng • 🔒 = bị khoá • ⚠️ = lệnh nguy hiểm (mặc định khoá).\n"
+        f"Nếu cả phần menu đang khoá thì mọi lệnh trong đó đều không dùng được.</i>"
+    )
+    buttons = [[InlineKeyboardButton(
+        f"{_icon(page_ok)} Cả phần menu «{_pg_name(pi)}»",
+        callback_data=f"apm_tp_{uid}_{pi}_p",
+    )]]
+    row = []
+    for ci, (key, label) in enumerate(PAGE_CMDS[pi]):
+        ok = perm_value(uid, f"cmd:{key}")
+        mark = " ⚠️" if key in DANGEROUS_CMDS else ""
+        row.append(InlineKeyboardButton(
+            f"{_icon(ok)} {label}{mark}"[:40],
+            callback_data=f"apm_tc_{uid}_{pi}_{ci}",
+        ))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([
+        InlineKeyboardButton("✅ Mở hết", callback_data=f"apm_pall_{uid}_{pi}_1"),
+        InlineKeyboardButton("⛔ Khoá hết lệnh", callback_data=f"apm_pall_{uid}_{pi}_0"),
+    ])
+    buttons.append([InlineKeyboardButton("◀️ Quay lại", callback_data=f"apm_a_{uid}")])
+    return text, InlineKeyboardMarkup(buttons)
+
+
+async def remove_admin_completely(admin_id: int):
+    if admin_id == MAIN_ADMIN_ID:
+        return
+
+    def _cb(cur):
+        cur.execute("DELETE FROM bot_admins WHERE user_id=%s", (admin_id,))
+        cur.execute("DELETE FROM admin_perms WHERE admin_id=%s", (admin_id,))
+        cur.execute("DELETE FROM bot_admin_requests WHERE user_id=%s", (admin_id,))
+
+    await db_transaction(_cb)
+    ADMIN_IDS[:] = [x for x in ADMIN_IDS if x != admin_id]
+    ADMIN_PERMS.pop(admin_id, None)
+    admin_input_states.pop(admin_id, None)
+    admin_menu_page.pop(admin_id, None)
+
+
+async def manageadmins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg:
+        return
+    if user.id != MAIN_ADMIN_ID:
+        await msg.reply_text("Chỉ admin chính mới được quản lý quyền admin.")
+        return
+    text, markup = await render_admin_list()
+    await msg.reply_text(text, reply_markup=markup, parse_mode="HTML")
+
+
+async def admin_perm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    if query.from_user.id != MAIN_ADMIN_ID:
+        try:
+            await query.answer("Chỉ admin chính mới được thao tác.", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    parts = (query.data or "").split("_")
+    action = parts[1] if len(parts) > 1 else ""
+    toast = ""
+
+    async def edit(text, markup):
+        try:
+            await query.edit_message_text(
+                text, reply_markup=markup, parse_mode="HTML"
+            )
+        except Exception as exc:
+            if "not modified" not in str(exc).lower():
+                logger.warning("Không sửa được tin nhắn phân quyền: %s", exc)
+
+    async def show_list():
+        t, m = await render_admin_list()
+        await edit(t, m)
+
+    async def show_detail(u):
+        r = await render_admin_detail(u)
+        if r is None:
+            await show_list()
+        else:
+            await edit(*r)
+
+    async def show_page(u, pi):
+        await edit(*(await render_page_detail(u, pi)))
+
+    try:
+        if action == "l":
+            await show_list()
+        elif action == "add":
+            admin_input_states[MAIN_ADMIN_ID] = "addadmin"
+            await query.message.reply_text(
+                ADMIN_INPUT_PROMPTS["addadmin"], parse_mode="HTML"
+            )
+        else:
+            target = int(parts[2])
+            if target == MAIN_ADMIN_ID:
+                toast = "Không thể chỉnh quyền admin chính."
+            elif not await _admin_row(target):
+                toast = "Không tìm thấy admin này (có thể đã bị xoá)."
+                await show_list()
+            elif action == "a":
+                await show_detail(target)
+            elif action == "p":
+                await show_page(target, int(parts[3]))
+            elif action == "tp":
+                pi, src = int(parts[3]), parts[4]
+                new = not perm_value(target, f"page:{pi}")
+                await set_perm(target, f"page:{pi}", new)
+                toast = f"{'Đã MỞ' if new else 'Đã KHOÁ'} phần menu {_pg_name(pi)}"
+                if src == "p":
+                    await show_page(target, pi)
+                else:
+                    await show_detail(target)
+            elif action == "tc":
+                pi, ci = int(parts[3]), int(parts[4])
+                key, label = PAGE_CMDS[pi][ci]
+                new = not perm_value(target, f"cmd:{key}")
+                await set_perm(target, f"cmd:{key}", new)
+                toast = f"{'Đã MỞ' if new else 'Đã KHOÁ'} {label}"
+                await show_page(target, pi)
+            elif action == "to":
+                new = not perm_value(target, PERM_ORDERS)
+                await set_perm(target, PERM_ORDERS, new)
+                toast = f"{'Đã MỞ' if new else 'Đã KHOÁ'} quyền duyệt đơn"
+                await show_detail(target)
+            elif action == "all":
+                val = parts[3] == "1"
+                await set_perms_bulk(target, ALL_PERM_KEYS, val)
+                toast = "Đã MỞ tất cả quyền" if val else "Đã KHOÁ tất cả quyền"
+                await show_detail(target)
+            elif action == "pall":
+                pi, val = int(parts[3]), parts[4] == "1"
+                keys = [f"cmd:{k}" for k, _ in PAGE_CMDS[pi]]
+                if val:
+                    keys.append(f"page:{pi}")
+                await set_perms_bulk(target, keys, val)
+                toast = "Đã mở hết" if val else "Đã khoá hết lệnh trong phần này"
+                await show_page(target, pi)
+            elif action == "def":
+                await reset_perms(target)
+                toast = "Đã về mặc định"
+                await show_detail(target)
+            elif action == "act":
+                row = await _admin_row(target)
+                new_active = not bool(row[0])
+                await db_query(
+                    "UPDATE bot_admins SET is_active=%s WHERE user_id=%s",
+                    (new_active, target),
+                    commit=True,
+                )
+                if new_active:
+                    if target not in ADMIN_IDS:
+                        ADMIN_IDS.append(target)
+                else:
+                    ADMIN_IDS[:] = [x for x in ADMIN_IDS if x != target]
+                    admin_input_states.pop(target, None)
+                    admin_menu_page.pop(target, None)
+                toast = "Đã mở lại admin" if new_active else "Đã tạm khoá admin"
+                try:
+                    await context.bot.send_message(
+                        chat_id=target,
+                        text=(
+                            "✅ Quyền quản trị của bạn đã được mở lại."
+                            if new_active
+                            else "⛔ Quyền quản trị của bạn đã bị admin chính tạm khoá."
+                        ),
+                        reply_markup=get_main_keyboard(target),
+                    )
+                except Exception:
+                    pass
+                await show_detail(target)
+            elif action == "del":
+                name = _html.escape(await _admin_name(target))
+                await edit(
+                    f"{E['WARN']} <b>XOÁ ADMIN</b>\n━━━━━━━━━━━━━━━━━━\n"
+                    f"Bạn chắc chắn muốn xoá admin <b>{name}</b> (<code>{target}</code>)?\n"
+                    f"Toàn bộ phân quyền của admin này cũng bị xoá. "
+                    f"Muốn cấp lại phải thêm bằng /addadmin.",
+                    InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🗑 Xác nhận xoá", callback_data=f"apm_delok_{target}"),
+                        InlineKeyboardButton("Hủy", callback_data=f"apm_a_{target}"),
+                    ]]),
+                )
+            elif action == "delok":
+                await remove_admin_completely(target)
+                toast = "Đã xoá admin"
+                try:
+                    await context.bot.send_message(
+                        chat_id=target,
+                        text="⛔ Quyền quản trị của bạn đã bị admin chính gỡ bỏ.",
+                        reply_markup=get_main_keyboard(target),
+                    )
+                except Exception:
+                    pass
+                await show_list()
+    except Exception as exc:
+        logger.exception("Lỗi giao diện phân quyền admin: %s", exc)
+        toast = "Có lỗi xảy ra, vui lòng thử lại."
+    try:
+        await query.answer(toast[:190] if toast else None)
+    except Exception:
+        pass
+
+
 async def post_init(application: Application) -> None:
     await init_db()
     await init_admin_management(application)
+    await init_admin_perms()
     await load_code_price()
+    if not miniapp_url_is_https():
+        warn = (
+            "⚠️ <b>CẢNH BÁO CẤU HÌNH MINI APP</b>\n"
+            f"MINI_APP_URL hiện là <code>{_html.escape(MINI_APP_URL)}</code> (không phải https).\n"
+            "Telegram từ chối Mini App không dùng HTTPS nên người dùng thường sẽ KHÔNG nhận được "
+            "bước xác minh (admin không bị hỏi nên vẫn dùng được).\n"
+            "Hãy đặt MINI_APP_URL dạng <code>https://ten-mien/miniapp</code> hoặc tạm tắt các bước "
+            "Mini App trong /settings."
+        )
+        logger.error("MINI_APP_URL không phải https: %s", MINI_APP_URL)
+        await asyncio.to_thread(_send_tg_sync, MAIN_ADMIN_ID, warn)
 
 
 # ============================================================
@@ -5963,6 +6646,7 @@ def main():
     app.add_handler(CommandHandler("addadmin", addadmin_command))
     app.add_handler(CommandHandler("manageadmins", manageadmins_command))
     app.add_handler(CallbackQueryHandler(admin_management_callback, pattern=r"^(adminreq_yes_|adminreq_no_|admintoggle_)") )
+    app.add_handler(CallbackQueryHandler(admin_perm_callback, pattern=r"^apm_"))
 
     app.add_handler(
         CallbackQueryHandler(
