@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from PIL import Image, ImageDraw, ImageFont
 from psycopg.rows import tuple_row
 from psycopg_pool import ConnectionPool
@@ -6463,6 +6464,7 @@ async def post_init(application: Application) -> None:
 # API NHẬN ẢNH NÉT TỪ WEBAPP & ĐẨY ẢNH VỀ NHÓM TELEGRAM
 # ============================================================
 flask_app = Flask(__name__)
+CORS(flask_app)
 
 
 @flask_app.route('/miniapp', methods=['GET'])
