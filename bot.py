@@ -74,6 +74,15 @@ MIN_WITHDRAW = 2000
 MAX_WITHDRAW = 10000
 REFERRAL_REWARD = 1000
 
+# (số người, trong bao nhiêu giây, số giây khóa; None = khóa vĩnh viễn)
+# Luật xếp theo thứ tự ưu tiên, dính luật nào trước thì áp luật đó.
+FAST_INVITE_RULES = [
+    (2, 5, None),
+    (3, 30, None),
+    (2, 10, 120),
+]
+temp_locked_refs = set()
+
 SPAM_WINDOW_SECONDS = 4
 SPAM_MAX_MESSAGES = 10
 TEMP_BAN_MINUTES = 2
@@ -1829,6 +1838,92 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             pass
 
 
+async def _unlock_ref_later(bot, uid: int, seconds: int):
+    await asyncio.sleep(seconds)
+    if uid in temp_locked_refs:
+        temp_locked_refs.discard(uid)
+        await db_query(
+            "UPDATE users SET is_banned=0, is_withdraw_banned=0 WHERE user_id=%s",
+            (uid,),
+            commit=True,
+        )
+        try:
+            await bot.send_message(
+                chat_id=uid,
+                text="✅ Tài khoản của bạn đã được mở khóa. Vui lòng không mời bạn bè quá nhanh.",
+            )
+        except Exception:
+            pass
+
+
+async def check_fast_invite(bot, ref_id: int):
+    # Gọi sau khi người mời vừa nhận thưởng. Mời quá nhanh thì khóa người mời.
+    if not ref_id or ref_id in ADMIN_IDS:
+        return
+    now = datetime.now(TIMEZONE)
+    for need, window, lock_sec in FAST_INVITE_RULES:
+        cutoff = (now - timedelta(seconds=window)).strftime("%Y-%m-%d %H:%M:%S")
+        row = await db_query(
+            "SELECT COUNT(*) FROM transactions WHERE user_id=%s "
+            "AND type='Thưởng Mời Bạn' AND status='Thành công' AND created_at >= %s",
+            (ref_id, cutoff),
+            fetchone=True,
+        )
+        if not (row and row[0] >= need):
+            continue
+
+        info = await db_query(
+            "SELECT username, is_banned FROM users WHERE user_id=%s",
+            (ref_id,),
+            fetchone=True,
+        )
+        if info and info[1] == 1 and ref_id not in temp_locked_refs:
+            return  # đã bị khóa vĩnh viễn từ trước
+
+        await db_query(
+            "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
+            (ref_id,),
+            commit=True,
+        )
+        user_withdraw_state.pop(ref_id, None)
+
+        if lock_sec is None:
+            temp_locked_refs.discard(ref_id)  # nâng lên khóa vĩnh viễn
+            duration = "vĩnh viễn"
+            user_text = (
+                "🚨 <b>TÀI KHOẢN CỦA BẠN ĐÃ BỊ KHÓA!</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"Lý do: mời bạn bè quá nhanh ({need} người trong {window} giây).\n"
+                "Cần hỗ trợ nhắn qua @dgfrutil"
+            )
+        else:
+            temp_locked_refs.add(ref_id)
+            duration = f"{lock_sec // 60} phút" if lock_sec >= 60 else f"{lock_sec} giây"
+            user_text = (
+                "⚠️ <b>TÀI KHOẢN BỊ KHÓA TẠM THỜI!</b>\n━━━━━━━━━━━━━━━━━━\n"
+                f"Lý do: mời bạn bè quá nhanh ({need} người trong {window} giây).\n"
+                f"Thời gian khóa: <b>{duration}</b>."
+            )
+            asyncio.create_task(_unlock_ref_later(bot, ref_id, lock_sec))
+
+        try:
+            await bot.send_message(chat_id=ref_id, text=user_text, parse_mode="HTML")
+        except Exception:
+            pass
+
+        uname = f"@{_html.escape(info[0])}" if info and info[0] else "N/A"
+        admin_text = (
+            "🚨 <b>MỜI BẠN BÈ QUÁ NHANH - ĐÃ TỰ KHÓA NGƯỜI MỜI</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"Người mời: {uname} | <code>{ref_id}</code>\n"
+            f"Vi phạm: {need} người trong {window} giây\n"
+            f"Hình thức: khóa <b>{duration}</b>\n"
+            f"Mở khóa: <code>/unall {ref_id}</code>"
+        )
+        for admin_id in list(ADMIN_IDS):
+            await asyncio.to_thread(_send_tg_sync, admin_id, admin_text)
+        return
+
+
 async def finalize_user_registration(user, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat_full = await context.bot.get_chat(user.id)
@@ -1927,6 +2022,8 @@ async def finalize_user_registration(user, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception as exc:
                     logger.warning("Không gửi được thông báo referrer: %s", exc)
+
+                await check_fast_invite(context.bot, ref_id)
         except Exception as exc:
             logger.exception("Lỗi transaction thưởng giới thiệu: %s", exc)
 
@@ -6706,4 +6803,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
