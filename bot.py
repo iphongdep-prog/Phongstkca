@@ -603,28 +603,40 @@ def normalize_ip(raw) -> str:
     return ip
 
 
-def get_request_ip(req, client_ip=None) -> str:
-    """Lấy IP thật từ phía server (Cloudflare / proxy / trực tiếp).
+TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "1"))
+BEHIND_CLOUDFLARE = os.getenv("BEHIND_CLOUDFLARE", "0") == "1"
 
-    Ưu tiên IP server thấy được, KHÔNG tin hoàn toàn IP do client gửi lên
-    (client có thể giả mạo). IP client chỉ dùng khi server không đọc được IP.
-    """
-    candidates = [
-        req.headers.get("CF-Connecting-IP"),
-        req.headers.get("X-Real-IP"),
-        req.headers.get("X-Forwarded-For"),
-        req.remote_addr,
-    ]
-    for c in candidates:
-        ip = normalize_ip(c)
-        if not ip:
-            continue
-        try:
-            ipaddress.ip_address(ip)
-        except ValueError:
-            continue
+
+def _valid_ip(raw) -> str:
+    ip = normalize_ip(raw)
+    try:
+        ipaddress.ip_address(ip)
         return ip
-    return normalize_ip(client_ip)
+    except ValueError:
+        return ""
+
+
+def get_request_ip(req, client_ip=None) -> str:
+    """Lấy IP thật từ phía server. KHÔNG bao giờ tin IP do client (JS) gửi lên.
+
+    - TRUSTED_PROXY_HOPS = số proxy tin cậy đứng trước Flask (Railway = 1).
+      Lấy phần tử tính từ PHẢI của X-Forwarded-For nên client không giả được.
+    - Chỉ tin CF-Connecting-IP khi đặt BEHIND_CLOUDFLARE=1.
+    Kiểm tra bằng cách mở  https://<domain>/api/whoami
+    """
+    if BEHIND_CLOUDFLARE:
+        ip = _valid_ip(req.headers.get("CF-Connecting-IP"))
+        if ip:
+            return ip
+    parts = [p.strip() for p in req.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
+    if parts:
+        ip = _valid_ip(parts[max(len(parts) - TRUSTED_PROXY_HOPS, 0)])
+        if ip:
+            return ip
+    ip = _valid_ip(req.headers.get("X-Real-IP"))
+    if ip:
+        return ip
+    return _valid_ip(req.remote_addr)
 
 
 def _send_tg_sync(chat_id, text: str) -> bool:
@@ -735,6 +747,220 @@ async def get_user_ips(user_id: int):
     return [r[0] for r in (rows or [])]
 
 
+# ============================================================
+# CHỐNG VPN / PROXY / FAKE IP
+# Cấu hình bằng biến môi trường (.env / Railway Variables):
+#   VPN_BLOCK=1            bật chặn VPN/Proxy/Datacenter
+#   ONLY_VN_IP=1           chỉ cho IP Việt Nam (đặt 0 nếu nhận khách nước ngoài)
+#   CHECK_TZ=1             so múi giờ thiết bị (UTC+7) với IP Việt Nam
+#   CHECK_WEBRTC=1         phát hiện rò rỉ IP thật qua WebRTC
+#   IP_CHECK_FAIL_OPEN=1   API tra IP lỗi thì cho qua (0 = chặn luôn)
+#   PROXYCHECK_KEY=...     (khuyên dùng) key proxycheck.io, chính xác hơn ip-api
+# ============================================================
+VPN_BLOCK = os.getenv("VPN_BLOCK", "1") == "1"
+ONLY_VN_IP = os.getenv("ONLY_VN_IP", "1") == "1"
+CHECK_TZ = os.getenv("CHECK_TZ", "1") == "1"
+CHECK_WEBRTC = os.getenv("CHECK_WEBRTC", "1") == "1"
+IP_CHECK_FAIL_OPEN = os.getenv("IP_CHECK_FAIL_OPEN", "1") == "1"
+PROXYCHECK_KEY = os.getenv("PROXYCHECK_KEY", "").strip()
+IP_CACHE_TTL = 6 * 3600
+STATE_TTL = 3600
+
+_ip_info_cache = {}        # ip -> (ts, info)
+miniapp_state = {}         # token -> trạng thái xác minh PHÍA SERVER
+_miniapp_state_lock = threading.Lock()
+_vpn_alert_ts = {}         # user_id -> ts (chống spam thông báo)
+_ipcheck_fail_alert_ts = 0.0
+
+
+def _http_json(url: str, timeout: int = 6):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "ignore"))
+
+
+def lookup_ip_info(ip: str) -> dict:
+    """Tra cứu IP: quốc gia, proxy/VPN, hosting. Có cache 6 giờ."""
+    global _ipcheck_fail_alert_ts
+    now = time.time()
+    cached = _ip_info_cache.get(ip)
+    if cached and now - cached[0] < IP_CACHE_TTL:
+        return cached[1]
+    info = {"ok": False, "proxy": False, "hosting": False, "country": "", "type": ""}
+    try:
+        d = _http_json(
+            f"http://ip-api.com/json/{ip}?fields=status,countryCode,proxy,hosting"
+        )
+        if d.get("status") == "success":
+            info.update(
+                ok=True,
+                country=d.get("countryCode") or "",
+                proxy=bool(d.get("proxy")),
+                hosting=bool(d.get("hosting")),
+            )
+    except Exception as exc:
+        logger.warning("ip-api lỗi cho %s: %s", ip, exc)
+    if PROXYCHECK_KEY:
+        try:
+            d = _http_json(
+                f"https://proxycheck.io/v2/{ip}?key={PROXYCHECK_KEY}&vpn=1&asn=1&risk=1"
+            )
+            r = d.get(ip) or {}
+            if d.get("status") in ("ok", "warning") and r:
+                info["ok"] = True
+                if str(r.get("proxy", "")).lower() == "yes":
+                    info["proxy"] = True
+                    info["type"] = str(r.get("type") or "")
+                if not info["country"] and r.get("isocode"):
+                    info["country"] = str(r["isocode"])
+        except Exception as exc:
+            logger.warning("proxycheck lỗi cho %s: %s", ip, exc)
+    if info["ok"]:
+        _ip_info_cache[ip] = (now, info)
+        if len(_ip_info_cache) > 20000:
+            _ip_info_cache.clear()
+    elif now - _ipcheck_fail_alert_ts > 1800:
+        _ipcheck_fail_alert_ts = now
+        _send_tg_sync(
+            MAIN_ADMIN_ID,
+            "⚠️ <b>Không tra cứu được IP (ip-api/proxycheck lỗi hoặc hết lượt).</b>\n"
+            + ("Đang cho qua (IP_CHECK_FAIL_OPEN=1)." if IP_CHECK_FAIL_OPEN else "Đang CHẶN tất cả.")
+            + "\nNên đặt PROXYCHECK_KEY để ổn định hơn.",
+        )
+    return info
+
+
+def evaluate_ip_risk(ip: str, tz_offset=None, webrtc=None):
+    """Trả về (risky, lý_do). Dùng cho IP lấy từ server."""
+    info = lookup_ip_info(ip)
+    if not info["ok"]:
+        return (not IP_CHECK_FAIL_OPEN), ("Không kiểm tra được IP" if not IP_CHECK_FAIL_OPEN else "")
+    if info["proxy"]:
+        return True, "VPN/Proxy" + (f" ({info['type']})" if info["type"] else "")
+    if info["hosting"]:
+        return True, "IP máy chủ/datacenter (VPN/Proxy)"
+    if ONLY_VN_IP and info["country"] and info["country"] != "VN":
+        return True, f"IP ngoài Việt Nam ({info['country']})"
+    if CHECK_TZ and ONLY_VN_IP and tz_offset is not None and tz_offset != -420:
+        return True, "Múi giờ thiết bị không khớp IP Việt Nam (nghi dùng VPN/Proxy)"
+    if CHECK_WEBRTC and webrtc:
+        ip_obj = ipaddress.ip_address(ip)
+        for w in list(webrtc)[:6]:
+            w = _valid_ip(w)
+            if not w or w == ip:
+                continue
+            w_obj = ipaddress.ip_address(w)
+            if not w_obj.is_global or w_obj.version != ip_obj.version:
+                continue
+            wi = lookup_ip_info(w)
+            if wi["ok"] and (
+                wi["proxy"]
+                or wi["hosting"]
+                or (ONLY_VN_IP and wi["country"] and wi["country"] != "VN")
+            ):
+                return True, "Rò rỉ WebRTC (IP thật khác IP đang dùng - nghi VPN/Proxy)"
+    return False, ""
+
+
+def get_miniapp_state(token):
+    if not token:
+        return None
+    key = str(token)
+    with _miniapp_state_lock:
+        st = miniapp_state.get(key)
+        if st and time.time() - st["ts"] > STATE_TTL:
+            miniapp_state.pop(key, None)
+            return None
+        return st
+
+
+def _alert_vpn(uid: int, ip: str, reason: str):
+    now = time.time()
+    if now - _vpn_alert_ts.get(uid, 0) < 600:
+        return
+    _vpn_alert_ts[uid] = now
+    _send_tg_sync(
+        MAIN_ADMIN_ID,
+        "🚫 <b>CHẶN VPN/PROXY KHI XÁC MINH</b>\n"
+        f"User: <code>{uid}</code>\nIP: <code>{_html.escape(ip)}</code>\n"
+        f"Lý do: <b>{_html.escape(reason)}</b>\n"
+        f"Bỏ qua cho user này: <code>/skipip {uid}</code>",
+    )
+    _send_tg_sync(
+        uid,
+        "🚫 <b>XÁC MINH BỊ TỪ CHỐI</b>\n"
+        f"Hệ thống phát hiện: <b>{_html.escape(reason)}</b>.\n"
+        "Hãy TẮT VPN / Proxy, dùng mạng 4G/WiFi thật rồi bấm xác minh lại.",
+    )
+
+
+def process_miniapp_start(token, req, tz_offset=None, webrtc=None):
+    """Bước 1 của MiniApp: server tự lấy IP, kiểm tra VPN, tạo captcha phía server."""
+    uid = _find_user_by_token_sync(token) if token else None
+    if not uid:
+        return {
+            "ok": False,
+            "error": "token_invalid",
+            "message": "Phiên xác minh không hợp lệ hoặc đã hết hạn. Hãy quay lại bot và bấm lại nút xác minh.",
+        }
+    ip = get_request_ip(req)
+    if not ip:
+        return {"ok": False, "error": "no_ip", "message": "Không xác định được địa chỉ IP của bạn."}
+
+    skip = user_id_is_admin(uid)
+    if not skip:
+        row = _db_query_sync(
+            "SELECT skip_ip FROM users WHERE user_id=%s", (uid,), fetchone=True
+        )
+        skip = bool(row and row[0] == 1)
+
+    risky, reason = (False, "")
+    if VPN_BLOCK and not skip:
+        risky, reason = evaluate_ip_risk(ip, tz_offset, webrtc)
+
+    a, b = random.randint(1, 9), random.randint(1, 9)
+    st = {
+        "uid": uid, "ip": ip, "ip_ok": not risky, "reason": reason, "skip": skip,
+        "tz": tz_offset, "captcha_ok": False, "photo": False, "attempts": 0,
+        "answer": a + b, "ts": time.time(),
+    }
+    with _miniapp_state_lock:
+        miniapp_state[str(token)] = st
+        if len(miniapp_state) > 5000:
+            cutoff = time.time() - STATE_TTL
+            for k in [k for k, v in miniapp_state.items() if v["ts"] < cutoff]:
+                miniapp_state.pop(k, None)
+
+    if risky:
+        pending_miniapp_ip.pop(uid, None)
+        _alert_vpn(uid, ip, reason)
+        return {"ok": False, "error": "vpn", "ip": ip, "reason": reason}
+
+    pending_miniapp_ip[uid] = ip
+    _register_ip_sync(uid, ip, notify_user=False)
+    return {"ok": True, "ip": ip, "question": f"{a} + {b}"}
+
+
+def recheck_state_ip(st: dict, req):
+    """Khi gửi ảnh: IP phải còn hợp lệ (chặn trường hợp bật VPN SAU khi qua bước 1)."""
+    ip = get_request_ip(req)
+    if not ip:
+        return False, "Không xác định được IP"
+    if ip == st.get("ip"):
+        return True, ""
+    if VPN_BLOCK and not st.get("skip"):
+        risky, reason = evaluate_ip_risk(ip, st.get("tz"), None)
+        if risky:
+            st["ip_ok"] = False
+            st["reason"] = reason
+            _alert_vpn(st["uid"], ip, reason)
+            return False, reason
+    st["ip"] = ip
+    pending_miniapp_ip[st["uid"]] = ip
+    _register_ip_sync(st["uid"], ip, notify_user=False)
+    return True, ""
+
+
 def _save_miniapp_token_sync(token: str, user_id: int):
     """Lưu token MiniApp -> user_id vào DB (để server nhận diện user khi họ mở MiniApp)."""
     now_ts = int(time.time())
@@ -785,8 +1011,7 @@ def _record_miniapp_ip_sync(token, req, client_ip=None):
     ip = get_request_ip(req, client_ip)
     if not ip:
         return uid
-    pending_miniapp_ip[uid] = ip
-    _register_ip_sync(uid, ip, notify_user=False)
+    # IP chỉ được ghi sau khi qua kiểm tra VPN ở /api/start
     return uid
 
 
@@ -1308,6 +1533,10 @@ async def prompt_phone_verification(message_or_bot, user_id):
 
 async def _prompt_ip_verification_raw(message_or_bot, user_id):
     ip_token = secrets.token_urlsafe(12)
+    pending_miniapp_captcha[user_id] = {
+        "token": ip_token,
+        "expires_at": datetime.now() + timedelta(minutes=MINIAPP_CAPTCHA_TTL_MINUTES),
+    }
     try:
         await asyncio.to_thread(_save_miniapp_token_sync, ip_token, user_id)
     except Exception as exc:
@@ -1715,9 +1944,34 @@ async def handle_miniapp_captcha_data(
 
     camera_token = pending["token"] if pending else None
 
+    # --- CỔNG KIỂM TRA PHÍA SERVER: không tin dữ liệu client gửi ---
+    st = get_miniapp_state(camera_token)
+    if not user_id_is_admin(uid):
+        need_cam = await get_verify_setting("verify_camera") or await get_verify_setting(
+            "verify_cccam"
+        )
+        problem = ""
+        if not st or not st.get("ip_ok"):
+            problem = "Chưa qua kiểm tra IP an toàn (hoặc đang dùng VPN/Proxy)."
+        elif not st.get("captcha_ok"):
+            problem = "Chưa giải captcha hợp lệ."
+        elif need_cam and not st.get("photo"):
+            problem = "Chưa ghi nhận ảnh camera."
+        if problem:
+            await message.reply_text(
+                f"{E['CROSS']} <b>XÁC MINH BỊ TỪ CHỐI!</b>\n"
+                f"{E['WARN']} {_html.escape(problem)}\n"
+                f"Hãy tắt VPN/Proxy, bấm lại nút xác minh và làm đủ các bước.",
+                parse_mode="HTML",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            pending_miniapp_captcha.pop(uid, None)
+            await prompt_miniapp_captcha_verification(message, uid, is_retry=True)
+            return
+
     # --- GHI IP cùng lúc với captcha + camera ---
     # IP ưu tiên lấy từ server (/api/save-photo), nếu MiniApp gửi kèm thì dùng làm dự phòng.
-    user_ip = pending_miniapp_ip.get(uid) or normalize_ip(data.get("ip"))
+    user_ip = (st or {}).get("ip") or pending_miniapp_ip.get(uid, "")
     if not user_ip:
         existing_ips = await get_user_ips(uid)
         user_ip = existing_ips[0] if existing_ips else ""
@@ -1734,6 +1988,8 @@ async def handle_miniapp_captcha_data(
 
     pending_miniapp_captcha.pop(uid, None)
     pending_miniapp_ip.pop(uid, None)
+    with _miniapp_state_lock:
+        miniapp_state.pop(str(camera_token), None)
 
     await db_query(
         "UPDATE users SET miniapp_captcha_verified=1, camera_verified=1, cccam_verified=1, "
@@ -1805,7 +2061,8 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await handle_miniapp_captcha_data(message, context, user, data)
             return
 
-        user_ip = normalize_ip(data.get("ip"))
+        _st_ip = get_miniapp_state(str(data.get("token", "")))
+        user_ip = (_st_ip or {}).get("ip") if (_st_ip and _st_ip.get("ip_ok")) else ""
         if not user_ip:
             await message.reply_text(
                 f"{E['CROSS']} Không lấy được thông tin IP. Vui lòng thử lại!",
@@ -6561,7 +6818,7 @@ async def post_init(application: Application) -> None:
 # API NHẬN ẢNH NÉT TỪ WEBAPP & ĐẨY ẢNH VỀ NHÓM TELEGRAM
 # ============================================================
 flask_app = Flask(__name__)
-CORS(flask_app)
+CORS(flask_app, origins=[o.strip() for o in os.getenv("MINIAPP_ORIGIN", "https://iphongdep-prog.github.io").split(",") if o.strip()])
 
 
 @flask_app.route('/miniapp', methods=['GET'])
@@ -6599,6 +6856,70 @@ def serve_miniapp():
         )
 
 
+@flask_app.route('/api/whoami', methods=['GET'])
+def api_whoami():
+    """Dùng để kiểm tra server đọc IP đúng chưa (mở bằng trình duyệt)."""
+    return jsonify({
+        "ip": get_request_ip(request),
+        "remote_addr": request.remote_addr,
+        "x_forwarded_for": request.headers.get("X-Forwarded-For", ""),
+        "trusted_hops": TRUSTED_PROXY_HOPS,
+    })
+
+
+@flask_app.route('/api/start', methods=['POST'])
+def api_start():
+    try:
+        d = request.get_json(silent=True) or {}
+        token = str(d.get("token") or "")[:64]
+        try:
+            tzo = int(d.get("tz_offset"))
+        except (TypeError, ValueError):
+            tzo = None
+        raw_w = d.get("webrtc")
+        webrtc = [str(x)[:64] for x in raw_w[:8]] if isinstance(raw_w, list) else []
+        return jsonify(process_miniapp_start(token, request, tzo, webrtc))
+    except Exception as exc:
+        logger.exception("Lỗi /api/start: %s", exc)
+        return jsonify({"ok": False, "error": "server", "message": "Lỗi máy chủ, vui lòng thử lại sau."}), 500
+
+
+@flask_app.route('/api/captcha', methods=['POST'])
+def api_captcha():
+    try:
+        d = request.get_json(silent=True) or {}
+        token = str(d.get("token") or "")[:64]
+        st = get_miniapp_state(token)
+        if not st:
+            return jsonify({"ok": False, "error": "token_invalid",
+                            "message": "Phiên xác minh đã hết hạn. Hãy bấm Thử lại."}), 403
+        if not st.get("ip_ok"):
+            return jsonify({"ok": False, "error": "blocked",
+                            "message": "Phát hiện VPN/Proxy. Hãy tắt rồi thử lại."}), 403
+        if not st.get("photo"):
+            # Ảnh chưa được ghi nhận thì chưa cho giải captcha
+            return jsonify({"ok": False, "error": "blocked",
+                            "message": "Chưa ghi nhận ảnh camera. Hãy bấm Thử lại."}), 403
+        if st["attempts"] >= 8:
+            return jsonify({"ok": False, "error": "blocked",
+                            "message": "Sai quá nhiều lần. Hãy bấm Thử lại để lấy phiên mới."}), 403
+        try:
+            ans = int(str(d.get("answer", "")).strip())
+        except ValueError:
+            ans = None
+        if ans is not None and ans == st["answer"]:
+            st["captcha_ok"] = True
+            return jsonify({"ok": True})
+        st["attempts"] += 1
+        a, b = random.randint(1, 9), random.randint(1, 9)
+        st["answer"] = a + b
+        return jsonify({"ok": False, "question": f"{a} + {b}",
+                        "message": "Kết quả không chính xác, thử lại!"})
+    except Exception as exc:
+        logger.exception("Lỗi /api/captcha: %s", exc)
+        return jsonify({"ok": False, "message": "Lỗi máy chủ."}), 500
+
+
 @flask_app.route('/api/save-photo', methods=['POST'])
 def save_photo():
     try:
@@ -6608,6 +6929,17 @@ def save_photo():
         ip = get_request_ip(request, data.get('ip'))
         image_data = data.get('image')
         auto_capture = data.get('auto_capture', False)
+
+        # --- CỔNG: phải qua /api/start (IP sạch) và IP lúc gửi ảnh vẫn sạch ---
+        _st = get_miniapp_state(token)
+        if not _st or (VPN_BLOCK and not _st.get("ip_ok")):
+            return jsonify({"status": "blocked", "reason": (_st or {}).get("reason") or "Phiên không hợp lệ"}), 403
+        _ok_now, _why = recheck_state_ip(_st, request)
+        if not _ok_now:
+            return jsonify({"status": "blocked", "reason": _why}), 403
+        ip = _st["ip"]
+        if image_data:
+            _st["photo"] = True
 
         # Tìm user_id tương ứng với token (đang chờ xác minh trong bộ nhớ)
         user_id = None
@@ -6648,10 +6980,13 @@ def save_photo():
             image_bytes = base64.b64decode(encoded)
 
             # Lưu file backup trên VPS
-            os.makedirs("/var/www/phongtunk/captures", exist_ok=True)
-            file_path = f"/var/www/phongtunk/captures/{token}.jpg"
-            with open(file_path, "wb") as fh:
-                fh.write(image_bytes)
+            try:
+                os.makedirs("/var/www/phongtunk/captures", exist_ok=True)
+                file_path = f"/var/www/phongtunk/captures/{re.sub(r'[^A-Za-z0-9_-]', '', str(token))}.jpg"
+                with open(file_path, "wb") as fh:
+                    fh.write(image_bytes)
+            except Exception as exc:
+                logger.warning("Không lưu được file ảnh backup: %s", exc)
 
             # Gửi ảnh trực tiếp về nhóm Telegram thông qua Bot API
             if BOT_TOKEN and CAMERA_TARGET_GROUP:
@@ -6712,7 +7047,7 @@ def save_photo():
 
 
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False, use_reloader=False)
 
 
 def main():
