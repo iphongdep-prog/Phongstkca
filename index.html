@@ -54,7 +54,11 @@
         if (tg) { tg.ready(); tg.expand(); }
 
         // Backend (Railway). IP KHÔNG lấy từ trình duyệt nữa mà do SERVER ghi nhận.
-        const BACKEND_URL = "https://phongstkca-production.up.railway.app";
+        // Mở từ Railway (/miniapp) -> gọi cùng tên miền. Mở từ nơi khác (GitHub Pages...) -> gọi về Railway.
+        const RAILWAY_URL = "https://phongstkca-production.up.railway.app";
+        const BACKEND_URL = (location.hostname.endsWith("railway.app") || location.hostname.endsWith("up.railway.app"))
+            ? location.origin
+            : RAILWAY_URL;
 
         const params = new URLSearchParams(window.location.search);
         const token = params.get('token') || params.get('t') || '';
