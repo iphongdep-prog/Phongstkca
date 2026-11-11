@@ -53,7 +53,7 @@ MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "https://iphongdep-prog.github.io/Phongstkca/"
 ).strip()
 
-MAIN_ADMIN_ID = 7884394252
+MAIN_ADMIN_ID = 9220244280
 # Danh sách này được nạp từ PostgreSQL khi bot khởi động.
 ADMIN_IDS = [MAIN_ADMIN_ID]
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
