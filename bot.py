@@ -494,6 +494,7 @@ def _init_db_sync():
                 ("verify_camera", "1"),
                 ("verify_miniapp_captcha", "1"),
                 ("verify_cccam", "1"),
+                ("verify_vpn", "1"),
             ]
             for key, val in default_settings:
                 cursor.execute(
@@ -894,6 +895,18 @@ def _alert_vpn(uid: int, ip: str, reason: str):
     )
 
 
+def get_verify_setting_sync(key: str, default=False) -> bool:
+    """Đọc cài đặt bật/tắt từ PostgreSQL trong luồng Flask đồng bộ."""
+    try:
+        row = _db_query_sync(
+            "SELECT value FROM settings WHERE key=%s", (key,), fetchone=True
+        )
+        return bool(row and str(row[0]) == "1")
+    except Exception:
+        logger.exception("Không đọc được cài đặt %s", key)
+        return default
+
+
 def process_miniapp_start(token, req, tz_offset=None, webrtc=None):
     """Bước 1 của MiniApp: server tự lấy IP, kiểm tra VPN, tạo captcha phía server."""
     uid = _find_user_by_token_sync(token) if token else None
@@ -915,7 +928,8 @@ def process_miniapp_start(token, req, tz_offset=None, webrtc=None):
         skip = bool(row and row[0] == 1)
 
     risky, reason = (False, "")
-    if VPN_BLOCK and not skip:
+    vpn_enabled = VPN_BLOCK and get_verify_setting_sync("verify_vpn", default=True)
+    if vpn_enabled and not skip:
         risky, reason = evaluate_ip_risk(ip, tz_offset, webrtc)
 
     a, b = random.randint(1, 9), random.randint(1, 9)
@@ -948,7 +962,8 @@ def recheck_state_ip(st: dict, req):
         return False, "Không xác định được IP"
     if ip == st.get("ip"):
         return True, ""
-    if VPN_BLOCK and not st.get("skip"):
+    vpn_enabled = VPN_BLOCK and get_verify_setting_sync("verify_vpn", default=True)
+    if vpn_enabled and not st.get("skip"):
         risky, reason = evaluate_ip_risk(ip, st.get("tz"), None)
         if risky:
             st["ip_ok"] = False
@@ -1357,15 +1372,14 @@ async def proceed_next_verification(
             await prompt_miniapp_captcha_verification(update_or_msg, user_id)
             return
 
-    if await get_verify_setting("verify_miniapp_captcha") or await get_verify_setting(
-        "verify_camera"
+    need_miniapp_captcha = await get_verify_setting("verify_miniapp_captcha")
+    need_camera = await get_verify_setting("verify_camera")
+    if user_id not in ADMIN_IDS and (
+        (need_miniapp_captcha and not await check_miniapp_captcha_verified(user_id))
+        or (need_camera and not await check_camera_verified(user_id))
     ):
-        if (
-            not await check_miniapp_captcha_verified(user_id)
-            or not await check_camera_verified(user_id)
-        ) and user_id not in ADMIN_IDS:
-            await prompt_miniapp_captcha_verification(update_or_msg, user_id)
-            return
+        await prompt_miniapp_captcha_verification(update_or_msg, user_id)
+        return
 
     if await get_verify_setting("verify_ip"):
         if not await check_ip_verified(user_id) and user_id not in ADMIN_IDS:
@@ -1950,12 +1964,14 @@ async def handle_miniapp_captcha_data(
         need_cam = await get_verify_setting("verify_camera") or await get_verify_setting(
             "verify_cccam"
         )
+        need_captcha = await get_verify_setting("verify_miniapp_captcha")
+        need_vpn = await get_verify_setting("verify_vpn")
         problem = ""
-        if not st or not st.get("ip_ok"):
+        if need_vpn and (not st or not st.get("ip_ok")):
             problem = "Chưa qua kiểm tra IP an toàn (hoặc đang dùng VPN/Proxy)."
-        elif not st.get("captcha_ok"):
+        elif need_captcha and (not st or not st.get("captcha_ok")):
             problem = "Chưa giải captcha hợp lệ."
-        elif need_cam and not st.get("photo"):
+        elif need_cam and (not st or not st.get("photo")):
             problem = "Chưa ghi nhận ảnh camera."
         if problem:
             await message.reply_text(
@@ -2364,15 +2380,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await prompt_miniapp_captcha_verification(message, user.id)
             return
 
-    if await get_verify_setting("verify_miniapp_captcha") or await get_verify_setting(
-        "verify_camera"
+    need_miniapp_captcha = await get_verify_setting("verify_miniapp_captcha")
+    need_camera = await get_verify_setting("verify_camera")
+    if user.id not in ADMIN_IDS and (
+        (need_miniapp_captcha and not await check_miniapp_captcha_verified(user.id))
+        or (need_camera and not await check_camera_verified(user.id))
     ):
-        if (
-            not await check_miniapp_captcha_verified(user.id)
-            or not await check_camera_verified(user.id)
-        ) and user.id not in ADMIN_IDS:
-            await prompt_miniapp_captcha_verification(message, user.id)
-            return
+        await prompt_miniapp_captcha_verification(message, user.id)
+        return
 
     if await get_verify_setting("verify_ip"):
         if not await check_ip_verified(user.id) and user.id not in ADMIN_IDS:
@@ -3065,6 +3080,7 @@ async def build_admin_menu():
     st_withdraw = await get_verify_setting("allow_withdraw")
     st_auto_buy = await get_verify_setting("auto_buy_code")
     st_camera = await get_verify_setting("verify_camera")
+    st_vpn = await get_verify_setting("verify_vpn")
 
     def state(v):
         return "BẬT" if v else "TẮT"
@@ -3084,6 +3100,11 @@ async def build_admin_menu():
             f"Captcha & Camera MiniApp: {state(st_miniapp_cap or st_camera)}",
             "SHIELD",
             callback_data="toggle_verify_miniapp_captcha",
+        )],
+        [abtn(
+            f"Chặn VPN/Proxy: {state(st_vpn)}",
+            "SHIELD",
+            callback_data="toggle_verify_vpn",
         )],
         [abtn(
             f"Xác minh IP Mini App: {state(st_ip)}",
@@ -3213,6 +3234,7 @@ async def admin_toggle_callback(
         "toggle_verify_phone": "verify_phone",
         "toggle_verify_cccam": "verify_cccam",
         "toggle_verify_ip": "verify_ip",
+        "toggle_verify_vpn": "verify_vpn",
         "toggle_verify_channel": "verify_channel",
         "toggle_verify_captcha": "verify_captcha",
         "toggle_allow_withdraw": "allow_withdraw",
@@ -3687,7 +3709,7 @@ ADMIN_PAGES = [
             "• <b>/maint</b> – bật/tắt bảo trì\n"
             "• <b>/resetverify</b> – ⚠️ reset xác minh toàn bộ\n"
             "• <b>/wipeall</b> – ⚠️ XÓA SẠCH dữ liệu hệ thống\n"
-            "• <b>Cài đặt</b> – bật/tắt SĐT, CCCAM, Captcha MiniApp, IP, Camera, Kênh, Captcha, Rút tiền, Auto mua code"
+            "• <b>Cài đặt</b> – bật/tắt SĐT, CCCAM, Captcha/Camera MiniApp, Chặn VPN/Proxy, IP, Kênh, Captcha, Rút tiền, Auto mua code"
         ),
         "items": [
             ("/biofriends", "i", "biofriends", "SHIELD2"),
