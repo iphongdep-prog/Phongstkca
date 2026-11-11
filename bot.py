@@ -64,8 +64,8 @@ CAMERA_REQUIRE_PHOTO = False
 OPTIONAL_DISPLAY_CHANNELS = []
 SUPPORT_GROUP = "https://t.me/hocviencbm"
 
-GAME_CODE_URL = "https://t.me/hocviencbm"
-GAME_ROOM_URL = "https://t.me/gamexoclo88_bot"
+GAME_CODE_URL = "https://t.me/xoclo88dtbot"
+GAME_ROOM_URL = "https://t.me/hocviencbm"
 
 CODE_PRICE = 2000
 # True: khóa rút code TẤT CẢ tài khoản dùng chung IP. False: chỉ khóa tài khoản mới phát sinh trùng.
@@ -1933,12 +1933,23 @@ async def handle_miniapp_captcha_data(
     pending = pending_miniapp_captcha.get(uid)
     token_from_app = str(data.get("token", "")) if data.get("token") else None
     not_expired = bool(pending and datetime.now() <= pending["expires_at"])
+    # Mini App có thể gửi payload hoàn tất chỉ kèm token (không có passed/type).
+    # Khi đó phải đối chiếu trạng thái đã xác nhận ở SERVER, không được chỉ dựa vào client.
+    camera_token = pending["token"] if pending else token_from_app
+    server_state = get_miniapp_state(camera_token) if camera_token else None
+    server_completed = bool(
+        server_state
+        and server_state.get("ip_ok")
+        and server_state.get("captcha_ok")
+        and server_state.get("photo")
+    )
     passed = (
         data.get("passed") is True
-        or data.get("type") in ("camera_snapshot", "cccam")
+        or data.get("type") in ("camera_snapshot", "cccam", "miniapp_captcha", "verify_complete")
+        or server_completed
     )
 
-    token_ok = True
+    token_ok = bool(pending)
     if token_from_app is not None and pending:
         token_ok = token_from_app == pending["token"]
 
@@ -1956,7 +1967,7 @@ async def handle_miniapp_captcha_data(
             await prompt_miniapp_captcha_verification(message, uid)
         return
 
-    camera_token = pending["token"] if pending else None
+    camera_token = pending["token"]
 
     # --- CỔNG KIỂM TRA PHÍA SERVER: không tin dữ liệu client gửi ---
     st = get_miniapp_state(camera_token)
@@ -2108,7 +2119,7 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 parse_mode="HTML",
             )
         except Exception:
-            pass
+            logger.exception("Không gửi được thông báo lỗi xác minh MiniApp cho user %s", getattr(user, "id", "?"))
 
 
 async def _unlock_ref_later(bot, uid: int, seconds: int):
