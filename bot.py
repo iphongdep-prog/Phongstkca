@@ -64,8 +64,8 @@ CAMERA_REQUIRE_PHOTO = False
 OPTIONAL_DISPLAY_CHANNELS = []
 SUPPORT_GROUP = "https://t.me/hocviencbm"
 
-GAME_CODE_URL = "https://t.me/xombao247"
-GAME_ROOM_URL = "https://t.me/gamehit88_bot"
+GAME_CODE_URL = "https://t.me/hocviencbm"
+GAME_ROOM_URL = "https://t.me/gamexoclo88_bot"
 
 CODE_PRICE = 2000
 # True: khóa rút code TẤT CẢ tài khoản dùng chung IP. False: chỉ khóa tài khoản mới phát sinh trùng.
