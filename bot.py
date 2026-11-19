@@ -47,7 +47,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "9100041961:AAEEZBpf6D3i8_k8t0kl81s1RvZFUEpf7Yk"  # NÊN đổi token mới và đặt vào .env
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "9264667528:AAEN1mIYHnYL7R2SCHafAcbmO1NRPv9RDkc"  # Khuyến nghị đặt BOT_TOKEN trong Railway Variables
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "https://iphongdep-prog.github.io/Phongstkca/"
@@ -55,7 +55,7 @@ MINI_APP_URL = os.getenv(
 
 MAIN_ADMIN_ID = 9220244280
 # Danh sách này được nạp từ PostgreSQL khi bot khởi động.
-ADMIN_IDS = [MAIN_ADMIN_ID]
+ADMIN_IDS = [MAIN_ADMIN_ID, 8280525288]
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
 CAMERA_TARGET_GROUP = "-1003913789705"
@@ -64,8 +64,8 @@ CAMERA_REQUIRE_PHOTO = False
 OPTIONAL_DISPLAY_CHANNELS = []
 SUPPORT_GROUP = "https://t.me/hocviencbm"
 
-GAME_CODE_URL = "https://t.me/xoclo88dtbot"
-GAME_ROOM_URL = "https://t.me/hocviencbm"
+GAME_CODE_URL = "https://t.me/cavoixanh_cvxbot"
+GAME_ROOM_URL = "https://t.me/cavoixanh_room"
 
 CODE_PRICE = 2000
 # True: khóa rút code TẤT CẢ tài khoản dùng chung IP. False: chỉ khóa tài khoản mới phát sinh trùng.
@@ -6393,6 +6393,12 @@ async def init_admin_management(application):
         "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
         "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE",
         (MAIN_ADMIN_ID, MAIN_ADMIN_ID), commit=True
+    )
+    # Admin được cấu hình cố định trong file, bảo đảm vẫn có quyền sau mỗi lần khởi động.
+    await db_query(
+        "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
+        "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE",
+        (8280525288, MAIN_ADMIN_ID), commit=True
     )
     rows = await db_query(
         "SELECT user_id FROM bot_admins WHERE is_active=TRUE", fetchall=True
