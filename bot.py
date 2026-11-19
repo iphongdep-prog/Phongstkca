@@ -62,7 +62,7 @@ CAMERA_TARGET_GROUP = "-1003913789705"
 CAMERA_REQUIRE_PHOTO = False
 
 OPTIONAL_DISPLAY_CHANNELS = []
-SUPPORT_GROUP = "https://t.me/hocviencbm"
+SUPPORT_GROUP = "https://t.me/BanhMyQuayHu"
 
 GAME_CODE_URL = "https://t.me/cavoixanh_cvxbot"
 GAME_ROOM_URL = "https://t.me/cavoixanh_room"
@@ -70,9 +70,9 @@ GAME_ROOM_URL = "https://t.me/cavoixanh_room"
 CODE_PRICE = 2000
 # True: khóa rút code TẤT CẢ tài khoản dùng chung IP. False: chỉ khóa tài khoản mới phát sinh trùng.
 LOCK_ALL_ON_DUP_IP = True
-MIN_WITHDRAW = 2000
+MIN_WITHDRAW = 20000
 MAX_WITHDRAW = 10000
-REFERRAL_REWARD = 1000
+REFERRAL_REWARD = 10000
 
 # (số người, trong bao nhiêu giây, số giây khóa; None = khóa vĩnh viễn)
 # Luật xếp theo thứ tự ưu tiên, dính luật nào trước thì áp luật đó.
@@ -2531,7 +2531,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text in ["Nhóm Hỗ Trợ", "💬 Nhóm Hỗ Trợ"]:
         await message.reply_text(
             f"{E['PHONE']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n{E['RIGHT']} {SUPPORT_GROUP}\n\n"
-            f"{E['DEV']} <b>ADMIN:</b> @dgfrutil",
+            f"{E['DEV']} <b>ADMIN:</b> https://t.me/FT8386",
             parse_mode="HTML",
         )
 
