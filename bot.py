@@ -172,8 +172,16 @@ def cur_support_group() -> str:
 
 
 def cur_admin_contact() -> str:
-    """Liên hệ admin (HTML) hiển thị ở mục Nhóm Hỗ Trợ = chủ bot."""
+    """Liên hệ admin (HTML) hiển thị ở mục Nhóm Hỗ Trợ.
+
+    Ưu tiên @admin hỗ trợ do chủ bot tự đặt (/setsupportadmin); chưa đặt thì dùng chủ bot.
+    """
     c = cur_ctx()
+    custom = (c.cfg.get("support_admin") or "").strip()
+    if custom:
+        if custom.lower().startswith("tg://"):
+            return f'<a href="{_html.escape(custom)}">Liên hệ admin</a>'
+        return _html.escape(custom)
     un = (c.cfg.get("owner_username") or "").strip().lstrip("@")
     if un:
         return f"https://t.me/{_html.escape(un)}"
@@ -684,6 +692,7 @@ def _init_db_sync():
                 ("maintenance", "0"),
                 ("verify_phone", "1"),
                 ("verify_ip", "1"),
+                ("lock_dup_ip", "1"),   # 1: trùng IP (CÙNG BOT) -> khóa rút code | 0: chỉ báo admin, không khóa
                 ("verify_channel", "1"),
                 ("verify_captcha", "1"),
                 ("allow_withdraw", "1"),
@@ -865,15 +874,21 @@ def _register_ip_sync(user_id: int, raw_ip, notify_user: bool = False):
     if not ip:
         return None
     now = get_now_str()
+    # Mọi truy vấn dưới đây chạy trong SCHEMA CỦA BOT ĐANG XỬ LÝ (bot_<id>) nên IP chỉ so sánh
+    # với người dùng CÙNG BOT. Cùng 1 IP ở bot khác = KHÔNG tính là trùng.
+    lock_enabled = get_verify_setting_sync("lock_dup_ip", default=True)
     pool = get_pool()
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO ip_logs (user_id, ip_address, first_seen, last_seen) "
                 "VALUES (%s, %s, %s, %s) "
-                "ON CONFLICT (user_id, ip_address) DO UPDATE SET last_seen=EXCLUDED.last_seen",
+                "ON CONFLICT (user_id, ip_address) DO UPDATE SET last_seen=EXCLUDED.last_seen "
+                "RETURNING (xmax = 0)",
                 (user_id, ip, now, now),
             )
+            _ins = cur.fetchone()
+            is_new_pair = bool(_ins and _ins[0])
             cur.execute(
                 "SELECT u.user_id, u.username, u.is_withdraw_banned, u.skip_ip "
                 "FROM ip_logs l JOIN users u ON u.user_id = l.user_id "
@@ -893,6 +908,28 @@ def _register_ip_sync(user_id: int, raw_ip, notify_user: bool = False):
 
     result["duplicate"] = True
     result["members"] = [(g[0], g[1]) for g in members]
+
+    if not lock_enabled:
+        # Tính năng "Khóa khi trùng IP" đang TẮT: không khóa ai, chỉ báo admin (1 lần cho mỗi cặp user-IP mới).
+        if is_new_pair:
+            listing = ""
+            for uid, uname, wd, _skip in members:
+                name = f"@{_html.escape(uname)}" if uname else "N/A"
+                mark = " ⬅️ <b>vừa xác minh</b>" if uid == user_id else ""
+                listing += f"• {name} | <code>{uid}</code>{mark}\n"
+            text = (
+                f"{E['WARN']} <b>PHÁT HIỆN TRÙNG IP - KHÔNG KHÓA (đang TẮT)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['GLOBE']} IP: <code>{_html.escape(ip)}</code>\n"
+                f"{E['CROWN']} Tổng tài khoản trùng: <b>{len(members)}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n{listing}\n"
+                f"{E['INFO']} Bật khóa tự động trong <code>/settings</code> → <b>Khóa khi trùng IP</b>."
+            )
+            for admin_id in list(ADMIN_IDS):
+                if can_use_cmd(admin_id, "checkip")[0]:
+                    _send_tg_sync(admin_id, text)
+        return result
+
     targets = members if LOCK_ALL_ON_DUP_IP else [me]
     newly_locked = [g for g in targets if not g[2]]
     result["locked_ids"] = [g[0] for g in targets]
@@ -1194,13 +1231,14 @@ async def save_ref_reward(new_reward: int):
 # ------------------------------------------------------------
 # LINK GAME / LINK NHẬP CODE (mỗi bot con tự sửa trong menu admin)
 # ------------------------------------------------------------
-GAME_LINK_KEYS = ("game_code_url", "game_room_url")
+GAME_LINK_KEYS = ("game_code_url", "game_room_url", "support_group", "support_admin")
 
 
 async def load_game_links():
     cfg = cur_ctx().cfg
     rows = await db_query(
-        "SELECT key, value FROM settings WHERE key IN ('game_code_url','game_room_url')",
+        "SELECT key, value FROM settings WHERE key IN "
+        "('game_code_url','game_room_url','support_group','support_admin')",
         fetchall=True,
     ) or []
     for k in GAME_LINK_KEYS:
@@ -1244,6 +1282,14 @@ def _parse_game_link(raw: str):
     if re.fullmatch(r"tg://\S+", s, re.IGNORECASE):
         return s
     return None
+
+
+def _parse_contact_link(raw: str):
+    """Như _parse_game_link nhưng cho phép nhập thẳng USER_ID số (-> tg://user?id=...)."""
+    s = (raw or "").strip()
+    if s.isdigit() and 5 <= len(s) <= 15:
+        return f"tg://user?id={s}"
+    return _parse_game_link(s)
 
 
 def _parse_money(s: str):
@@ -3148,6 +3194,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def build_admin_menu():
     st_phone = await get_verify_setting("verify_phone")
     st_ip = await get_verify_setting("verify_ip")
+    st_lock_ip = await get_verify_setting("lock_dup_ip")
     st_channel = await get_verify_setting("verify_channel")
     st_captcha = await get_verify_setting("verify_captcha")
     st_withdraw = await get_verify_setting("allow_withdraw")
@@ -3166,6 +3213,11 @@ async def build_admin_menu():
             f"Xác minh IP Mini App: {state(st_ip)}",
             "PC",
             callback_data="toggle_verify_ip",
+        )],
+        [abtn(
+            f"Khóa khi trùng IP: {state(st_lock_ip)}",
+            "SHIELD2",
+            callback_data="toggle_lock_dup_ip",
         )],
         [abtn(
             f"Check Kênh/Nhóm: {state(st_channel)}",
@@ -3196,7 +3248,8 @@ async def build_admin_menu():
     text = (
         f"{E['GEAR']} <b>BẢNG ĐIỀU KHIỂN QUẢN TRỊ VIÊN</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"<i>Nhấn vào từng nút bấm bên dưới để Bật/Tắt cấu hình xác minh & tính năng tương ứng.</i>"
+        f"<i>Nhấn vào từng nút bấm bên dưới để Bật/Tắt cấu hình xác minh & tính năng tương ứng.</i>\n"
+        f"<i>Khóa khi trùng IP: BẬT = trùng IP (trong cùng bot này) bị khóa rút code · TẮT = chỉ báo admin, không khóa.</i>"
     )
     return text, InlineKeyboardMarkup(buttons)
 
@@ -3265,6 +3318,7 @@ async def admin_toggle_callback(
     key_map = {
         "toggle_verify_phone": "verify_phone",
         "toggle_verify_ip": "verify_ip",
+        "toggle_lock_dup_ip": "lock_dup_ip",
         "toggle_verify_channel": "verify_channel",
         "toggle_verify_captcha": "verify_captcha",
         "toggle_allow_withdraw": "allow_withdraw",
@@ -3756,7 +3810,10 @@ ADMIN_PAGES = [
             "• <b>/ref</b> – xem tiền thưởng mời 1 bạn bè  |  <b>/setref</b> – đổi tiền thưởng mời bạn bè\n"
             "• <b>/gamelinks</b> – xem link Nhập Code &amp; link Room hiện tại\n"
             "• <b>/setcodelink</b> – đổi link <b>Nhập Code</b> (nút trong Link Game)\n"
-            "• <b>/setroomlink</b> – đổi link <b>Room</b> chơi game"
+            "• <b>/setroomlink</b> – đổi link <b>Room</b> chơi game\n"
+            "• <b>/supportinfo</b> – xem <b>nhóm hỗ trợ chính thức</b> &amp; <b>admin hỗ trợ</b> hiện tại\n"
+            "• <b>/setsupportgroup</b> – đổi @ <b>nhóm hỗ trợ chính thức</b>\n"
+            "• <b>/setsupportadmin</b> – đổi @ <b>admin hỗ trợ</b>"
         ),
         "items": [
             ("/addgroup", "i", "addgroup", "PLUS"),
@@ -3774,6 +3831,9 @@ ADMIN_PAGES = [
             ("/gamelinks", "r", "gamelinks", "LINK"),
             ("/setcodelink", "i", "setcodelink", "LINK"),
             ("/setroomlink", "i", "setroomlink", "PIN"),
+            ("/supportinfo", "r", "supportinfo", "PHONE"),
+            ("/setsupportgroup", "i", "setsupportgroup", "PIN2"),
+            ("/setsupportadmin", "i", "setsupportadmin", "SHIELD"),
         ],
     },
     {
@@ -3827,6 +3887,8 @@ ADMIN_INPUT_PROMPTS = {
     "downprice": "Nhập số tiền muốn <b>GIẢM</b> giá (VD: <code>500</code>):",
     "setref": "Nhập số tiền thưởng <b>mỗi 1 bạn bè mời thành công</b> (VD: <code>15000</code>):",
     "setcodelink": "Nhập <b>link Nhập Code</b> mới (VD: <code>https://t.me/ten_bot_game</code> hoặc <code>@ten_bot_game</code>).\n<i>Gõ <code>macdinh</code> để quay về link mặc định.</i>",
+    "setsupportgroup": "Nhập <b>@nhóm hỗ trợ chính thức</b> mới (VD: <code>@nhom_ho_tro</code> hoặc <code>https://t.me/nhom_ho_tro</code>).\n<i>Gõ <code>macdinh</code> để quay về mặc định.</i>",
+    "setsupportadmin": "Nhập <b>@admin hỗ trợ</b> mới (VD: <code>@ten_admin</code>, link <code>https://t.me/ten_admin</code> hoặc ID số).\n<i>Gõ <code>macdinh</code> để quay về mặc định (chủ bot).</i>",
     "setroomlink": "Nhập <b>link Room</b> mới (VD: <code>https://t.me/ten_room</code> hoặc <code>@ten_room</code>).\n<i>Gõ <code>macdinh</code> để quay về link mặc định.</i>",
 }
 
@@ -6267,6 +6329,49 @@ async def admin_commands(
                 disable_web_page_preview=True,
             )
 
+        elif cmd in ("/setsupportgroup", "/setsupportadmin"):
+            is_group = cmd == "/setsupportgroup"
+            key = "support_group" if is_group else "support_admin"
+            label = "NHÓM HỖ TRỢ CHÍNH THỨC" if is_group else "ADMIN HỖ TRỢ"
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>{cmd} @username</code>\n"
+                    f"VD: <code>{cmd} @ten_ban</code> hoặc <code>{cmd} https://t.me/ten_ban</code>\n"
+                    f"Gõ <code>{cmd} macdinh</code> để quay về mặc định.",
+                    parse_mode="HTML",
+                )
+                return
+            new_url = _parse_game_link(args[0]) if is_group else _parse_contact_link(args[0])
+            if new_url is None:
+                await message.reply_text(
+                    f"{E['CROSS']} Không hợp lệ. Dùng dạng <code>@username</code>, "
+                    f"<code>https://t.me/...</code>" + ("" if is_group else " hoặc ID số") + " (không có khoảng trắng).",
+                    parse_mode="HTML",
+                )
+                return
+            await save_game_link(key, None if new_url == "__default__" else new_url)
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ CẬP NHẬT {label}!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['PHONE']} Nhóm hỗ trợ: {_html.escape(cur_support_group())}\n"
+                f"{E['DEV']} Admin hỗ trợ: {cur_admin_contact()}\n\n"
+                f"{E['INFO']} Người dùng bấm <b>Nhóm Hỗ Trợ</b> sẽ thấy thông tin mới ngay. "
+                f"Chỉ áp dụng cho bot này.",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+
+        elif cmd == "/supportinfo":
+            await message.reply_text(
+                f"{E['PHONE']} <b>HỖ TRỢ CỦA BOT</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['RIGHT']} <b>Nhóm hỗ trợ:</b> {_html.escape(cur_support_group())}\n"
+                f"{E['DEV']} <b>Admin hỗ trợ:</b> {cur_admin_contact()}\n\n"
+                f"{E['INFO']} Đổi: <code>/setsupportgroup</code> · <code>/setsupportadmin</code>",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+
         elif cmd == "/gamelinks":
             await message.reply_text(
                 f"{E['GAME_BELL']} <b>LINK GAME CỦA BOT</b>\n"
@@ -7020,6 +7125,7 @@ def register_child_handlers(app):
         "sendmsg", "maint", "wipeall", "addgroup", "delgroup", "listgroup",
         "checkgroup", "checkadmin", "clearallgroup", "price", "setprice",
         "upprice", "downprice", "ref", "setref", "gamelinks", "setcodelink", "setroomlink",
+        "supportinfo", "setsupportgroup", "setsupportadmin",
     ]
     for command in admin_cmds:
         app.add_handler(CommandHandler(command, admin_commands))
@@ -7047,6 +7153,17 @@ MAX_ACTIVE_BOTS_PER_USER = int(os.getenv("MAX_ACTIVE_BOTS_PER_USER", "2"))   # t
 MAX_SAVED_BOTS_PER_USER = int(os.getenv("MAX_SAVED_BOTS_PER_USER", "5"))     # tối đa token lưu trong bot mẹ
 BOTS_PER_PAGE = 8
 TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,60}$")
+
+# @ ADMIN HỖ TRỢ CỦA BOT MẸ (nút "💬 Hỗ trợ"). Đổi ở đây hoặc đặt biến môi trường MOTHER_SUPPORT_USERNAME.
+# Không đặt thì nút mở thẳng hộp thoại với admin bot mẹ đầu tiên (MOTHER_ADMIN_IDS[0]).
+MOTHER_SUPPORT_USERNAME = os.getenv("MOTHER_SUPPORT_USERNAME", "").strip().lstrip("@")
+
+
+def mother_support_url() -> str:
+    if MOTHER_SUPPORT_USERNAME:
+        return f"https://t.me/{MOTHER_SUPPORT_USERNAME}"
+    return f"tg://user?id={MOTHER_ADMIN_IDS[0]}"
+
 
 MOTHER_CTX = BotCtx(0, MOTHER_SCHEMA, MOTHER_TOKEN, MOTHER_ADMIN_IDS[0], kind="mother")
 mother_state = {}   # user_id -> {"action": "add"|"replace"|"search"|"ban"|"unban", "bot_id": int}
@@ -7451,6 +7568,7 @@ async def screen_home(update: Update, uid: int):
     rows = [
         [("➕ Thêm bot (nhập token)", "m:add")],
         [("🤖 Bot của tôi", "m:list"), ("📖 Hướng dẫn", "m:help")],
+        [("💬 Hỗ trợ", f"url:{mother_support_url()}")],
     ]
     if _is_madmin(uid):
         rows.append([("👑 Quản trị bot mẹ", "m:adm")])
