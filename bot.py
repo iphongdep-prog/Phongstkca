@@ -50,7 +50,7 @@ from telegram.ext import (  # noqa: E402
     TypeHandler,
     filters,
 )
-from telegram.error import InvalidToken, TelegramError  # noqa: E402
+from telegram.error import InvalidToken, NetworkError, RetryAfter, TelegramError, TimedOut  # noqa: E402
 
 # ============================================================
 # 1b. HẠ TẦNG ĐA BOT (BOT MẸ + NHIỀU BOT CON TRONG CÙNG 1 TIẾN TRÌNH)
@@ -1141,6 +1141,119 @@ async def is_maintenance():
         "SELECT value FROM settings WHERE key='maintenance'", fetchone=True
     )
     return bool(res and res[0] == "1")
+
+
+
+# ============================================================
+# THÔNG BÁO HÀNG LOẠT (/broadcast) KHÔNG LÀM LAG BOT
+#   • Chạy NỀN (asyncio.create_task): admin gửi lệnh xong bot vẫn trả lời người dùng bình thường.
+#   • Tối đa BROADCAST_MAX_PARALLEL bot phát cùng lúc, bot còn lại tự XẾP HÀNG chờ tới lượt.
+#   • Bộ giới hạn tốc độ CHUNG cho mọi bot (BROADCAST_GLOBAL_RATE tin/giây) -> 10 bot cùng phát
+#     thì tin được gửi xen kẽ luân phiên, không dồn cục làm nghẽn tiến trình.
+#   • Mỗi bot còn có tốc độ riêng (BROADCAST_BOT_RATE tin/giây, dưới giới hạn 30/giây của Telegram).
+#   • Tự chờ khi Telegram báo RetryAfter, tự thử lại khi lỗi mạng; mỗi bot chỉ phát 1 đợt tại 1 thời điểm.
+# ============================================================
+BROADCAST_MAX_PARALLEL = max(1, int(os.getenv("BROADCAST_MAX_PARALLEL", "3")))
+BROADCAST_GLOBAL_RATE = max(1.0, float(os.getenv("BROADCAST_GLOBAL_RATE", "40")))
+BROADCAST_BOT_RATE = max(1.0, float(os.getenv("BROADCAST_BOT_RATE", "15")))
+
+_bc_sem = None
+_bc_gate = None
+_bc_next_slot = 0.0
+_bc_active_bots = set()
+_bc_tasks = set()
+
+
+def _bc_init():
+    global _bc_sem, _bc_gate
+    if _bc_sem is None:
+        _bc_sem = asyncio.Semaphore(BROADCAST_MAX_PARALLEL)
+        _bc_gate = asyncio.Lock()
+
+
+async def _bc_global_wait():
+    """Xin 1 'suất gửi' từ bộ giới hạn chung (FIFO nên các bot được phục vụ luân phiên)."""
+    global _bc_next_slot
+    _bc_init()
+    async with _bc_gate:
+        now = time.monotonic()
+        wait = max(0.0, _bc_next_slot - now)
+        _bc_next_slot = max(now, _bc_next_slot) + 1.0 / BROADCAST_GLOBAL_RATE
+    if wait > 0:
+        await asyncio.sleep(wait)
+
+
+def _retry_seconds(exc) -> float:
+    ra = getattr(exc, "retry_after", 5)
+    try:
+        return float(ra.total_seconds()) if hasattr(ra, "total_seconds") else float(ra)
+    except Exception:
+        return 5.0
+
+
+async def _bc_send(bot, chat_id, text) -> bool:
+    for _ in range(4):
+        await _bc_global_wait()
+        try:
+            await bot.send_message(
+                chat_id=chat_id, text=text, parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            return True
+        except RetryAfter as exc:
+            await asyncio.sleep(_retry_seconds(exc) + 1)
+        except (TimedOut, NetworkError):
+            await asyncio.sleep(2)
+        except Exception:
+            return False   # user chặn bot / nhóm đã xóa... -> bỏ qua
+    return False
+
+
+async def _run_broadcast(ctx, bot, admin_chat_id, content):
+    """Tác vụ nền: phát thông báo cho người dùng + nhóm CỦA BOT NÀY (schema riêng)."""
+    t = CUR.set(ctx)
+    ok = fail = 0
+    try:
+        _bc_init()
+        async with _bc_sem:   # quá số bot phát cùng lúc thì chờ ở đây (xếp hàng)
+            users = await db_query("SELECT user_id FROM users WHERE is_banned=0", fetchall=True) or []
+            groups = await db_query("SELECT chat_id FROM groups", fetchall=True) or []
+            targets = [r[0] for r in users] + [r[0] for r in groups]
+            text = f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}"
+            gap = 1.0 / BROADCAST_BOT_RATE
+            for tid in targets:
+                if await _bc_send(bot, tid, text):
+                    ok += 1
+                else:
+                    fail += 1
+                await asyncio.sleep(gap)   # nhường vòng lặp cho người dùng đang dùng bot
+        try:
+            await bot.send_message(
+                chat_id=admin_chat_id,
+                text=(f"{E['CHECK2']} <b>ĐÃ PHÁT XONG THÔNG BÁO</b>\n"
+                      f"Thành công: <b>{ok:,}</b> • Không gửi được: <b>{fail:,}</b>"),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    except Exception:
+        logger.exception("Lỗi khi phát thông báo")
+    finally:
+        _bc_active_bots.discard(ctx.bot_id)
+        CUR.reset(t)
+
+
+def start_broadcast(ctx, bot, admin_chat_id, content):
+    """Trả về 'busy' nếu bot này đang phát đợt khác, 'queued' nếu phải chờ lượt, 'started' nếu chạy ngay."""
+    _bc_init()
+    if ctx.bot_id in _bc_active_bots:
+        return "busy"
+    _bc_active_bots.add(ctx.bot_id)
+    status = "queued" if _bc_sem.locked() else "started"
+    task = asyncio.create_task(_run_broadcast(ctx, bot, admin_chat_id, content))
+    _bc_tasks.add(task)
+    task.add_done_callback(_bc_tasks.discard)
+    return status
 
 
 async def send_split_message(bot, chat_id, text, parse_mode="HTML"):
@@ -5888,39 +6001,21 @@ async def admin_commands(
                 )
                 return
             content = " ".join(args).strip()
-            users = await db_query(
-                "SELECT user_id FROM users WHERE is_banned=0", fetchall=True
-            )
-            groups = await db_query(
-                "SELECT chat_id FROM groups", fetchall=True
-            )
-            count = 0
-            for (target_id,) in users:
-                try:
-                    await context.bot.send_message(
-                        chat_id=target_id,
-                        text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}",
-                        parse_mode="HTML",
-                    )
-                    count += 1
-                except Exception:
-                    pass
-                await asyncio.sleep(0.05)
-            for (g_chat_id,) in groups:
-                try:
-                    await context.bot.send_message(
-                        chat_id=g_chat_id,
-                        text=f"{E['SPEAKER']} <b>THÔNG BÁO HỆ THỐNG</b>\n━━━━━━━━━━━━━━━━━━\n\n{content}",
-                        parse_mode="HTML",
-                    )
-                    count += 1
-                except Exception:
-                    pass
-                await asyncio.sleep(0.05)
-            await message.reply_text(
-                f"{E['CHECK2']} Đã phát thông báo tới <b>{count}</b> người dùng/nhóm.",
-                parse_mode="HTML",
-            )
+            st = start_broadcast(cur_ctx(), context.bot, message.chat_id, content)
+            if st == "busy":
+                await message.reply_text(
+                    f"{E['WARN']} Bot đang phát một thông báo trước đó, vui lòng đợi phát xong rồi gửi tiếp.",
+                    parse_mode="HTML",
+                )
+            else:
+                await message.reply_text(
+                    f"{E['HOURGLASS']} " + (
+                        "Đang <b>xếp hàng</b> vì nhiều bot cùng phát, sẽ tự chạy tới lượt."
+                        if st == "queued" else
+                        "Đang phát thông báo ở <b>chế độ nền</b>, bot vẫn hoạt động bình thường."
+                    ) + "\nPhát xong mình sẽ báo kết quả cho bạn.",
+                    parse_mode="HTML",
+                )
 
         elif cmd == "/sendmsg":
             if len(args) < 2:
