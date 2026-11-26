@@ -1935,21 +1935,42 @@ async def get_missing_system_groups(user_id: int):
     return missing
 
 
-def build_system_group_prompt(missing):
-    lines = "\n".join(f"• <b>{_html.escape(_sys_label(r))}</b>" for r, _u in missing)
+def build_system_group_prompt(missing, ch_missing=()):
+    """1 tin nhắn DUY NHẤT: nhóm HỆ THỐNG + các nhóm/kênh mà chủ bot đã thêm yêu cầu tham gia.
+
+    missing: [(ref, url)] nhóm hệ thống chưa tham gia; ch_missing: [tên] nhóm của bot (url lấy ở CHANNEL_URLS).
+    """
+    items = [(_sys_label(r), u) for r, u in missing]
+    for name in ch_missing:
+        items.append((str(name), CHANNEL_URLS.get(name)))
+    lines = "\n".join(f"• <b>{_html.escape(n)}</b>" for n, _u in items)
     text = (
-        f"{E['BANDAGE']} <b>BẠN CẦN THAM GIA NHÓM HỆ THỐNG!</b>\n"
+        f"{E['BANDAGE']} <b>BẠN CẦN THAM GIA NHÓM/KÊNH BẮT BUỘC!</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"{E['WARN']} Để sử dụng bot, bạn <b>bắt buộc</b> tham gia <b>{len(missing)}</b> nhóm/kênh sau:\n\n"
+        f"{E['WARN']} Để sử dụng bot, bạn <b>bắt buộc</b> tham gia <b>{len(items)}</b> nhóm/kênh sau:\n\n"
         f"{lines}\n\n"
         f"{E['RIGHT']} Tham gia xong hãy bấm nút <b>XÁC NHẬN ĐÃ THAM GIA</b> bên dưới!"
     )
     rows = [
-        [ibtn(f"Tham gia {_sys_label(r)}"[:60], random.choice(JOIN_BTN_EMOJI_IDS), url=u)]
-        for r, u in missing
+        [ibtn(f"Tham gia {n}"[:60], random.choice(JOIN_BTN_EMOJI_IDS), url=u)]
+        for n, u in items if u
     ]
     rows.append([ibtn("XÁC NHẬN ĐÃ THAM GIA", CONFIRM_JOIN_EMOJI_ID, callback_data="verify_sys")])
     return text, InlineKeyboardMarkup(rows)
+
+
+async def _bot_channels_missing(bot, user_id: int):
+    """Nhóm/kênh do CHỦ BOT CON thêm (/addgroup) mà user chưa tham gia. Bot mẹ / admin / tắt check -> rỗng."""
+    c = CUR.get()
+    if c is None or c.kind != "child" or user_id in ADMIN_IDS:
+        return []
+    try:
+        if not await get_verify_setting("verify_channel"):
+            return []
+        return await get_missing_channels(bot, user_id)
+    except Exception as exc:
+        logger.warning("Không kiểm tra được nhóm bắt buộc của bot: %s", exc)
+        return []
 
 
 async def sys_group_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1974,10 +1995,11 @@ async def sys_group_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _sys_prompt_ts[user.id] = now
         if len(_sys_prompt_ts) > 50000:
             _sys_prompt_ts.clear()
-        text, markup = build_system_group_prompt(missing)
+        ch_missing = await _bot_channels_missing(context.bot, user.id)
+        text, markup = build_system_group_prompt(missing, ch_missing)
         try:
             if q:
-                await q.answer(f"Bạn cần tham gia {len(missing)} nhóm hệ thống để tiếp tục!", show_alert=True)
+                await q.answer(f"Bạn cần tham gia {len(missing) + len(ch_missing)} nhóm/kênh để tiếp tục!", show_alert=True)
             await context.bot.send_message(chat.id, text, parse_mode="HTML", reply_markup=markup)
         except Exception as exc:
             logger.warning("Không gửi được nhắc nhóm hệ thống cho %s: %s", user.id, exc)
@@ -1990,8 +2012,9 @@ async def sys_verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     uid = q.from_user.id
     missing = await get_missing_system_groups(uid)
-    if missing:
-        text, markup = build_system_group_prompt(missing)
+    ch_missing = await _bot_channels_missing(context.bot, uid)
+    if missing or ch_missing:
+        text, markup = build_system_group_prompt(missing, ch_missing)
         try:
             await q.answer("Bạn vẫn chưa tham gia đủ nhóm!", show_alert=True)
         except Exception:
@@ -2012,7 +2035,7 @@ async def sys_verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         await context.bot.send_message(
             uid,
-            f"{E['CHECK2']} <b>XÁC NHẬN THÀNH CÔNG!</b>\nBạn đã tham gia đủ nhóm hệ thống. "
+            f"{E['CHECK2']} <b>XÁC NHẬN THÀNH CÔNG!</b>\nBạn đã tham gia đủ nhóm/kênh bắt buộc. "
             f"Bấm /start để tiếp tục.",
             parse_mode="HTML",
         )
