@@ -1,5 +1,7 @@
 import base64
 import asyncio
+import contextvars
+import functools
 import html as _html
 import io
 import ipaddress
@@ -9,11 +11,13 @@ import os
 import random
 import re
 import secrets
+import signal
 import time
 import threading
 import urllib.request
 import urllib.parse
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import pytz
@@ -27,6 +31,7 @@ from psycopg_pool import ConnectionPool
 load_dotenv()
 
 from telegram import (  # noqa: E402
+    Bot,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -43,31 +48,230 @@ from telegram.ext import (  # noqa: E402
     MessageHandler,
     filters,
 )
+from telegram.error import InvalidToken, TelegramError  # noqa: E402
+
+# ============================================================
+# 1b. HẠ TẦNG ĐA BOT (BOT MẸ + NHIỀU BOT CON TRONG CÙNG 1 TIẾN TRÌNH)
+#
+# Nguyên tắc cô lập dữ liệu:
+#   • Mỗi bot con có 1 SCHEMA PostgreSQL riêng (bot_<id>) -> bảng users, code_stock,
+#     transactions, settings... hoàn toàn tách biệt. Lệnh reset/wipe/zerobal... của bot
+#     này chỉ tác động bot đó.
+#   • Mỗi bot con có BỘ NHỚ RAM riêng (anti-spam, captcha, trạng thái nhập của admin...).
+#   • Mỗi bot con có cấu hình riêng (admin chính = chủ bot, giá code, link game...).
+#   • "Bot đang xử lý" được lưu trong ContextVar CUR, nên toàn bộ code cũ
+#     (db_query, ADMIN_IDS, cur_code_price()...) tự động trỏ đúng bot mà không phải sửa từng chỗ.
+# ============================================================
+MOTHER_SCHEMA = "mother"
+CUR = contextvars.ContextVar("cur_bot", default=None)
+
+
+class BotCtx:
+    """Mọi thứ thuộc về MỘT bot (bot mẹ hoặc 1 bot con)."""
+
+    def __init__(self, bot_id, schema, token, owner_id, kind="child"):
+        self.bot_id = bot_id
+        self.schema = schema
+        self.token = token
+        self.owner_id = owner_id      # admin chính của bot (chủ bot con / admin bot mẹ)
+        self.kind = kind
+        self.mem = {}                 # trạng thái RAM riêng của bot
+        self.cfg = {}                 # cấu hình riêng (giá code, link game, ...)
+        self.app = None
+        self.username = ""
+
+
+def cur_ctx() -> "BotCtx":
+    c = CUR.get()
+    if c is None:
+        raise RuntimeError("Không xác định được bot đang xử lý (thiếu ngữ cảnh bot).")
+    return c
+
+
+def current_schema() -> str:
+    c = CUR.get()
+    return c.schema if c else MOTHER_SCHEMA
+
+
+def _bot_mem(name: str, factory=dict):
+    mem = cur_ctx().mem
+    if name not in mem:
+        mem[name] = factory()
+    return mem[name]
+
+
+class _Scoped:
+    """Đối tượng (dict/set/list) mà MỖI BOT có 1 bản riêng.
+
+    Code cũ vẫn dùng như biến toàn cục bình thường: ADMIN_IDS, admin_input_states, ...
+    """
+
+    def __init__(self, name, factory):
+        self._name = name
+        self._factory = factory
+
+    def _obj(self):
+        return _bot_mem(self._name, self._factory)
+
+    def __getitem__(self, k):
+        return self._obj()[k]
+
+    def __setitem__(self, k, v):
+        self._obj()[k] = v
+
+    def __delitem__(self, k):
+        del self._obj()[k]
+
+    def __contains__(self, k):
+        return k in self._obj()
+
+    def __iter__(self):
+        return iter(self._obj())
+
+    def __len__(self):
+        return len(self._obj())
+
+    def __bool__(self):
+        return bool(self._obj())
+
+    def __getattr__(self, n):
+        return getattr(self._obj(), n)
+
+
+# ---- cấu hình riêng từng bot -------------------------------------------------
+def main_admin_id() -> int:
+    """Admin chính của bot đang xử lý (bot con: chủ bot; bot mẹ: admin bot mẹ)."""
+    return cur_ctx().owner_id
+
+
+def cur_token() -> str:
+    return cur_ctx().token
+
+
+def cur_code_price() -> int:
+    return cur_ctx().cfg.get("code_price") or DEFAULT_CODE_PRICE
+
+
+def cur_game_code_url() -> str:
+    return cur_ctx().cfg.get("game_code_url") or DEFAULT_GAME_CODE_URL
+
+
+def cur_game_room_url() -> str:
+    return cur_ctx().cfg.get("game_room_url") or DEFAULT_GAME_ROOM_URL
+
+
+def cur_support_group() -> str:
+    return cur_ctx().cfg.get("support_group") or DEFAULT_SUPPORT_GROUP
+
+
+def cur_camera_group():
+    """Nơi gửi ảnh camera xác minh: mặc định gửi cho chủ bot con."""
+    c = cur_ctx()
+    return c.cfg.get("camera_group") or str(c.owner_id)
+
+
+def cur_admin_contact() -> str:
+    """Liên hệ admin (HTML) hiển thị ở mục Nhóm Hỗ Trợ = chủ bot."""
+    c = cur_ctx()
+    un = (c.cfg.get("owner_username") or "").strip().lstrip("@")
+    if un:
+        return f"https://t.me/{_html.escape(un)}"
+    return f'<a href="tg://user?id={int(c.owner_id)}">Liên hệ admin</a>'
+
+
+def new_miniapp_token() -> str:
+    """Token MiniApp có gắn ID bot ở đầu để server Flask biết token thuộc bot nào."""
+    return f"{cur_ctx().bot_id}x{secrets.token_urlsafe(12)}"
+
+
+# ---- Flask: gắn đúng bot theo token MiniApp ------------------------------------
+def _bot_scope(required: bool = True):
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*a, **k):
+            tok = None
+            if request.method == "POST":
+                d = request.get_json(silent=True)
+                if isinstance(d, dict):
+                    tok = d.get("token")
+            tok = tok or request.args.get("token") or request.args.get("t")
+            ctx = MANAGER.ctx_from_token(tok)
+            if ctx is None:
+                if required:
+                    return jsonify({
+                        "ok": False, "status": "blocked", "error": "token_invalid",
+                        "reason": "Phiên không hợp lệ hoặc bot đã bị tắt.",
+                        "message": "Phiên xác minh không hợp lệ hoặc bot đã bị tắt. Hãy quay lại bot và bấm lại nút xác minh.",
+                    }), 403
+                return fn(*a, **k)
+            t = CUR.set(ctx)
+            try:
+                return fn(*a, **k)
+            finally:
+                CUR.reset(t)
+        return wrapper
+    return deco
+
+
+def _scoped_cb(cb, ctx):
+    """Bọc handler: mọi lệnh/nút của bot nào thì chạy trong ngữ cảnh bot đó."""
+    @functools.wraps(cb)
+    async def wrapper(*a, **k):
+        t = CUR.set(ctx)
+        try:
+            return await cb(*a, **k)
+        finally:
+            CUR.reset(t)
+    return wrapper
+
+
+_SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,40}$")
+
+
+class _ScopedPool:
+    """Bọc ConnectionPool: mỗi lần lấy kết nối đều đặt search_path = schema của bot hiện tại."""
+
+    def __init__(self, pool):
+        self._pool = pool
+
+    @contextmanager
+    def connection(self):
+        schema = current_schema()
+        if not _SCHEMA_RE.match(schema):
+            raise RuntimeError(f"Tên schema không hợp lệ: {schema!r}")
+        with self._pool.connection() as conn:
+            conn.execute(f'SET search_path TO "{schema}"')
+            yield conn
+
 
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "9020648885:AAGL7hdtb_Ay7XAtcBtbO7RkzCem9wO0ns0"  # Khuyến nghị đặt BOT_TOKEN trong Railway Variables
+MOTHER_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "9020648885:AAGL7hdtb_Ay7XAtcBtbO7RkzCem9wO0ns0"  # TOKEN BOT MẸ. Khuyến nghị đặt BOT_TOKEN trong biến môi trường (Railway Variables)
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "https://iphongdep-prog.github.io/Phongstkca/"
 ).strip()
 
-MAIN_ADMIN_ID = 9220244280
-# Danh sách này được nạp từ PostgreSQL khi bot khởi động.
-ADMIN_IDS = [MAIN_ADMIN_ID, 8280525288]
+# Admin của BOT MẸ (xem/cấm người dùng, kiểm tra mọi bot con). Thêm ID khác: MOTHER_ADMIN_IDS="9220244280,123"
+MOTHER_ADMIN_IDS = [9220244280] + [
+    int(x) for x in os.getenv("MOTHER_ADMIN_IDS", "").replace(" ", "").split(",")
+    if x.isdigit() and int(x) != 9220244280
+]
+# Với MỖI bot con: admin chính = chủ bot (người thêm token). Danh sách admin được nạp từ PostgreSQL
+# (schema riêng của bot) khi bot con khởi động.
+ADMIN_IDS = _Scoped("admin_ids", list)
 TIMEZONE = pytz.timezone("Asia/Ho_Chi_Minh")
 
-CAMERA_TARGET_GROUP = "-1003913789705"
 CAMERA_REQUIRE_PHOTO = False
 
 OPTIONAL_DISPLAY_CHANNELS = []
-SUPPORT_GROUP = "https://t.me/BanhMyQuayHu"
+DEFAULT_SUPPORT_GROUP = "https://t.me/BanhMyQuayHu"
 
-GAME_CODE_URL = "https://t.me/cavoixanh_cvxbot"
-GAME_ROOM_URL = "https://t.me/cavoixanh_room"
+DEFAULT_GAME_CODE_URL = "https://t.me/cavoixanh_cvxbot"
+DEFAULT_GAME_ROOM_URL = "https://t.me/cavoixanh_room"
 
-CODE_PRICE = 2000
+DEFAULT_CODE_PRICE = 2000
 # True: khóa rút code TẤT CẢ tài khoản dùng chung IP. False: chỉ khóa tài khoản mới phát sinh trùng.
 LOCK_ALL_ON_DUP_IP = True
 MIN_WITHDRAW = 20000
@@ -81,7 +285,7 @@ FAST_INVITE_RULES = [
     (3, 30, None),
     (2, 10, 120),
 ]
-temp_locked_refs = set()
+temp_locked_refs = _Scoped("temp_locked_refs", set)
 
 SPAM_WINDOW_SECONDS = 4
 SPAM_MAX_MESSAGES = 10
@@ -338,18 +542,16 @@ def ibtn(text: str, emoji_id: str, **kwargs) -> InlineKeyboardButton:
     return InlineKeyboardButton(text, api_kwargs=api, **kwargs)
 
 
-user_msg_tracker = defaultdict(list)
-temp_bans = {}
-user_withdraw_state = {}
-pending_captcha_users = {}
-pending_miniapp_captcha = {}
-pending_miniapp_ip = {}  # user_id -> ip lấy từ server khi mở MiniApp camera
-pending_camera_verified = set()
-admin_input_states = {}
+user_msg_tracker = _Scoped("user_msg_tracker", lambda: defaultdict(list))
+temp_bans = _Scoped("temp_bans", dict)
+user_withdraw_state = _Scoped("user_withdraw_state", dict)
+pending_captcha_users = _Scoped("pending_captcha_users", dict)
+pending_miniapp_captcha = _Scoped("pending_miniapp_captcha", dict)
+pending_miniapp_ip = _Scoped("pending_miniapp_ip", dict)  # user_id -> ip lấy từ server khi mở MiniApp camera
+pending_camera_verified = _Scoped("pending_camera_verified", set)
+admin_input_states = _Scoped("admin_input_states", dict)
 
-_last_cam_alert_ts = 0.0
-_last_miniapp_alert_ts = 0.0
-_err_notice_ts = {}
+_err_notice_ts = _Scoped("err_notice_ts", dict)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -365,13 +567,13 @@ def get_pool():
     if db_pool is None:
         if not DATABASE_URL:
             raise RuntimeError("Chưa cấu hình DATABASE_URL.")
-        db_pool = ConnectionPool(
+        db_pool = _ScopedPool(ConnectionPool(
             DATABASE_URL,
-            min_size=1,
-            max_size=10,
-            kwargs={"row_factory": tuple_row},
+            min_size=2,
+            max_size=int(os.getenv("DB_POOL_MAX", "20")),
+            kwargs={"row_factory": tuple_row, "prepare_threshold": None},
             open=True,
-        )
+        ))
     return db_pool
 
 
@@ -649,7 +851,7 @@ def _send_tg_sync(chat_id, text: str) -> bool:
             "disable_web_page_preview": "true",
         }).encode("utf-8")
         req = urllib.request.Request(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data=data
+            f"https://api.telegram.org/bot{cur_token()}/sendMessage", data=data
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             resp.read()
@@ -770,8 +972,7 @@ STATE_TTL = 3600
 _ip_info_cache = {}        # ip -> (ts, info)
 miniapp_state = {}         # token -> trạng thái xác minh PHÍA SERVER
 _miniapp_state_lock = threading.Lock()
-_vpn_alert_ts = {}         # user_id -> ts (chống spam thông báo)
-_ipcheck_fail_alert_ts = 0.0
+_vpn_alert_ts = _Scoped("vpn_alert_ts", dict)         # user_id -> ts (chống spam thông báo)
 
 
 def _http_json(url: str, timeout: int = 6):
@@ -782,7 +983,6 @@ def _http_json(url: str, timeout: int = 6):
 
 def lookup_ip_info(ip: str) -> dict:
     """Tra cứu IP: quốc gia, proxy/VPN, hosting. Có cache 6 giờ."""
-    global _ipcheck_fail_alert_ts
     now = time.time()
     cached = _ip_info_cache.get(ip)
     if cached and now - cached[0] < IP_CACHE_TTL:
@@ -820,10 +1020,10 @@ def lookup_ip_info(ip: str) -> dict:
         _ip_info_cache[ip] = (now, info)
         if len(_ip_info_cache) > 20000:
             _ip_info_cache.clear()
-    elif now - _ipcheck_fail_alert_ts > 1800:
-        _ipcheck_fail_alert_ts = now
+    elif now - _bot_mem("alerts").get("ipcheck", 0.0) > 1800:
+        _bot_mem("alerts")["ipcheck"] = now
         _send_tg_sync(
-            MAIN_ADMIN_ID,
+            main_admin_id(),
             "⚠️ <b>Không tra cứu được IP (ip-api/proxycheck lỗi hoặc hết lượt).</b>\n"
             + ("Đang cho qua (IP_CHECK_FAIL_OPEN=1)." if IP_CHECK_FAIL_OPEN else "Đang CHẶN tất cả.")
             + "\nNên đặt PROXYCHECK_KEY để ổn định hơn.",
@@ -881,7 +1081,7 @@ def _alert_vpn(uid: int, ip: str, reason: str):
         return
     _vpn_alert_ts[uid] = now
     _send_tg_sync(
-        MAIN_ADMIN_ID,
+        main_admin_id(),
         "🚫 <b>CHẶN VPN/PROXY KHI XÁC MINH</b>\n"
         f"User: <code>{uid}</code>\nIP: <code>{_html.escape(ip)}</code>\n"
         f"Lý do: <b>{_html.escape(reason)}</b>\n"
@@ -1119,23 +1319,79 @@ async def check_bio_flag(bot, uid: int):
 
 
 async def load_code_price():
-    global CODE_PRICE
     res = await db_query(
         "SELECT value FROM settings WHERE key='code_price'", fetchone=True
     )
+    cfg = cur_ctx().cfg
     if res and str(res[0]).isdigit() and int(res[0]) > 0:
-        CODE_PRICE = int(res[0])
+        cfg["code_price"] = int(res[0])
+    else:
+        cfg["code_price"] = DEFAULT_CODE_PRICE
 
 
 async def save_code_price(new_price: int):
-    global CODE_PRICE
     await db_query(
         "INSERT INTO settings (key, value) VALUES ('code_price', %s) "
         "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
         (str(new_price),),
         commit=True,
     )
-    CODE_PRICE = new_price
+    cur_ctx().cfg["code_price"] = new_price
+
+
+# ------------------------------------------------------------
+# LINK GAME / LINK NHẬP CODE (mỗi bot con tự sửa trong menu admin)
+# ------------------------------------------------------------
+GAME_LINK_KEYS = ("game_code_url", "game_room_url")
+
+
+async def load_game_links():
+    cfg = cur_ctx().cfg
+    rows = await db_query(
+        "SELECT key, value FROM settings WHERE key IN ('game_code_url','game_room_url')",
+        fetchall=True,
+    ) or []
+    for k in GAME_LINK_KEYS:
+        cfg.pop(k, None)
+    for k, v in rows:
+        if v and str(v).strip():
+            cfg[k] = str(v).strip()
+
+
+async def save_game_link(key: str, url):
+    """url=None -> xoá, quay về link mặc định."""
+    if key not in GAME_LINK_KEYS:
+        raise ValueError("key link không hợp lệ")
+    cfg = cur_ctx().cfg
+    if url is None:
+        await db_query("DELETE FROM settings WHERE key=%s", (key,), commit=True)
+        cfg.pop(key, None)
+        return
+    await db_query(
+        "INSERT INTO settings (key, value) VALUES (%s, %s) "
+        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+        (key, url),
+        commit=True,
+    )
+    cfg[key] = url
+
+
+def _parse_game_link(raw: str):
+    """Trả về URL chuẩn, '__default__' (về mặc định) hoặc None nếu không hợp lệ."""
+    s = (raw or "").strip()
+    if s.lower() in ("macdinh", "mặc định", "mac dinh", "default", "reset"):
+        return "__default__"
+    if len(s) > 300 or any(ch.isspace() for ch in s):
+        return None
+    if re.fullmatch(r"@[A-Za-z0-9_]{4,}", s):
+        return f"https://t.me/{s[1:]}"
+    if re.fullmatch(r"(?:t|telegram)\.me/\S+", s, re.IGNORECASE):
+        return "https://" + s
+    if re.fullmatch(r"https?://[^\s/]+\.[^\s/]+\S*", s, re.IGNORECASE):
+        return s
+    if re.fullmatch(r"tg://\S+", s, re.IGNORECASE):
+        return s
+    return None
 
 
 def _parse_money(s: str):
@@ -1146,7 +1402,7 @@ def _parse_money(s: str):
         return None
 
 
-CHANNEL_URLS = {}
+CHANNEL_URLS = _Scoped("channel_urls", dict)
 
 
 def _norm_chat_ref(raw: str):
@@ -1199,11 +1455,11 @@ def miniapp_url_is_https() -> bool:
 
 async def _alert_miniapp_problem(exc):
     """Báo admin chính (tối đa 10 phút/lần) khi không gửi được nút MiniApp."""
-    global _last_miniapp_alert_ts
     now = time.time()
-    if now - _last_miniapp_alert_ts < 600:
+    _al = _bot_mem("alerts")
+    if now - _al.get("miniapp", 0.0) < 600:
         return
-    _last_miniapp_alert_ts = now
+    _al["miniapp"] = now
     text = (
         "🚨 <b>KHÔNG GỬI ĐƯỢC NÚT XÁC MINH MINI APP CHO NGƯỜI DÙNG</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
@@ -1216,7 +1472,7 @@ async def _alert_miniapp_problem(exc):
         "<b>Xác minh IP Mini App</b> để người dùng dùng được ngay. "
         "Sau đó đặt <code>MINI_APP_URL=https://ten-mien-cua-ban/miniapp</code> trong file .env rồi bật lại."
     )
-    await asyncio.to_thread(_send_tg_sync, MAIN_ADMIN_ID, text)
+    await asyncio.to_thread(_send_tg_sync, main_admin_id(), text)
 
 
 async def _handle_miniapp_send_failure(message_or_bot, user_id, exc):
@@ -1276,8 +1532,8 @@ def get_main_keyboard(user_id=None):
 
 def get_game_link_markup():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Nhập Code Tại Đây", url=GAME_CODE_URL)],
-        [InlineKeyboardButton("Link room tại đây", url=GAME_ROOM_URL)],
+        [InlineKeyboardButton("Nhập Code Tại Đây", url=cur_game_code_url())],
+        [InlineKeyboardButton("Link room tại đây", url=cur_game_room_url())],
     ])
 
 
@@ -1325,7 +1581,7 @@ async def _prompt_miniapp_captcha_raw(
     if existing and datetime.now() <= existing["expires_at"] and not is_retry:
         token = existing["token"]
     else:
-        token = secrets.token_urlsafe(12)
+        token = new_miniapp_token()
         pending_miniapp_captcha[user_id] = {
             "token": token,
             "expires_at": datetime.now()
@@ -1546,7 +1802,7 @@ async def prompt_phone_verification(message_or_bot, user_id):
 
 
 async def _prompt_ip_verification_raw(message_or_bot, user_id):
-    ip_token = secrets.token_urlsafe(12)
+    ip_token = new_miniapp_token()
     pending_miniapp_captcha[user_id] = {
         "token": ip_token,
         "expires_at": datetime.now() + timedelta(minutes=MINIAPP_CAPTCHA_TTL_MINUTES),
@@ -2326,7 +2582,7 @@ def build_buy_success_text(code_val: str) -> str:
     return (
         f"{E['LOVE_FACE']} <b>MUA CODE THÀNH CÔNG!</b> {E['FIRE']}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{E['MONEY']} Số tiền mua: <b>{CODE_PRICE:,}đ</b>\n"
+        f"{E['MONEY']} Số tiền mua: <b>{cur_code_price():,}đ</b>\n"
         f"{E['CARD']} Mã Code: <code>{code_val}</code>\n"
         f"{E['STAR']} Giá trị Code: <b>7.777-15.888</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -2491,7 +2747,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{E['INFO']} <b>Thể lệ nhận thưởng:</b>\n"
             f"• {E['MONEY_FLY']} Nhận ngay: <b>+{REFERRAL_REWARD:,}đ</b> / lượt mời thành công.\n"
             f"• {E['RIGHT']} Bạn bè phải hoàn tất các bước xác minh theo yêu cầu hệ thống.\n"
-            f"• {E['TOP']} Giá mua Code: <b>{CODE_PRICE:,}đ</b>"
+            f"• {E['TOP']} Giá mua Code: <b>{cur_code_price():,}đ</b>"
         )
         await message.reply_text(msg, parse_mode="HTML")
 
@@ -2530,8 +2786,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text in ["Nhóm Hỗ Trợ", "💬 Nhóm Hỗ Trợ"]:
         await message.reply_text(
-            f"{E['PHONE']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n{E['RIGHT']} {SUPPORT_GROUP}\n\n"
-            f"{E['DEV']} <b>ADMIN:</b> https://t.me/FT8386",
+            f"{E['PHONE']} <b>NHÓM HỖ TRỢ CHÍNH THỨC:</b>\n{E['RIGHT']} {cur_support_group()}\n\n"
+            f"{E['DEV']} <b>ADMIN:</b> {cur_admin_contact()}",
             parse_mode="HTML",
         )
 
@@ -2591,15 +2847,15 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         buttons = [[InlineKeyboardButton(
-            f"XÁC NHẬN MUA CODE (Giá {CODE_PRICE:,}đ)",
-            callback_data=f"buycode_confirm_{CODE_PRICE}",
+            f"XÁC NHẬN MUA CODE (Giá {cur_code_price():,}đ)",
+            callback_data=f"buycode_confirm_{cur_code_price()}",
             api_kwargs={"icon_custom_emoji_id": "6206196801775605920"},
         )]]
         await message.reply_text(
             f"{E['SHIELD']} <b>HỆ THỐNG RÚT CODE TỰ ĐỘNG</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"{E['MONEY']} <b>Số dư hiện tại:</b> <code>{db_user[1]:,}đ</code>\n\n"
-            f"{E['LOVE_FACE']} Nhấn nút bên dưới để xác nhận mua code giá <b>{CODE_PRICE:,}đ</b>:",
+            f"{E['LOVE_FACE']} Nhấn nút bên dưới để xác nhận mua code giá <b>{cur_code_price():,}đ</b>:",
             reply_markup=InlineKeyboardMarkup(buttons),
             parse_mode="HTML",
         )
@@ -2799,7 +3055,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (target_user_id,),
             )
             u_row = cursor.fetchone()
-            if not u_row or u_row[0] < CODE_PRICE:
+            if not u_row or u_row[0] < cur_code_price():
                 return "NOT_ENOUGH_BALANCE"
             cursor.execute(
                 "SELECT id, code_val FROM code_stock WHERE is_used=0 ORDER BY id ASC LIMIT 1 FOR UPDATE"
@@ -2810,7 +3066,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             code_stock_id, code_val = stock_item
             cursor.execute(
                 "UPDATE users SET balance = balance - %s WHERE user_id=%s",
-                (CODE_PRICE, target_user_id),
+                (cur_code_price(), target_user_id),
             )
             cursor.execute(
                 "UPDATE code_stock SET is_used=1 WHERE id=%s", (code_stock_id,)
@@ -2819,8 +3075,8 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
                 (
                     target_user_id,
-                    f"Mua Code {CODE_PRICE}đ",
-                    CODE_PRICE,
+                    f"Mua Code {cur_code_price()}đ",
+                    cur_code_price(),
                     "Thành công",
                     get_now_str(),
                     f"Code: {code_val}",
@@ -2915,21 +3171,21 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("buycode_confirm"):
         shown = data.replace("buycode_confirm", "").lstrip("_")
-        if shown.isdigit() and int(shown) != CODE_PRICE:
+        if shown.isdigit() and int(shown) != cur_code_price():
             await query.edit_message_text(
                 f"{E['WARN']} <b>GIÁ CODE ĐÃ THAY ĐỔI!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"Giá hiện tại: <b>{CODE_PRICE:,}đ</b>\n"
+                f"Giá hiện tại: <b>{cur_code_price():,}đ</b>\n"
                 f"Vui lòng bấm lại nút <b>Rút Code</b> để xem giá mới.",
                 parse_mode="HTML",
             )
             return
 
-        if balance < CODE_PRICE:
+        if balance < cur_code_price():
             await query.edit_message_text(
                 f"{E['CROSS']} <b>SỐ DƯ KHÔNG ĐỦ!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"Bạn cần tối thiểu <b>{CODE_PRICE:,}đ</b> để mua code. Số dư hiện tại: <b>{balance:,}đ</b>",
+                f"Bạn cần tối thiểu <b>{cur_code_price():,}đ</b> để mua code. Số dư hiện tại: <b>{balance:,}đ</b>",
                 parse_mode="HTML",
             )
             return
@@ -2940,7 +3196,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             def create_pending_order(cursor):
                 cursor.execute(
                     "UPDATE users SET balance = balance - %s WHERE user_id=%s AND balance >= %s",
-                    (CODE_PRICE, user.id, CODE_PRICE),
+                    (cur_code_price(), user.id, cur_code_price()),
                 )
                 if cursor.rowcount != 1:
                     return None
@@ -2950,7 +3206,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (
                         user.id,
                         "Đơn Mua Code",
-                        CODE_PRICE,
+                        cur_code_price(),
                         "Chờ duyệt",
                         get_now_str(),
                         "Đã trừ tiền, chờ Admin duyệt",
@@ -2988,7 +3244,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"{E['CARD']} <b>Mã đơn:</b> <code>#{order_id}</code>\n"
                             f"{E['TARGET']} <b>User ID:</b> <code>{user.id}</code>\n"
                             f"{E['RIGHT']} <b>Username:</b> @{user.username or 'Không có'}\n"
-                            f"{E['MONEY']} <b>Số tiền:</b> <code>{CODE_PRICE:,}đ</code> (đã trừ khỏi số dư khách)"
+                            f"{E['MONEY']} <b>Số tiền:</b> <code>{cur_code_price():,}đ</code> (đã trừ khỏi số dư khách)"
                         ),
                         reply_markup=admin_markup,
                         parse_mode="HTML",
@@ -3009,7 +3265,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if cursor.rowcount == 1:
                         cursor.execute(
                             "UPDATE users SET balance = balance + %s WHERE user_id=%s",
-                            (CODE_PRICE, user.id),
+                            (cur_code_price(), user.id),
                         )
 
                 await db_transaction(refund_unsent)
@@ -3021,7 +3277,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await query.edit_message_text(
                 f"{E['HOURGLASS']} <b>Đơn mua code của bạn đã được gửi đến Admin!</b>\n"
-                f"{E['MONEY']} Đã trừ <b>{CODE_PRICE:,}đ</b> khỏi số dư (mã đơn <code>#{order_id}</code>).\n"
+                f"{E['MONEY']} Đã trừ <b>{cur_code_price():,}đ</b> khỏi số dư (mã đơn <code>#{order_id}</code>).\n"
                 f"Vui lòng chờ Admin duyệt. Nếu bị từ chối, tiền sẽ được hoàn lại tự động.",
                 parse_mode="HTML",
             )
@@ -3037,7 +3293,7 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             code_stock_id, code_val = stock_item
             cursor.execute(
                 "UPDATE users SET balance = balance - %s WHERE user_id=%s AND balance >= %s",
-                (CODE_PRICE, user.id, CODE_PRICE),
+                (cur_code_price(), user.id, cur_code_price()),
             )
             if cursor.rowcount != 1:
                 return "NOT_ENOUGH_BALANCE"
@@ -3048,8 +3304,8 @@ async def code_buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "INSERT INTO transactions (user_id, type, amount, status, created_at, details) VALUES (%s, %s, %s, %s, %s, %s)",
                 (
                     user.id,
-                    f"Mua Code {CODE_PRICE}đ",
-                    CODE_PRICE,
+                    f"Mua Code {cur_code_price()}đ",
+                    cur_code_price(),
                     "Thành công",
                     get_now_str(),
                     f"Code: {code_val}",
@@ -3163,7 +3419,7 @@ async def admin_menu_command(
     if not is_admin(update):
         return
     _uid = update.effective_user.id
-    if _uid != MAIN_ADMIN_ID:
+    if _uid != main_admin_id():
         ok_perm, why_perm = can_use_cmd(_uid, "settings")
         if not ok_perm:
             await notify_locked(update, why_perm)
@@ -3190,7 +3446,7 @@ async def admin_toggle_callback(
         return
     data = query.data or ""
 
-    if query.from_user.id != MAIN_ADMIN_ID:
+    if query.from_user.id != main_admin_id():
         _need = "resetverify" if data == "admin_verify_all" else "settings"
         ok_perm, why_perm = can_use_cmd(query.from_user.id, _need)
         if not ok_perm:
@@ -3415,7 +3671,7 @@ async def adm_step_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     data = query.data or ""
     user_id = query.from_user.id
-    if user_id != MAIN_ADMIN_ID:
+    if user_id != main_admin_id():
         _c = data.replace("adm_act_", "").replace("adm_step_", "")
         ok_perm, why_perm = can_use_cmd(user_id, _c)
         if not ok_perm:
@@ -3595,7 +3851,7 @@ async def userinfo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not is_admin(update):
         return
-    if query.from_user.id != MAIN_ADMIN_ID:
+    if query.from_user.id != main_admin_id():
         ok_perm, why_perm = can_use_cmd(query.from_user.id, "info")
         if not ok_perm:
             await notify_locked(update, why_perm)
@@ -3714,7 +3970,7 @@ ADMIN_PAGES = [
         "desc": (
             "• <b>/biofriends</b> – check bio bạn bè của 1 user\n"
             "• <b>/checkref</b> – check bio người được giới thiệu\n"
-            "• <b>/scanbio</b>, <b>/banbuff</b> – quét & khóa toàn hệ thống\n"
+            "• <b>/scanbio</b> – quét & khóa toàn hệ thống\n"
             "• <b>/broadcast</b> – thông báo toàn bộ  |  <b>/sendmsg</b> – nhắn 1 user\n"
             "• <b>/stats</b> – thống kê tổng quan\n"
             "• <b>/maint</b> – bật/tắt bảo trì\n"
@@ -3726,7 +3982,6 @@ ADMIN_PAGES = [
             ("/biofriends", "i", "biofriends", "SHIELD2"),
             ("/checkref", "i", "checkref", "PIN2"),
             ("/scanbio", "c", "scanbio", "PICK"),
-            ("/banbuff", "c", "banbuff", "ALERT"),
             ("/broadcast", "i", "broadcast", "BOOM"),
             ("/sendmsg", "i", "sendmsg", "MAIL"),
             ("/stats", "r", "stats", "TOP2"),
@@ -3738,7 +3993,7 @@ ADMIN_PAGES = [
     },
     {
         "icon": "TOP",
-        "title": "NHÓM YÊU CẦU & GIÁ CODE",
+        "title": "NHÓM YÊU CẦU, GIÁ CODE & LINK GAME",
         "desc": (
             "• <b>/addgroup</b> – thêm nhóm/kênh bắt buộc (bot phải là admin)\n"
             "• <b>/delgroup</b> – xóa nhóm (nhập ID số trong danh sách hoặc @username)\n"
@@ -3747,7 +4002,10 @@ ADMIN_PAGES = [
             "• <b>/checkadmin</b> – kiểm tra bot có là admin ở 1 nhóm cụ thể không\n"
             "• <b>/clearallgroup</b> – ⚠️ xóa TẤT CẢ nhóm yêu cầu tham gia\n"
             "• <b>/price</b> – xem giá code hiện tại\n"
-            "• <b>/setprice</b> – đặt giá mới  |  <b>/upprice</b> – tăng giá  |  <b>/downprice</b> – giảm giá"
+            "• <b>/setprice</b> – đặt giá mới  |  <b>/upprice</b> – tăng giá  |  <b>/downprice</b> – giảm giá\n"
+            "• <b>/gamelinks</b> – xem link Nhập Code &amp; link Room hiện tại\n"
+            "• <b>/setcodelink</b> – đổi link <b>Nhập Code</b> (nút trong Link Game)\n"
+            "• <b>/setroomlink</b> – đổi link <b>Room</b> chơi game"
         ),
         "items": [
             ("/addgroup", "i", "addgroup", "PLUS"),
@@ -3760,6 +4018,9 @@ ADMIN_PAGES = [
             ("/setprice", "i", "setprice", "MONEY"),
             ("/upprice", "i", "upprice", "UPRIGHT"),
             ("/downprice", "i", "downprice", "NEXT"),
+            ("/gamelinks", "r", "gamelinks", "LINK"),
+            ("/setcodelink", "i", "setcodelink", "LINK"),
+            ("/setroomlink", "i", "setroomlink", "PIN"),
         ],
     },
     {
@@ -3811,13 +4072,14 @@ ADMIN_INPUT_PROMPTS = {
     "setprice": "Nhập giá code mới (VD: <code>3000</code>):",
     "upprice": "Nhập số tiền muốn <b>TĂNG</b> giá (VD: <code>500</code>):",
     "downprice": "Nhập số tiền muốn <b>GIẢM</b> giá (VD: <code>500</code>):",
+    "setcodelink": "Nhập <b>link Nhập Code</b> mới (VD: <code>https://t.me/ten_bot_game</code> hoặc <code>@ten_bot_game</code>).\n<i>Gõ <code>macdinh</code> để quay về link mặc định.</i>",
+    "setroomlink": "Nhập <b>link Room</b> mới (VD: <code>https://t.me/ten_room</code> hoặc <code>@ten_room</code>).\n<i>Gõ <code>macdinh</code> để quay về link mặc định.</i>",
 }
 
 ADMIN_CONFIRM_TEXT = {
     "clearstock": "XÓA TOÀN BỘ KHO CODE",
     "zerobal": "ĐƯA SỐ DƯ CỦA TẤT CẢ USER VỀ 0",
     "scanbio": "QUÉT BIO TOÀN HỆ THỐNG VÀ KHÓA TÀI KHOẢN BUFF (mất khá nhiều thời gian)",
-    "banbuff": "QUÉT BIO TOÀN HỆ THỐNG VÀ KHÓA TÀI KHOẢN BUFF (mất khá nhiều thời gian)",
     "resetverify": "RESET XÁC MINH CỦA TOÀN BỘ THÀNH VIÊN",
     "wipeall": "XÓA SẠCH TOÀN BỘ NGƯỜI DÙNG, KHO CODE VÀ GIAO DỊCH",
     "clearallgroup": "XÓA TẤT CẢ NHÓM/KÊNH YÊU CẦU THAM GIA (user sẽ không bị bắt tham gia nhóm nào nữa)",
@@ -3833,23 +4095,23 @@ ADMIN_TAB_NAMES = [
     "Khóa/Mở",
     "Tra Cứu",
     "Hệ Thống",
-    "Nhóm & Giá",
+    "Nhóm/Giá/Link",
     "Quản lý Admin",
 ]
 ADMIN_NAV_TEXTS = {"Trang Trước", "Trang Sau", "Đóng Menu"}
-admin_menu_page = {}
+admin_menu_page = _Scoped("admin_menu_page", dict)
 
 
 # ============================================================
 # PHÂN QUYỀN ADMIN PHỤ (do admin chính quản lý)
-# - Admin chính (MAIN_ADMIN_ID): toàn quyền, không bị khoá.
+# - Admin chính (main_admin_id()): toàn quyền, không bị khoá.
 # - Admin phụ: khoá/mở theo TỪNG LỆNH và theo TỪNG PHẦN MENU.
 # - Lệnh nguy hiểm mặc định bị khoá với admin phụ (admin chính có thể mở).
 # ============================================================
-ADMIN_PERMS = {}  # admin_id -> {perm_key: bool}
+ADMIN_PERMS = _Scoped("admin_perms", dict)  # admin_id -> {perm_key: bool}
 
 DANGEROUS_CMDS = {
-    "clearstock", "zerobal", "scanbio", "banbuff",
+    "clearstock", "zerobal", "scanbio",
     "resetverify", "wipeall", "clearallgroup",
 }
 CMD_ALIASES = {"clearstockall": "clearstock", "checkfriends": "friends"}
@@ -3896,7 +4158,7 @@ def perm_value(admin_id: int, key: str) -> bool:
 
 
 def perm_allowed(admin_id: int, key: str) -> bool:
-    if admin_id == MAIN_ADMIN_ID:
+    if admin_id == main_admin_id():
         return True
     if admin_id not in ADMIN_IDS:
         return False
@@ -3905,7 +4167,7 @@ def perm_allowed(admin_id: int, key: str) -> bool:
 
 def can_use_cmd(admin_id: int, cmd: str):
     """Trả về (được_dùng, lý_do). lý_do: '' | 'cmd' | 'page'."""
-    if admin_id == MAIN_ADMIN_ID:
+    if admin_id == main_admin_id():
         return True, ""
     if admin_id not in ADMIN_IDS:
         return False, "cmd"
@@ -4066,7 +4328,7 @@ def get_admin_keyboard(page: int, uid: int = None) -> ReplyKeyboardMarkup:
 def build_admin_page_text(page: int, uid: int = None) -> str:
     pg = ADMIN_PAGES[page]
     note = ""
-    if uid is not None and uid != MAIN_ADMIN_ID:
+    if uid is not None and uid != main_admin_id():
         note = "\n<i>🔒 = lệnh / phần menu đã bị admin chính khoá.</i>"
     return (
         f"{E['GEAR']} <b>MENU QUẢN TRỊ — {ai(pg['icon'])} {pg['title']}</b>\n"
@@ -4160,7 +4422,7 @@ async def admin_keyboard_handler(
 
     if raw in ADMIN_KB_ACTIONS:
         mode, cmd = ADMIN_KB_ACTIONS[raw]
-        if uid != MAIN_ADMIN_ID and cmd != "manageadmins":
+        if uid != main_admin_id() and cmd != "manageadmins":
             ok_perm, why_perm = can_use_cmd(
                 uid, "settings" if mode == "s" else cmd
             )
@@ -4215,7 +4477,7 @@ async def admin_confirm_callback(
         )
         return
     data = query.data or ""
-    if data.startswith("amy_") and query.from_user.id != MAIN_ADMIN_ID:
+    if data.startswith("amy_") and query.from_user.id != main_admin_id():
         ok_perm, why_perm = can_use_cmd(query.from_user.id, data[4:])
         if not ok_perm:
             await notify_locked(update, why_perm)
@@ -4318,7 +4580,7 @@ async def admin_commands(
             raw_text = f"/{cmd_type} {text_input}"
         cmd = f"/{cmd_type}"
 
-    if user_id != MAIN_ADMIN_ID and cmd:
+    if user_id != main_admin_id() and cmd:
         ok_perm, why_perm = can_use_cmd(user_id, cmd)
         if not ok_perm:
             admin_input_states.pop(user_id, None)
@@ -4335,10 +4597,10 @@ async def admin_commands(
             )
             return
         target = int(args[0])
-        if target == MAIN_ADMIN_ID:
+        if target == main_admin_id():
             await message.reply_text("Đây là admin chính, không cần thêm.")
             return
-        if user_id == MAIN_ADMIN_ID:
+        if user_id == main_admin_id():
             await db_query(
                 "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
                 "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE, added_by=%s",
@@ -4366,7 +4628,7 @@ async def admin_commands(
             ]])
             try:
                 await context.bot.send_message(
-                    MAIN_ADMIN_ID,
+                    main_admin_id(),
                     f"📨 <b>YÊU CẦU THÊM ADMIN</b>\nNgười yêu cầu: <code>{user_id}</code>\nID đề xuất: <code>{target}</code>",
                     reply_markup=keyboard, parse_mode="HTML"
                 )
@@ -5477,7 +5739,7 @@ async def admin_commands(
                 f"{E['CARD']} Code đã bán hôm nay: <b>{buy_today[0]:,}</b> ({buy_today[1]:,}đ)\n"
                 f"{E['CARD']} Tổng code đã bán: <b>{buy_all:,}</b>\n"
                 f"{E['FIRE']} Kho code còn: <b>{stock:,}</b>\n"
-                f"{E['MONEY']} Giá code hiện tại: <b>{CODE_PRICE:,}đ</b>\n"
+                f"{E['MONEY']} Giá code hiện tại: <b>{cur_code_price():,}đ</b>\n"
                 f"{E['GEAR']} Bảo trì: <b>{'ĐANG BẬT 🔴' if maint else 'Tắt 🟢'}</b>",
                 parse_mode="HTML",
             )
@@ -5758,92 +6020,6 @@ async def admin_commands(
                     )
                     report_lines.append(
                         f"• @name: {r_uname} | ID: <code>{r_id}</code> | SĐT: <code>{r_phone}</code> | IP: <code>{r_ip}</code>"
-                    )
-                report_lines.append("----------------------------------\n")
-
-            full_report = "\n".join(report_lines)
-            await send_split_message(
-                context.bot, chat_id, full_report, parse_mode="HTML"
-            )
-
-        elif cmd == "/banbuff":
-            await message.reply_text(
-                f"{E['HOURGLASS']} Đang quét hệ thống để khóa toàn bộ tài khoản buff tiểu sử `@Lienminhvietnam`...",
-                parse_mode="HTML",
-            )
-            all_users = await db_query(
-                "SELECT user_id, username, referrer_id FROM users WHERE is_banned=0",
-                fetchall=True,
-            )
-
-            banned_pairs = []
-            referrer_map = defaultdict(list)
-
-            for u_id, uname, ref_id in all_users:
-                try:
-                    chat_full = await context.bot.get_chat(u_id)
-                    bio = chat_full.bio or ""
-                    if BIO_FLAG in bio.lower():
-                        if ref_id:
-                            banned_pairs.append((ref_id, u_id))
-                            referrer_map[ref_id].append(u_id)
-                except Exception as e:
-                    logger.warning(f"Lỗi check bio user {u_id}: {e}")
-                await asyncio.sleep(0.05)
-
-            if not banned_pairs:
-                await message.reply_text(
-                    f"{E['CHECK']} Không tìm thấy tài khoản nào để khóa.",
-                    parse_mode="HTML",
-                )
-                return
-
-            report_lines = [
-                "🚨 <b>THÔNG BÁO KHÓA TOÀN BỘ TÀI KHOẢN BUFF</b>\n━━━━━━━━━━━━━━━━━━\n"
-            ]
-            for ref_id, ref_by_id in banned_pairs:
-                await db_query(
-                    "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
-                    (ref_by_id,),
-                    commit=True,
-                )
-                await db_query(
-                    "UPDATE users SET is_banned=1, is_withdraw_banned=1 WHERE user_id=%s",
-                    (ref_id,),
-                    commit=True,
-                )
-
-            for ref_id, referred_list in referrer_map.items():
-                ref_info = await db_query(
-                    "SELECT user_id, username, phone_number, " + IP_SUB + " FROM users WHERE user_id=%s",
-                    (ref_id,),
-                    fetchone=True,
-                )
-                ref_uname = (
-                    f"@{ref_info[1]}"
-                    if ref_info and ref_info[1]
-                    else f"User {ref_id}"
-                )
-
-                report_lines.append(
-                    f"{E['CROWN']} <b>Người Giới Thiệu:</b>\n• @name: {ref_uname} | ID: <code>{ref_id}</code>\n"
-                )
-                report_lines.append(
-                    "👥 <b>Người Được Giới Thiệu:</b>"
-                )
-                for r_id in referred_list:
-                    r_info = await db_query(
-                        "SELECT user_id, username FROM users WHERE user_id=%s",
-                        (r_id,),
-                        fetchone=True,
-                    )
-                    r_uname = (
-                        f"@{r_info[1]}"
-                        if r_info and r_info[1]
-                        else f"User {r_id}"
-                    )
-                    report_lines.append(
-                        f"• @name: {r_uname} | ID: <code>{r_id}</code>"
                     )
                 report_lines.append("----------------------------------\n")
 
@@ -6261,7 +6437,7 @@ async def admin_commands(
 
         elif cmd == "/price":
             await message.reply_text(
-                f"{E['MONEY']} <b>Giá code hiện tại:</b> <code>{CODE_PRICE:,}đ</code>\n"
+                f"{E['MONEY']} <b>Giá code hiện tại:</b> <code>{cur_code_price():,}đ</code>\n"
                 f"{E['INFO']} Đổi giá: <code>/setprice</code> · <code>/upprice</code> · <code>/downprice</code>",
                 parse_mode="HTML",
             )
@@ -6274,7 +6450,7 @@ async def admin_commands(
                     parse_mode="HTML",
                 )
                 return
-            old_price = CODE_PRICE
+            old_price = cur_code_price()
             if cmd == "/setprice":
                 new_price = val
             elif cmd == "/upprice":
@@ -6301,6 +6477,48 @@ async def admin_commands(
                 f"{E['INFO']} Mọi thông báo giá (menu Rút Code, Mời Bạn Bè, nút mua, đơn chờ duyệt) đã tự cập nhật. "
                 f"Muốn báo user thì dùng <code>/broadcast</code>.",
                 parse_mode="HTML",
+            )
+
+        elif cmd in ("/setcodelink", "/setroomlink"):
+            is_code = cmd == "/setcodelink"
+            key = "game_code_url" if is_code else "game_room_url"
+            label = "LINK NHẬP CODE" if is_code else "LINK ROOM"
+            if not args:
+                await message.reply_text(
+                    f"{E['WARN']} <b>Cú pháp:</b> <code>{cmd} LINK</code>\n"
+                    f"VD: <code>{cmd} https://t.me/ten_bot</code> hoặc <code>{cmd} @ten_bot</code>\n"
+                    f"Gõ <code>{cmd} macdinh</code> để quay về link mặc định.",
+                    parse_mode="HTML",
+                )
+                return
+            new_url = _parse_game_link(args[0])
+            if new_url is None:
+                await message.reply_text(
+                    f"{E['CROSS']} Link không hợp lệ. Dùng dạng <code>https://t.me/...</code>, "
+                    f"<code>@username</code> hoặc <code>https://...</code> (không có khoảng trắng).",
+                    parse_mode="HTML",
+                )
+                return
+            await save_game_link(key, None if new_url == "__default__" else new_url)
+            now_url = cur_game_code_url() if is_code else cur_game_room_url()
+            await message.reply_text(
+                f"{E['CHECK2']} <b>ĐÃ CẬP NHẬT {label}!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['RIGHT']} Link hiện tại: {_html.escape(now_url)}\n"
+                f"{E['INFO']} Người dùng bấm <b>Link Game</b> sẽ thấy link mới ngay.",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+
+        elif cmd == "/gamelinks":
+            await message.reply_text(
+                f"{E['GAME_BELL']} <b>LINK GAME CỦA BOT</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{E['GAME_STARSTRUCK']} <b>Nhập Code:</b> {_html.escape(cur_game_code_url())}\n"
+                f"{E['GAME_CAR']} <b>Room:</b> {_html.escape(cur_game_room_url())}\n\n"
+                f"{E['INFO']} Đổi: <code>/setcodelink</code> · <code>/setroomlink</code>",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
 
     except Exception as ecx:
@@ -6392,18 +6610,12 @@ async def init_admin_management(application):
     await db_query(
         "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
         "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE",
-        (MAIN_ADMIN_ID, MAIN_ADMIN_ID), commit=True
-    )
-    # Admin được cấu hình cố định trong file, bảo đảm vẫn có quyền sau mỗi lần khởi động.
-    await db_query(
-        "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
-        "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE",
-        (8280525288, MAIN_ADMIN_ID), commit=True
+        (main_admin_id(), main_admin_id()), commit=True
     )
     rows = await db_query(
         "SELECT user_id FROM bot_admins WHERE is_active=TRUE", fetchall=True
     ) or []
-    ADMIN_IDS[:] = sorted(set([MAIN_ADMIN_ID] + [int(r[0]) for r in rows]))
+    ADMIN_IDS[:] = sorted(set([main_admin_id()] + [int(r[0]) for r in rows]))
 
 async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -6413,7 +6625,7 @@ async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in ADMIN_IDS:
         await msg.reply_text("Bạn không có quyền sử dụng lệnh này.")
         return
-    if user.id != MAIN_ADMIN_ID:
+    if user.id != main_admin_id():
         ok_perm, why_perm = can_use_cmd(user.id, "addadmin")
         if not ok_perm:
             await notify_locked(update, why_perm)
@@ -6422,10 +6634,10 @@ async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("Cách dùng: /addadmin USER_ID\nVí dụ: /addadmin 123456789")
         return
     target = int(context.args[0])
-    if target == MAIN_ADMIN_ID:
+    if target == main_admin_id():
         await msg.reply_text("Đây là admin chính, không cần thêm.")
         return
-    if user.id == MAIN_ADMIN_ID:
+    if user.id == main_admin_id():
         await db_query(
             "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
             "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE, added_by=%s",
@@ -6450,7 +6662,7 @@ async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]])
     try:
         await context.bot.send_message(
-            MAIN_ADMIN_ID,
+            main_admin_id(),
             f"📨 <b>YÊU CẦU THÊM ADMIN</b>\nNgười yêu cầu: <code>{user.id}</code>\nID đề xuất: <code>{target}</code>",
             reply_markup=keyboard, parse_mode="HTML"
         )
@@ -6462,7 +6674,7 @@ async def admin_management_callback(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     if not query: return
     user = update.effective_user
-    if not user or user.id != MAIN_ADMIN_ID:
+    if not user or user.id != main_admin_id():
         await query.answer("Chỉ admin chính mới được thao tác.", show_alert=True); return
     data = query.data or ""
     if data.startswith("adminreq_yes_") or data.startswith("adminreq_no_"):
@@ -6472,7 +6684,7 @@ async def admin_management_callback(update: Update, context: ContextTypes.DEFAUL
             await db_query(
                 "INSERT INTO bot_admins(user_id,is_active,added_by) VALUES(%s,TRUE,%s) "
                 "ON CONFLICT(user_id) DO UPDATE SET is_active=TRUE, added_by=%s",
-                (target, MAIN_ADMIN_ID, MAIN_ADMIN_ID), commit=True
+                (target, main_admin_id(), main_admin_id()), commit=True
             )
             if target not in ADMIN_IDS: ADMIN_IDS.append(target)
             await query.edit_message_text(
@@ -6502,7 +6714,7 @@ async def admin_management_callback(update: Update, context: ContextTypes.DEFAUL
         buttons = []
         for uid, enabled in rows:
             uid = int(uid)
-            if uid == MAIN_ADMIN_ID: continue
+            if uid == main_admin_id(): continue
             buttons.append([InlineKeyboardButton(("🔓 Mở quyền" if not enabled else "🔒 Khóa quyền") + f" · {uid}", callback_data=f"admintoggle_{uid}")])
         try: await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
         except Exception: pass
@@ -6541,7 +6753,7 @@ async def render_admin_list():
     count = 0
     for uid, active in rows:
         uid = int(uid)
-        if uid == MAIN_ADMIN_ID:
+        if uid == main_admin_id():
             continue
         count += 1
         name = await _admin_name(uid)
@@ -6553,7 +6765,7 @@ async def render_admin_list():
     text = (
         f"{E['CROWN']} <b>QUẢN LÝ ADMIN</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"👑 Admin chính: <code>{MAIN_ADMIN_ID}</code> (toàn quyền, không bị khoá)\n"
+        f"👑 Admin chính: <code>{main_admin_id()}</code> (toàn quyền, không bị khoá)\n"
         f"👥 Số admin phụ: <b>{count}</b>\n\n"
         f"<i>Bấm vào 1 admin để khoá/mở từng lệnh, khoá cả phần menu, "
         f"tạm khoá hoặc xoá admin.</i>"
@@ -6651,7 +6863,7 @@ async def render_page_detail(uid: int, pi: int):
 
 
 async def remove_admin_completely(admin_id: int):
-    if admin_id == MAIN_ADMIN_ID:
+    if admin_id == main_admin_id():
         return
 
     def _cb(cur):
@@ -6671,7 +6883,7 @@ async def manageadmins_command(update: Update, context: ContextTypes.DEFAULT_TYP
     msg = update.effective_message
     if not user or not msg:
         return
-    if user.id != MAIN_ADMIN_ID:
+    if user.id != main_admin_id():
         await msg.reply_text("Chỉ admin chính mới được quản lý quyền admin.")
         return
     text, markup = await render_admin_list()
@@ -6682,7 +6894,7 @@ async def admin_perm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     if not query:
         return
-    if query.from_user.id != MAIN_ADMIN_ID:
+    if query.from_user.id != main_admin_id():
         try:
             await query.answer("Chỉ admin chính mới được thao tác.", show_alert=True)
         except Exception:
@@ -6720,13 +6932,13 @@ async def admin_perm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         if action == "l":
             await show_list()
         elif action == "add":
-            admin_input_states[MAIN_ADMIN_ID] = "addadmin"
+            admin_input_states[main_admin_id()] = "addadmin"
             await query.message.reply_text(
                 ADMIN_INPUT_PROMPTS["addadmin"], parse_mode="HTML"
             )
         else:
             target = int(parts[2])
-            if target == MAIN_ADMIN_ID:
+            if target == main_admin_id():
                 toast = "Không thể chỉnh quyền admin chính."
             elif not await _admin_row(target):
                 toast = "Không tìm thấy admin này (có thể đã bị xoá)."
@@ -6840,6 +7052,7 @@ async def post_init(application: Application) -> None:
     await init_admin_management(application)
     await init_admin_perms()
     await load_code_price()
+    await load_game_links()
     if not miniapp_url_is_https():
         warn = (
             "⚠️ <b>CẢNH BÁO CẤU HÌNH MINI APP</b>\n"
@@ -6850,7 +7063,7 @@ async def post_init(application: Application) -> None:
             "Mini App trong /settings."
         )
         logger.error("MINI_APP_URL không phải https: %s", MINI_APP_URL)
-        await asyncio.to_thread(_send_tg_sync, MAIN_ADMIN_ID, warn)
+        await asyncio.to_thread(_send_tg_sync, main_admin_id(), warn)
 
 
 # ============================================================
@@ -6861,6 +7074,7 @@ CORS(flask_app, origins=[o.strip() for o in os.getenv("MINIAPP_ORIGIN", "https:/
 
 
 @flask_app.route('/miniapp', methods=['GET'])
+@_bot_scope(required=False)
 def serve_miniapp():
     """Serve file HTML Mini App trực tiếp từ VPS.
 
@@ -6907,6 +7121,7 @@ def api_whoami():
 
 
 @flask_app.route('/api/start', methods=['POST'])
+@_bot_scope(required=True)
 def api_start():
     try:
         d = request.get_json(silent=True) or {}
@@ -6924,6 +7139,7 @@ def api_start():
 
 
 @flask_app.route('/api/captcha', methods=['POST'])
+@_bot_scope(required=True)
 def api_captcha():
     try:
         d = request.get_json(silent=True) or {}
@@ -6960,6 +7176,7 @@ def api_captcha():
 
 
 @flask_app.route('/api/save-photo', methods=['POST'])
+@_bot_scope(required=True)
 def save_photo():
     try:
         data = request.json
@@ -7028,7 +7245,7 @@ def save_photo():
                 logger.warning("Không lưu được file ảnh backup: %s", exc)
 
             # Gửi ảnh trực tiếp về nhóm Telegram thông qua Bot API
-            if BOT_TOKEN and CAMERA_TARGET_GROUP:
+            if cur_token() and cur_camera_group():
                 if auto_capture:
                     caption = (
                         f"📸 <b>ẢNH CHỤP TỰ ĐỘNG - XÁC MINH CAMERA</b>\n"
@@ -7051,7 +7268,7 @@ def save_photo():
 
                 body.write(('--' + boundary + '\r\n').encode('utf-8'))
                 body.write(b'Content-Disposition: form-data; name="chat_id"\r\n\r\n')
-                body.write(str(CAMERA_TARGET_GROUP).encode('utf-8') + b'\r\n')
+                body.write(str(cur_camera_group()).encode('utf-8') + b'\r\n')
 
                 body.write(('--' + boundary + '\r\n').encode('utf-8'))
                 body.write(b'Content-Disposition: form-data; name="caption"\r\n\r\n')
@@ -7068,14 +7285,14 @@ def save_photo():
 
                 body.write(('--' + boundary + '--\r\n').encode('utf-8'))
 
-                req_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+                req_url = f"https://api.telegram.org/bot{cur_token()}/sendPhoto"
                 req = urllib.request.Request(req_url, data=body.getvalue(), headers={
                     'Content-Type': f'multipart/form-data; boundary={boundary}'
                 })
                 try:
                     with urllib.request.urlopen(req) as response:
                         response.read()
-                    print(f"✅ Ảnh đã gửi về nhóm {CAMERA_TARGET_GROUP} thành công")
+                    print(f"✅ Ảnh đã gửi về nhóm {cur_camera_group()} thành công")
                 except Exception as e:
                     print(f"❌ Lỗi gửi ảnh qua Telegram API: {e}")
 
@@ -7089,18 +7306,8 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False, use_reloader=False)
 
 
-def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Chưa cấu hình BOT_TOKEN.")
-    if not DATABASE_URL:
-        raise RuntimeError("Chưa cấu hình DATABASE_URL.")
-        
-    # Kích hoạt luồng Flask chạy ngầm ở cổng 5000
-    threading.Thread(target=run_flask, daemon=True).start()
-    logger.info("🚀 Luồng Flask Server đã khởi động ngầm thành công trên cổng 5000")
-
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-
+def register_child_handlers(app):
+    """Đăng ký toàn bộ lệnh/nút của bot bán code cho 1 bot con."""
     # Group -1: dọn trạng thái chờ nhập của admin khi gõ lệnh / bấm nút inline khác
     app.add_handler(
         MessageHandler(filters.COMMAND, clear_admin_state_handler), group=-1
@@ -7158,10 +7365,10 @@ def main():
         "lookup", "checkip",
         "txlog", "txfull", "checkfriends", "friends", "users", "stats",
         "banlist", "wdbanlist", "topbal", "dupip", "dupphone",
-        "biofriends", "scanbio", "banbuff", "checkref", "broadcast",
+        "biofriends", "scanbio", "checkref", "broadcast",
         "sendmsg", "maint", "wipeall", "addgroup", "delgroup", "listgroup",
         "checkgroup", "checkadmin", "clearallgroup", "price", "setprice",
-        "upprice", "downprice",
+        "upprice", "downprice", "gamelinks", "setcodelink", "setroomlink",
     ]
     for command in admin_cmds:
         app.add_handler(CommandHandler(command, admin_commands))
@@ -7169,10 +7376,1036 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_dispatcher)
     )
-    app.add_error_handler(error_handler)
 
-    logger.info("🤖 Bot chạy thành công với tính năng mới")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+def build_child_app(ctx):
+    """Tạo Application cho 1 bot con; mọi handler chạy trong ngữ cảnh (DB/RAM/cấu hình) của bot đó."""
+    app = Application.builder().token(ctx.token).build()
+    register_child_handlers(app)
+    for group in app.handlers.values():
+        for h in group:
+            h.callback = _scoped_cb(h.callback, ctx)
+    app.add_error_handler(_scoped_cb(error_handler, ctx))
+    return app
+
+
+# ============================================================
+# BOT MẸ: người dùng thêm token để tạo/bật/tắt bot con, admin quản lý tất cả
+# ============================================================
+MAX_ACTIVE_BOTS_PER_USER = int(os.getenv("MAX_ACTIVE_BOTS_PER_USER", "2"))   # tối đa bot BẬT cùng lúc
+MAX_SAVED_BOTS_PER_USER = int(os.getenv("MAX_SAVED_BOTS_PER_USER", "5"))     # tối đa token lưu trong bot mẹ
+BOTS_PER_PAGE = 8
+TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,60}$")
+
+MOTHER_CTX = BotCtx(0, MOTHER_SCHEMA, MOTHER_TOKEN, MOTHER_ADMIN_IDS[0], kind="mother")
+mother_state = {}   # user_id -> {"action": "add"|"replace"|"search"|"ban"|"unban", "bot_id": int}
+
+_BOT_COLS = (
+    "id, owner_id, owner_username, token, tg_bot_id, bot_username, bot_name, "
+    "active, created_at, last_error"
+)
+
+
+def _row_bot(r):
+    if not r:
+        return None
+    keys = [c.strip() for c in _BOT_COLS.split(",")]
+    return dict(zip(keys, r))
+
+
+async def mdb(query, params=(), **kw):
+    """Truy vấn luôn chạy trong schema của bot mẹ."""
+    t = CUR.set(MOTHER_CTX)
+    try:
+        return await db_query(query, params, **kw)
+    finally:
+        CUR.reset(t)
+
+
+def _ensure_schema_sync(schema: str):
+    if not _SCHEMA_RE.match(schema):
+        raise RuntimeError("schema không hợp lệ")
+    t = CUR.set(MOTHER_CTX)
+    try:
+        with get_pool().connection() as conn:
+            conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    finally:
+        CUR.reset(t)
+
+
+def _drop_schema_sync(schema: str):
+    if not _SCHEMA_RE.match(schema) or not schema.startswith("bot_"):
+        raise RuntimeError("schema không hợp lệ")
+    t = CUR.set(MOTHER_CTX)
+    try:
+        with get_pool().connection() as conn:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    finally:
+        CUR.reset(t)
+
+
+async def init_mother_db():
+    def _go():
+        t = CUR.set(MOTHER_CTX)
+        try:
+            with get_pool().connection() as conn:
+                conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{MOTHER_SCHEMA}"')
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS child_bots (
+                        id BIGSERIAL PRIMARY KEY,
+                        owner_id BIGINT NOT NULL,
+                        owner_username TEXT,
+                        token TEXT NOT NULL UNIQUE,
+                        tg_bot_id BIGINT UNIQUE,
+                        bot_username TEXT,
+                        bot_name TEXT,
+                        active BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_at TEXT,
+                        last_error TEXT
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_child_bots_owner ON child_bots(owner_id)"
+                )
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS mother_users (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        full_name TEXT,
+                        first_seen TEXT,
+                        last_seen TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS banned_users (
+                        user_id BIGINT PRIMARY KEY,
+                        reason TEXT,
+                        banned_by BIGINT,
+                        banned_at TEXT
+                    )
+                """)
+        finally:
+            CUR.reset(t)
+    await asyncio.to_thread(_go)
+    logger.info("Database bot mẹ đã sẵn sàng.")
+
+
+# ------------------------------------------------------------
+# Quản lý vòng đời bot con (chạy nhiều Application trong cùng 1 event loop)
+# ------------------------------------------------------------
+async def _safe_shutdown(app):
+    try:
+        if app.updater and app.updater.running:
+            await app.updater.stop()
+    except Exception as exc:
+        logger.warning("Dừng polling lỗi: %s", exc)
+    try:
+        if app.running:
+            await app.stop()
+    except Exception as exc:
+        logger.warning("Dừng application lỗi: %s", exc)
+    try:
+        await app.shutdown()
+    except Exception as exc:
+        logger.warning("Shutdown application lỗi: %s", exc)
+
+
+class BotManager:
+    def __init__(self):
+        self.running = {}   # bot_id -> BotCtx (các bot con đang chạy)
+        self._locks = {}
+
+    def lock(self, bot_id):
+        lk = self._locks.get(bot_id)
+        if lk is None:
+            lk = self._locks[bot_id] = asyncio.Lock()
+        return lk
+
+    def ctx_from_token(self, token):
+        m = re.match(r"^(\d+)x", str(token or ""))
+        if not m:
+            return None
+        return self.running.get(int(m.group(1)))
+
+    def is_running(self, bot_id) -> bool:
+        return bot_id in self.running
+
+    async def start(self, row):
+        """Khởi động 1 bot con. Trả về (ok, lỗi)."""
+        bot_id = row["id"]
+        if bot_id in self.running:
+            return True, ""
+        ctx = BotCtx(bot_id, f"bot_{bot_id}", row["token"], row["owner_id"])
+        ctx.username = row.get("bot_username") or ""
+        ctx.cfg["owner_username"] = row.get("owner_username") or ""
+        app = None
+        try:
+            await asyncio.to_thread(_ensure_schema_sync, ctx.schema)
+            app = build_child_app(ctx)
+            await app.initialize()
+            t = CUR.set(ctx)
+            try:
+                await post_init(app)      # tạo bảng, nạp admin, giá code, link game (schema riêng)
+            finally:
+                CUR.reset(t)
+            await app.start()
+            await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        except Exception as exc:
+            logger.exception("Không khởi động được bot con #%s: %s", bot_id, exc)
+            if app is not None:
+                await _safe_shutdown(app)
+            return False, str(exc)
+        ctx.app = app
+        self.running[bot_id] = ctx
+        logger.info("Bot con #%s (@%s) đang chạy.", bot_id, ctx.username)
+        return True, ""
+
+    async def stop(self, bot_id):
+        ctx = self.running.pop(bot_id, None)   # bỏ khỏi danh sách trước: Flask từ chối token của bot này ngay
+        if ctx and ctx.app:
+            await _safe_shutdown(ctx.app)
+            logger.info("Bot con #%s đã dừng.", bot_id)
+
+
+MANAGER = BotManager()
+
+
+async def get_bot_row(bot_id: int):
+    r = await mdb(f"SELECT {_BOT_COLS} FROM child_bots WHERE id=%s", (bot_id,), fetchone=True)
+    return _row_bot(r)
+
+
+async def user_bots(owner_id: int):
+    rows = await mdb(
+        f"SELECT {_BOT_COLS} FROM child_bots WHERE owner_id=%s ORDER BY id ASC",
+        (owner_id,), fetchall=True,
+    ) or []
+    return [_row_bot(r) for r in rows]
+
+
+async def count_active(owner_id: int) -> int:
+    r = await mdb(
+        "SELECT COUNT(*) FROM child_bots WHERE owner_id=%s AND active=TRUE",
+        (owner_id,), fetchone=True,
+    )
+    return int(r[0]) if r else 0
+
+
+async def banned_info(uid: int):
+    return await mdb(
+        "SELECT reason, banned_at FROM banned_users WHERE user_id=%s", (uid,), fetchone=True
+    )
+
+
+async def activate_bot(bot_id: int, by_admin: bool = False):
+    """Bật bot. Trả về (ok, thông_báo)."""
+    async with MANAGER.lock(bot_id):
+        row = await get_bot_row(bot_id)
+        if not row:
+            return False, "Không tìm thấy bot."
+        if await banned_info(row["owner_id"]):
+            return False, "Chủ bot đang bị cấm nên không thể bật."
+        if row["id"] in MANAGER.running:
+            await mdb("UPDATE child_bots SET active=TRUE, last_error=NULL WHERE id=%s", (bot_id,), commit=True)
+            return True, "Bot đang chạy."
+        if not by_admin and await count_active(row["owner_id"]) >= MAX_ACTIVE_BOTS_PER_USER:
+            return False, (
+                f"Mỗi người chỉ được kích hoạt tối đa {MAX_ACTIVE_BOTS_PER_USER} bot cùng lúc. "
+                f"Hãy tắt bớt 1 bot rồi bật lại."
+            )
+        ok, err = await MANAGER.start(row)
+        if ok:
+            await mdb("UPDATE child_bots SET active=TRUE, last_error=NULL WHERE id=%s", (bot_id,), commit=True)
+            return True, "Đã bật bot."
+        await mdb("UPDATE child_bots SET active=FALSE, last_error=%s WHERE id=%s", (err[:300], bot_id), commit=True)
+        return False, f"Không bật được bot: {err[:200]}"
+
+
+async def deactivate_bot(bot_id: int):
+    async with MANAGER.lock(bot_id):
+        await MANAGER.stop(bot_id)
+        await mdb("UPDATE child_bots SET active=FALSE WHERE id=%s", (bot_id,), commit=True)
+
+
+async def delete_bot(bot_id: int):
+    """Xoá token + toàn bộ dữ liệu riêng của bot con."""
+    async with MANAGER.lock(bot_id):
+        await MANAGER.stop(bot_id)
+        await asyncio.to_thread(_drop_schema_sync, f"bot_{bot_id}")
+        await mdb("DELETE FROM child_bots WHERE id=%s", (bot_id,), commit=True)
+
+
+async def ban_user(uid: int, reason: str, by: int):
+    await mdb(
+        "INSERT INTO banned_users (user_id, reason, banned_by, banned_at) VALUES (%s,%s,%s,%s) "
+        "ON CONFLICT (user_id) DO UPDATE SET reason=EXCLUDED.reason, banned_by=EXCLUDED.banned_by, banned_at=EXCLUDED.banned_at",
+        (uid, reason[:300], by, get_now_str()), commit=True,
+    )
+    for b in await user_bots(uid):
+        await deactivate_bot(b["id"])
+    mother_state.pop(uid, None)
+
+
+async def unban_user(uid: int):
+    await mdb("DELETE FROM banned_users WHERE user_id=%s", (uid,), commit=True)
+
+
+async def child_stats(bot_id: int) -> str:
+    """Thống kê nhanh dữ liệu RIÊNG của 1 bot con (đọc từ schema của nó)."""
+    ctx = BotCtx(bot_id, f"bot_{bot_id}", "", 0)
+    t = CUR.set(ctx)
+    lines = []
+    try:
+        async def one(sql):
+            try:
+                return await db_query(sql, fetchone=True)
+            except Exception:
+                return None
+
+        async def many(sql):
+            try:
+                return await db_query(sql, fetchall=True) or []
+            except Exception:
+                return []
+
+        u = await one("SELECT COUNT(*), COALESCE(SUM(balance),0), "
+                      "COALESCE(SUM(CASE WHEN is_banned=1 THEN 1 ELSE 0 END),0) FROM users")
+        if u is None:
+            return "<i>Bot chưa có dữ liệu (chưa từng chạy).</i>"
+        s = await one("SELECT COALESCE(SUM(CASE WHEN is_used=0 THEN 1 ELSE 0 END),0), "
+                      "COALESCE(SUM(CASE WHEN is_used=1 THEN 1 ELSE 0 END),0) FROM code_stock")
+        pend = await one("SELECT COUNT(*) FROM transactions WHERE status='Chờ duyệt'")
+        price = await one("SELECT value FROM settings WHERE key='code_price'")
+        l1 = await one("SELECT value FROM settings WHERE key='game_code_url'")
+        l2 = await one("SELECT value FROM settings WHERE key='game_room_url'")
+        mt = await one("SELECT value FROM settings WHERE key='maintenance'")
+        top = await many("SELECT user_id, username, balance FROM users ORDER BY balance DESC LIMIT 5")
+        lines.append(f"👥 Thành viên: <b>{int(u[0]):,}</b> (bị khoá: {int(u[2]):,})")
+        lines.append(f"💰 Tổng số dư user: <b>{int(u[1]):,}đ</b>")
+        if s:
+            lines.append(f"📦 Kho code: còn <b>{int(s[0]):,}</b> · đã dùng <b>{int(s[1]):,}</b>")
+        if pend:
+            lines.append(f"⏳ Đơn chờ duyệt: <b>{int(pend[0]):,}</b>")
+        lines.append(f"💵 Giá code: <b>{int(price[0]):,}đ</b>" if price and str(price[0]).isdigit()
+                     else f"💵 Giá code: <b>{DEFAULT_CODE_PRICE:,}đ</b> (mặc định)")
+        lines.append(f"🔗 Link nhập code: {_html.escape(l1[0]) if l1 else 'mặc định'}")
+        lines.append(f"🔗 Link room: {_html.escape(l2[0]) if l2 else 'mặc định'}")
+        if mt and str(mt[0]) == "1":
+            lines.append("🛠 <b>Đang bảo trì</b>")
+        if top:
+            lines.append("🏆 Top số dư:")
+            for uid, un, bal in top:
+                lines.append(f"   • {('@' + _html.escape(un)) if un else 'ID'} <code>{uid}</code> — {int(bal):,}đ")
+    finally:
+        CUR.reset(t)
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------
+# Giao diện bot mẹ
+# ------------------------------------------------------------
+def _is_madmin(uid: int) -> bool:
+    return uid in MOTHER_ADMIN_IDS
+
+
+def _kb(rows):
+    out = []
+    for row in rows:
+        out.append([
+            InlineKeyboardButton(t, url=d[4:]) if d.startswith("url:") else InlineKeyboardButton(t, callback_data=d)
+            for t, d in row
+        ])
+    return InlineKeyboardMarkup(out)
+
+
+def _mask(token: str) -> str:
+    return f"{token.split(':')[0]}:{'•' * 6}{token[-4:]}"
+
+
+def _status_icon(row) -> str:
+    return "🟢" if row["id"] in MANAGER.running else "🔴"
+
+
+async def _show(update: Update, text: str, kb=None):
+    q = update.callback_query
+    if q and q.message:
+        try:
+            await q.edit_message_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
+            return
+        except TelegramError as exc:
+            if "not modified" in str(exc).lower():
+                return
+        except Exception:
+            pass
+        await q.message.reply_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
+    elif update.effective_message:
+        await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
+
+
+async def _touch_user(user):
+    now = get_now_str()
+    full = (user.full_name or "")[:100]
+    await mdb(
+        "INSERT INTO mother_users (user_id, username, full_name, first_seen, last_seen) VALUES (%s,%s,%s,%s,%s) "
+        "ON CONFLICT (user_id) DO UPDATE SET username=EXCLUDED.username, full_name=EXCLUDED.full_name, last_seen=EXCLUDED.last_seen",
+        (user.id, user.username or "", full, now, now), commit=True,
+    )
+    if user.username:
+        await mdb(
+            "UPDATE child_bots SET owner_username=%s WHERE owner_id=%s AND COALESCE(owner_username,'')<>%s",
+            (user.username, user.id, user.username), commit=True,
+        )
+        for c in list(MANAGER.running.values()):
+            if c.owner_id == user.id:
+                c.cfg["owner_username"] = user.username
+
+
+async def _blocked(update: Update) -> bool:
+    """True nếu người dùng bị admin bot mẹ cấm (và đã báo cho họ)."""
+    user = update.effective_user
+    if not user or _is_madmin(user.id):
+        return False
+    info = await banned_info(user.id)
+    if not info:
+        return False
+    text = "🚫 <b>Tài khoản của bạn đã bị cấm sử dụng bot này.</b>"
+    if info[0]:
+        text += f"\nLý do: {_html.escape(str(info[0]))}"
+    q = update.callback_query
+    try:
+        if q:
+            await q.answer("🚫 Bạn đã bị cấm sử dụng bot.", show_alert=True)
+        elif update.effective_message:
+            await update.effective_message.reply_text(text, parse_mode="HTML")
+    except Exception:
+        pass
+    return True
+
+
+async def screen_home(update: Update, uid: int):
+    bots = await user_bots(uid)
+    active = sum(1 for b in bots if b["id"] in MANAGER.running)
+    text = (
+        "🤖 <b>BOT MẸ — TẠO &amp; QUẢN LÝ BOT CON</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "Thêm token bot của bạn vào đây, bot mẹ sẽ chạy cho bạn <b>một bot bán code đầy đủ tính năng</b> "
+        "với dữ liệu hoàn toàn riêng (người dùng, kho code, số dư, cài đặt...).\n\n"
+        f"📦 Bot của bạn: <b>{len(bots)}</b>/{MAX_SAVED_BOTS_PER_USER}\n"
+        f"🟢 Đang chạy: <b>{active}</b>/{MAX_ACTIVE_BOTS_PER_USER}"
+    )
+    rows = [
+        [("➕ Thêm bot (nhập token)", "m:add")],
+        [("🤖 Bot của tôi", "m:list"), ("📖 Hướng dẫn", "m:help")],
+    ]
+    if _is_madmin(uid):
+        rows.append([("👑 Quản trị bot mẹ", "m:adm")])
+    await _show(update, text, _kb(rows))
+
+
+async def screen_help(update: Update):
+    text = (
+        "📖 <b>HƯỚNG DẪN</b>\n━━━━━━━━━━━━━━━━━━\n"
+        "1️⃣ Mở @BotFather → <code>/newbot</code> → lấy <b>token</b> (dạng <code>123456:ABC...</code>).\n"
+        "2️⃣ Bấm <b>➕ Thêm bot</b> rồi gửi token cho mình. Mình sẽ xoá tin nhắn chứa token để an toàn.\n"
+        f"3️⃣ Mỗi người được lưu tối đa <b>{MAX_SAVED_BOTS_PER_USER}</b> bot và <b>bật tối đa {MAX_ACTIVE_BOTS_PER_USER}</b> bot cùng lúc.\n"
+        "4️⃣ Vào <b>Bot của tôi</b> để <b>bật/tắt</b>, <b>thay token</b> hoặc <b>xoá</b> bot.\n"
+        "5️⃣ Mở bot con của bạn → /start → bạn là <b>admin chính</b> (nút <b>Menu</b>): thêm kho code, đặt giá, "
+        "sửa link Game / link Nhập Code...\n\n"
+        "🔒 Dữ liệu của mỗi bot hoàn toàn tách biệt, reset bot này không ảnh hưởng bot khác."
+    )
+    await _show(update, text, _kb([[("⬅️ Quay lại", "m:home")]]))
+
+
+async def screen_my_bots(update: Update, uid: int):
+    bots = await user_bots(uid)
+    if not bots:
+        await _show(update, "📭 Bạn chưa có bot nào. Bấm <b>➕ Thêm bot</b> để bắt đầu.",
+                    _kb([[("➕ Thêm bot (nhập token)", "m:add")], [("⬅️ Quay lại", "m:home")]]))
+        return
+    rows = [[(f"{_status_icon(b)} @{b['bot_username'] or b['id']}", f"m:b:{b['id']}")] for b in bots]
+    rows.append([("➕ Thêm bot", "m:add"), ("⬅️ Quay lại", "m:home")])
+    n_run = sum(1 for b in bots if b["id"] in MANAGER.running)
+    await _show(update, f"🤖 <b>BOT CỦA TÔI</b> — đang chạy {n_run}/{MAX_ACTIVE_BOTS_PER_USER}\nChọn bot để quản lý:", _kb(rows))
+
+
+def _bot_detail_text(row, admin_view=False) -> str:
+    running = row["id"] in MANAGER.running
+    t = (
+        f"🤖 <b>@{_html.escape(row['bot_username'] or '?')}</b> — {_html.escape(row['bot_name'] or '')}\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"Trạng thái: {'🟢 <b>ĐANG CHẠY</b>' if running else '🔴 <b>ĐANG TẮT</b>'}\n"
+        f"Mã bot: <code>#{row['id']}</code>\n"
+        f"Token: <code>{_html.escape(_mask(row['token']))}</code>\n"
+        f"Tạo lúc: {_html.escape(row['created_at'] or '')}\n"
+    )
+    if admin_view:
+        un = f"@{_html.escape(row['owner_username'])}" if row["owner_username"] else "(chưa có username)"
+        t += f"Chủ bot: <a href=\"tg://user?id={row['owner_id']}\">{row['owner_id']}</a> {un}\n"
+    if row.get("last_error") and not running:
+        t += f"⚠️ Lỗi gần nhất: <code>{_html.escape(row['last_error'][:200])}</code>\n"
+    return t
+
+
+async def screen_bot(update: Update, row):
+    running = row["id"] in MANAGER.running
+    t = _bot_detail_text(row)
+    if running:
+        t += "\n👑 Mở bot con → /start → bạn là admin chính (nút <b>Menu</b>)."
+    rows = [
+        [("🔴 Tắt bot" if running else "🟢 Bật bot", f"m:tg:{row['id']}")],
+        [("🔑 Thay token", f"m:rp:{row['id']}"), ("🗑 Xoá bot", f"m:dl:{row['id']}")],
+    ]
+    if row["bot_username"]:
+        rows.append([("🔗 Mở bot", f"url:https://t.me/{row['bot_username']}")])
+    rows.append([("⬅️ Danh sách", "m:list")])
+    await _show(update, t, _kb(rows))
+
+
+async def screen_admin(update: Update):
+    total_users = (await mdb("SELECT COUNT(*) FROM mother_users", fetchone=True))[0]
+    total_bots = (await mdb("SELECT COUNT(*) FROM child_bots", fetchone=True))[0]
+    banned = (await mdb("SELECT COUNT(*) FROM banned_users", fetchone=True))[0]
+    text = (
+        "👑 <b>QUẢN TRỊ BOT MẸ</b>\n━━━━━━━━━━━━━━━━━━\n"
+        f"👥 Người dùng bot mẹ: <b>{total_users:,}</b>\n"
+        f"🤖 Tổng bot con: <b>{total_bots:,}</b> · 🟢 đang chạy: <b>{len(MANAGER.running):,}</b>\n"
+        f"🚫 Đang bị cấm: <b>{banned:,}</b>"
+    )
+    await _show(update, text, _kb([
+        [("📋 Danh sách tất cả bot", "m:al:0")],
+        [("🔎 Tìm / kiểm tra bot", "m:as")],
+        [("🚫 Cấm người dùng", "m:abn"), ("✅ Gỡ cấm", "m:aun")],
+        [("📃 Danh sách bị cấm", "m:abl:0")],
+        [("⬅️ Quay lại", "m:home")],
+    ]))
+
+
+async def screen_all_bots(update: Update, page: int):
+    total = (await mdb("SELECT COUNT(*) FROM child_bots", fetchone=True))[0]
+    pages = max(1, (total + BOTS_PER_PAGE - 1) // BOTS_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    rows_db = await mdb(
+        f"SELECT {_BOT_COLS} FROM child_bots ORDER BY id DESC LIMIT %s OFFSET %s",
+        (BOTS_PER_PAGE, page * BOTS_PER_PAGE), fetchall=True,
+    ) or []
+    rows = []
+    for r in rows_db:
+        b = _row_bot(r)
+        rows.append([(f"{_status_icon(b)} @{b['bot_username'] or b['id']} · {b['owner_id']}", f"m:ab:{b['id']}")])
+    nav = []
+    if page > 0:
+        nav.append(("⬅️", f"m:al:{page - 1}"))
+    nav.append((f"{page + 1}/{pages}", "m:noop"))
+    if page < pages - 1:
+        nav.append(("➡️", f"m:al:{page + 1}"))
+    rows.append(nav)
+    rows.append([("⬅️ Quản trị", "m:adm")])
+    await _show(update, f"📋 <b>TẤT CẢ BOT CON</b> ({total:,})\nChọn bot để kiểm tra:", _kb(rows))
+
+
+async def screen_admin_bot(update: Update, row):
+    stats = await child_stats(row["id"])
+    running = row["id"] in MANAGER.running
+    text = _bot_detail_text(row, admin_view=True) + "\n📊 <b>DỮ LIỆU BOT</b>\n" + stats
+    rows = [
+        [("🔴 Tắt bot" if running else "🟢 Bật bot", f"m:atg:{row['id']}"), ("🔄 Làm mới", f"m:ab:{row['id']}")],
+        [("🚫 Cấm chủ bot", f"m:aban:{row['owner_id']}"), ("🗑 Xoá bot", f"m:adl:{row['id']}")],
+    ]
+    if row["bot_username"]:
+        rows.append([("🔗 Mở bot", f"url:https://t.me/{row['bot_username']}")])
+    rows.append([("⬅️ Danh sách", "m:al:0"), ("👑 Quản trị", "m:adm")])
+    await _show(update, text, _kb(rows))
+
+
+async def screen_banned(update: Update, page: int):
+    total = (await mdb("SELECT COUNT(*) FROM banned_users", fetchone=True))[0]
+    per = 10
+    pages = max(1, (total + per - 1) // per)
+    page = max(0, min(page, pages - 1))
+    rows_db = await mdb(
+        "SELECT user_id, reason, banned_at FROM banned_users ORDER BY banned_at DESC LIMIT %s OFFSET %s",
+        (per, page * per), fetchall=True,
+    ) or []
+    text = f"📃 <b>NGƯỜI DÙNG BỊ CẤM</b> ({total:,})\n━━━━━━━━━━━━━━━━━━\n"
+    rows = []
+    for uid, reason, at in rows_db:
+        text += f"• <code>{uid}</code> — {_html.escape(str(reason or '-'))} <i>({_html.escape(str(at or ''))})</i>\n"
+        rows.append([(f"✅ Gỡ cấm {uid}", f"m:aunb:{uid}")])
+    if not rows_db:
+        text += "<i>Chưa có ai bị cấm.</i>"
+    nav = []
+    if page > 0:
+        nav.append(("⬅️", f"m:abl:{page - 1}"))
+    if page < pages - 1:
+        nav.append(("➡️", f"m:abl:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([("⬅️ Quản trị", "m:adm")])
+    await _show(update, text, _kb(rows))
+
+
+async def _notify(bot, uid: int, text: str):
+    try:
+        await bot.send_message(uid, text, parse_mode="HTML")
+    except Exception:
+        pass
+
+
+CANCEL_ROW = [[("❌ Huỷ", "m:cancel")]]
+
+
+async def m_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or not update.effective_message or update.effective_chat.type != "private":
+        return
+    if await _blocked(update):
+        return
+    await _touch_user(user)
+    mother_state.pop(user.id, None)
+    await screen_home(update, user.id)
+
+
+async def m_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or update.effective_chat.type != "private" or not _is_madmin(user.id):
+        return
+    mother_state.pop(user.id, None)
+    await screen_admin(update)
+
+
+async def m_cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or update.effective_chat.type != "private":
+        return
+    mother_state.pop(user.id, None)
+    await screen_home(update, user.id)
+
+
+async def _dispatch(update: Update, context, uid: int, parts) -> str:
+    """Xử lý 1 nút bấm. Trả về nội dung toast (nếu có)."""
+    act = parts[1] if len(parts) > 1 else ""
+    arg = parts[2] if len(parts) > 2 else ""
+    admin = _is_madmin(uid)
+
+    if act in ("home", "cancel"):
+        mother_state.pop(uid, None)
+        await screen_home(update, uid)
+        return ""
+    if act == "noop":
+        return ""
+    if act == "help":
+        await screen_help(update)
+        return ""
+    if act == "list":
+        mother_state.pop(uid, None)
+        await screen_my_bots(update, uid)
+        return ""
+
+    if act == "add":
+        if len(await user_bots(uid)) >= MAX_SAVED_BOTS_PER_USER:
+            return f"Bạn đã lưu tối đa {MAX_SAVED_BOTS_PER_USER} bot. Hãy xoá bớt trước khi thêm."
+        mother_state[uid] = {"action": "add"}
+        await _show(update,
+                    "🔑 <b>THÊM BOT</b>\nGửi <b>token</b> bot của bạn (lấy từ @BotFather).\n"
+                    "<i>Mình sẽ xoá tin nhắn chứa token ngay sau khi nhận.</i>",
+                    _kb(CANCEL_ROW))
+        return ""
+
+    # ---- thao tác trên bot của chính mình ----
+    if act in ("b", "tg", "rp", "dl", "dly"):
+        row = await get_bot_row(int(arg)) if arg.isdigit() else None
+        if not row or row["owner_id"] != uid:
+            return "Không tìm thấy bot của bạn."
+        if act == "b":
+            await screen_bot(update, row)
+        elif act == "tg":
+            if row["id"] in MANAGER.running:
+                await deactivate_bot(row["id"])
+                msg = "Đã tắt bot."
+            else:
+                ok, msg = await activate_bot(row["id"])
+            row = await get_bot_row(row["id"])
+            if row:
+                await screen_bot(update, row)
+            return msg
+        elif act == "rp":
+            mother_state[uid] = {"action": "replace", "bot_id": row["id"]}
+            await _show(update,
+                        f"🔑 <b>THAY TOKEN</b> cho @{_html.escape(row['bot_username'] or '?')}\n"
+                        "Gửi <b>token mới</b>. Dữ liệu (người dùng, kho code, số dư...) của bot được giữ nguyên.",
+                        _kb([[("❌ Huỷ", f"m:b:{row['id']}")]]))
+        elif act == "dl":
+            await _show(update,
+                        f"🗑 <b>XOÁ BOT @{_html.escape(row['bot_username'] or '?')}?</b>\n"
+                        "Sẽ <b>xoá token và TOÀN BỘ dữ liệu</b> của bot này (người dùng, kho code, giao dịch...). "
+                        "Không thể hoàn tác!",
+                        _kb([[("✅ Xác nhận xoá", f"m:dly:{row['id']}"), ("❌ Huỷ", f"m:b:{row['id']}")]]))
+        elif act == "dly":
+            await delete_bot(row["id"])
+            await screen_my_bots(update, uid)
+            return "Đã xoá bot."
+        return ""
+
+    # ---- khu vực admin bot mẹ ----
+    if act.startswith("a") or act == "adm":
+        if not admin:
+            return "Bạn không có quyền."
+        if act == "adm":
+            mother_state.pop(uid, None)
+            await screen_admin(update)
+        elif act == "al":
+            await screen_all_bots(update, int(arg) if arg.isdigit() else 0)
+        elif act in ("ab", "atg", "adl", "adly"):
+            row = await get_bot_row(int(arg)) if arg.isdigit() else None
+            if not row:
+                return "Không tìm thấy bot."
+            if act == "ab":
+                await screen_admin_bot(update, row)
+            elif act == "atg":
+                if row["id"] in MANAGER.running:
+                    await deactivate_bot(row["id"])
+                    msg = "Đã tắt bot."
+                    await _notify(context.bot, row["owner_id"],
+                                  f"⚠️ Admin đã <b>tắt</b> bot @{_html.escape(row['bot_username'] or '?')} của bạn.")
+                else:
+                    ok, msg = await activate_bot(row["id"], by_admin=True)
+                row = await get_bot_row(row["id"])
+                if row:
+                    await screen_admin_bot(update, row)
+                return msg
+            elif act == "adl":
+                await _show(update,
+                            f"🗑 <b>XOÁ BOT @{_html.escape(row['bot_username'] or '?')}</b> (chủ bot {row['owner_id']})?\n"
+                            "Xoá token + TOÀN BỘ dữ liệu bot. Không thể hoàn tác!",
+                            _kb([[("✅ Xác nhận xoá", f"m:adly:{row['id']}"), ("❌ Huỷ", f"m:ab:{row['id']}")]]))
+            elif act == "adly":
+                await delete_bot(row["id"])
+                await _notify(context.bot, row["owner_id"],
+                              f"⚠️ Admin đã <b>xoá</b> bot @{_html.escape(row['bot_username'] or '?')} của bạn.")
+                await screen_all_bots(update, 0)
+                return "Đã xoá bot."
+        elif act == "aban":
+            target = int(arg) if arg.isdigit() else 0
+            if not target or _is_madmin(target):
+                return "Không thể cấm ID này."
+            await ban_user(target, "Bị admin cấm khi kiểm tra bot", uid)
+            await _notify(context.bot, target, "🚫 <b>Tài khoản của bạn đã bị cấm.</b> Toàn bộ bot của bạn đã bị tắt.")
+            await screen_admin(update)
+            return f"Đã cấm {target} và tắt toàn bộ bot của họ."
+        elif act == "as":
+            mother_state[uid] = {"action": "search"}
+            await _show(update,
+                        "🔎 <b>TÌM BOT</b>\nGửi <b>@username bot</b>, <b>mã bot</b> (#số), hoặc <b>ID chủ bot</b>:",
+                        _kb([[("❌ Huỷ", "m:adm")]]))
+        elif act == "abn":
+            mother_state[uid] = {"action": "ban"}
+            await _show(update,
+                        "🚫 <b>CẤM NGƯỜI DÙNG</b>\nGửi: <code>USER_ID lý do (không bắt buộc)</code>\n"
+                        "Toàn bộ bot của người này sẽ bị tắt và họ không dùng được bot mẹ.",
+                        _kb([[("❌ Huỷ", "m:adm")]]))
+        elif act == "aun":
+            mother_state[uid] = {"action": "unban"}
+            await _show(update, "✅ <b>GỠ CẤM</b>\nGửi <b>USER_ID</b> cần gỡ cấm:", _kb([[("❌ Huỷ", "m:adm")]]))
+        elif act == "abl":
+            await screen_banned(update, int(arg) if arg.isdigit() else 0)
+        elif act == "aunb":
+            target = int(arg) if arg.isdigit() else 0
+            await unban_user(target)
+            await _notify(context.bot, target, "✅ Tài khoản của bạn đã được gỡ cấm. Các bot cần bật lại thủ công.")
+            await screen_banned(update, 0)
+            return f"Đã gỡ cấm {target}."
+        return ""
+    return ""
+
+
+async def m_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if not q or not q.from_user:
+        return
+    if q.message and q.message.chat.type != "private":
+        await q.answer()
+        return
+    if await _blocked(update):
+        return
+    toast = ""
+    try:
+        await _touch_user(q.from_user)
+        toast = await _dispatch(update, context, q.from_user.id, (q.data or "").split(":")) or ""
+    except Exception as exc:
+        logger.exception("Lỗi bot mẹ (callback %s): %s", q.data, exc)
+        toast = "Có lỗi xảy ra, vui lòng thử lại."
+    try:
+        await q.answer(toast[:190] if toast else None, show_alert=bool(toast) and len(toast) > 60)
+    except Exception:
+        pass
+
+
+async def _validate_token(token: str):
+    """Trả về (me, lỗi). me là telegram.User của bot."""
+    if not TOKEN_RE.match(token):
+        return None, "Token sai định dạng (phải dạng <code>123456789:AAxxxxxxxx...</code>)."
+    if token == MOTHER_TOKEN:
+        return None, "Đây là token của bot mẹ, không thể dùng làm bot con."
+    try:
+        async with Bot(token) as b:
+            me = await b.get_me()
+    except InvalidToken:
+        return None, "Token không hợp lệ hoặc đã bị thu hồi."
+    except Exception as exc:
+        return None, f"Không kiểm tra được token: {_html.escape(str(exc))[:150]}"
+    if me.id == MOTHER_CTX.cfg.get("tg_id"):
+        return None, "Đây là bot mẹ, không thể dùng làm bot con."
+    return me, ""
+
+
+async def _handle_token_input(update: Update, context, uid: int, st: dict):
+    msg = update.effective_message
+    token = (msg.text or "").strip()
+    try:
+        await msg.delete()      # xoá tin nhắn chứa token cho an toàn
+    except Exception:
+        pass
+    chat_id = update.effective_chat.id
+    replace_id = st.get("bot_id") if st["action"] == "replace" else None
+    back = f"m:b:{replace_id}" if replace_id else "m:cancel"
+
+    me, err = await _validate_token(token)
+    if err:
+        await context.bot.send_message(chat_id, f"❌ {err}\nGửi lại token khác hoặc bấm Huỷ.",
+                                       parse_mode="HTML", reply_markup=_kb([[("❌ Huỷ", back)]]))
+        return
+    dup = await mdb("SELECT id FROM child_bots WHERE token=%s OR tg_bot_id=%s", (token, me.id), fetchone=True)
+    if dup and dup[0] != replace_id:
+        await context.bot.send_message(chat_id, "❌ Token/bot này đã được thêm trong hệ thống. Gửi token khác hoặc bấm Huỷ.",
+                                       reply_markup=_kb([[("❌ Huỷ", back)]]))
+        return
+    if dup and dup[0] == replace_id:
+        await context.bot.send_message(chat_id, "ℹ️ Đây chính là token hiện tại của bot. Gửi token khác hoặc bấm Huỷ.",
+                                       reply_markup=_kb([[("❌ Huỷ", back)]]))
+        return
+
+    if replace_id:
+        row = await get_bot_row(replace_id)
+        if not row or row["owner_id"] != uid:
+            mother_state.pop(uid, None)
+            await context.bot.send_message(chat_id, "❌ Không tìm thấy bot.")
+            return
+        mother_state.pop(uid, None)
+        async with MANAGER.lock(replace_id):
+            was_running = replace_id in MANAGER.running
+            await MANAGER.stop(replace_id)
+            await mdb(
+                "UPDATE child_bots SET token=%s, tg_bot_id=%s, bot_username=%s, bot_name=%s, last_error=NULL WHERE id=%s",
+                (token, me.id, me.username or "", me.full_name or "", replace_id), commit=True,
+            )
+            row = await get_bot_row(replace_id)
+            note = "✅ Đã thay token."
+            if was_running:
+                ok, e = await MANAGER.start(row)
+                if ok:
+                    note += " Bot đã chạy lại với token mới."
+                else:
+                    await mdb("UPDATE child_bots SET active=FALSE, last_error=%s WHERE id=%s", (e[:300], replace_id), commit=True)
+                    note += f" Nhưng chưa bật được: {_html.escape(e[:150])}"
+            else:
+                note += " Bot đang tắt — bấm Bật bot để chạy."
+        row = await get_bot_row(replace_id)
+        await context.bot.send_message(chat_id, note, parse_mode="HTML")
+        await context.bot.send_message(chat_id, _bot_detail_text(row), parse_mode="HTML",
+                                       reply_markup=_kb([[("🔴 Tắt bot" if replace_id in MANAGER.running else "🟢 Bật bot", f"m:tg:{replace_id}")],
+                                                         [("⬅️ Danh sách", "m:list")]]))
+        return
+
+    # thêm mới
+    if len(await user_bots(uid)) >= MAX_SAVED_BOTS_PER_USER:
+        mother_state.pop(uid, None)
+        await context.bot.send_message(chat_id, f"❌ Bạn đã lưu tối đa {MAX_SAVED_BOTS_PER_USER} bot.")
+        return
+    mother_state.pop(uid, None)
+    owner_un = update.effective_user.username or ""
+    r = await mdb(
+        "INSERT INTO child_bots (owner_id, owner_username, token, tg_bot_id, bot_username, bot_name, active, created_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,FALSE,%s) RETURNING id",
+        (uid, owner_un, token, me.id, me.username or "", me.full_name or "", get_now_str()),
+        fetchone=True, commit=True,
+    )
+    bot_id = r[0]
+    ok, text = await activate_bot(bot_id)
+    row = await get_bot_row(bot_id)
+    head = (f"✅ Đã thêm bot @{_html.escape(me.username or '')} và <b>kích hoạt</b>!\n"
+            f"Mở bot → /start → bạn là admin chính." if ok else
+            f"✅ Đã lưu bot @{_html.escape(me.username or '')} nhưng <b>chưa bật</b>: {_html.escape(text)}")
+    await context.bot.send_message(chat_id, head, parse_mode="HTML")
+    await context.bot.send_message(chat_id, _bot_detail_text(row), parse_mode="HTML",
+                                   reply_markup=_kb([[("🔴 Tắt bot" if bot_id in MANAGER.running else "🟢 Bật bot", f"m:tg:{bot_id}")],
+                                                     [("🤖 Bot của tôi", "m:list")]]))
+
+
+async def m_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg or update.effective_chat.type != "private":
+        return
+    if await _blocked(update):
+        return
+    await _touch_user(user)
+    uid = user.id
+    st = mother_state.get(uid)
+    if not st:
+        await screen_home(update, uid)
+        return
+    act = st["action"]
+    text = (msg.text or "").strip()
+
+    if act in ("add", "replace"):
+        await _handle_token_input(update, context, uid, st)
+        return
+
+    if not _is_madmin(uid):
+        mother_state.pop(uid, None)
+        return
+
+    if act == "search":
+        mother_state.pop(uid, None)
+        q = text.strip()
+        conds, params = [], []
+        if q.startswith("@") or not re.fullmatch(r"#?\d+", q):
+            like = f"%{q.lstrip('@').lower()}%"
+            conds.append("LOWER(bot_username) LIKE %s OR LOWER(COALESCE(owner_username,'')) LIKE %s")
+            params += [like, like]
+        else:
+            n = int(q.lstrip("#"))
+            conds.append("id=%s OR owner_id=%s OR tg_bot_id=%s")
+            params += [n, n, n]
+        rows_db = await mdb(
+            f"SELECT {_BOT_COLS} FROM child_bots WHERE {conds[0]} ORDER BY id DESC LIMIT 10",
+            tuple(params), fetchall=True,
+        ) or []
+        if not rows_db:
+            await msg.reply_text("❌ Không tìm thấy bot nào.", reply_markup=_kb([[("👑 Quản trị", "m:adm")]]))
+            return
+        rows = []
+        for r in rows_db:
+            b = _row_bot(r)
+            rows.append([(f"{_status_icon(b)} @{b['bot_username'] or b['id']} · {b['owner_id']}", f"m:ab:{b['id']}")])
+        rows.append([("👑 Quản trị", "m:adm")])
+        await msg.reply_text(f"🔎 Tìm thấy <b>{len(rows_db)}</b> bot:", parse_mode="HTML", reply_markup=_kb(rows))
+        return
+
+    if act == "ban":
+        parts = text.split(maxsplit=1)
+        if not parts or not parts[0].isdigit():
+            await msg.reply_text("❌ Sai cú pháp. Gửi: <code>USER_ID lý do</code>", parse_mode="HTML",
+                                 reply_markup=_kb([[("❌ Huỷ", "m:adm")]]))
+            return
+        target = int(parts[0])
+        mother_state.pop(uid, None)
+        if _is_madmin(target):
+            await msg.reply_text("❌ Không thể cấm admin bot mẹ.")
+            return
+        reason = parts[1] if len(parts) > 1 else "Vi phạm quy định"
+        await ban_user(target, reason, uid)
+        await _notify(context.bot, target,
+                      f"🚫 <b>Tài khoản của bạn đã bị cấm.</b>\nLý do: {_html.escape(reason)}\nToàn bộ bot của bạn đã bị tắt.")
+        await msg.reply_text(f"✅ Đã cấm <code>{target}</code> và tắt toàn bộ bot của họ.", parse_mode="HTML",
+                             reply_markup=_kb([[("👑 Quản trị", "m:adm")]]))
+        return
+
+    if act == "unban":
+        mother_state.pop(uid, None)
+        if not text.isdigit():
+            await msg.reply_text("❌ USER_ID phải là số.", reply_markup=_kb([[("👑 Quản trị", "m:adm")]]))
+            return
+        await unban_user(int(text))
+        await _notify(context.bot, int(text), "✅ Tài khoản của bạn đã được gỡ cấm. Các bot cần bật lại thủ công.")
+        await msg.reply_text(f"✅ Đã gỡ cấm <code>{text}</code>.", parse_mode="HTML",
+                             reply_markup=_kb([[("👑 Quản trị", "m:adm")]]))
+        return
+
+
+async def m_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Lỗi bot mẹ: %s", context.error, exc_info=context.error)
+
+
+def build_mother_app():
+    app = Application.builder().token(MOTHER_TOKEN).build()
+    app.add_handler(CommandHandler("start", m_start))
+    app.add_handler(CommandHandler("admin", m_admin_cmd))
+    app.add_handler(CommandHandler("cancel", m_cancel_cmd))
+    app.add_handler(CallbackQueryHandler(m_callback, pattern=r"^m:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, m_text))
+    for group in app.handlers.values():
+        for h in group:
+            h.callback = _scoped_cb(h.callback, MOTHER_CTX)
+    app.add_error_handler(_scoped_cb(m_error, MOTHER_CTX))
+    return app
+
+
+# ------------------------------------------------------------
+# Khởi động
+# ------------------------------------------------------------
+async def _boot_children(mother_bot):
+    rows = await mdb(
+        f"SELECT {_BOT_COLS} FROM child_bots WHERE active=TRUE ORDER BY id ASC", fetchall=True
+    ) or []
+    sem = asyncio.Semaphore(4)
+
+    async def one(r):
+        row = _row_bot(r)
+        async with sem:
+            if await banned_info(row["owner_id"]):
+                await mdb("UPDATE child_bots SET active=FALSE WHERE id=%s", (row["id"],), commit=True)
+                return
+            async with MANAGER.lock(row["id"]):
+                ok, err = await MANAGER.start(row)
+                if not ok:
+                    await mdb("UPDATE child_bots SET active=FALSE, last_error=%s WHERE id=%s",
+                              (err[:300], row["id"]), commit=True)
+                    await _notify(
+                        mother_bot, row["owner_id"],
+                        f"⚠️ Bot @{_html.escape(row['bot_username'] or '?')} của bạn không khởi động được và đã bị tắt:\n"
+                        f"<code>{_html.escape(err[:200])}</code>\nKiểm tra token rồi bật lại trong bot mẹ.",
+                    )
+
+    await asyncio.gather(*(one(r) for r in rows))
+    logger.info("Đã khởi động %d/%d bot con.", len(MANAGER.running), len(rows))
+
+
+async def amain():
+    threading.Thread(target=run_flask, daemon=True).start()
+    logger.info("🚀 Luồng Flask Server đã khởi động ngầm trên cổng %s", os.getenv("PORT", "5000"))
+
+    await init_mother_db()
+    mother_app = build_mother_app()
+    await mother_app.initialize()
+    MOTHER_CTX.cfg["tg_id"] = mother_app.bot.id
+    await mother_app.start()
+    await mother_app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("🤖 Bot mẹ @%s đã chạy.", mother_app.bot.username)
+
+    await _boot_children(mother_app.bot)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            pass
+    await stop.wait()
+
+    logger.info("Đang tắt hệ thống...")
+    for bot_id in list(MANAGER.running):
+        await MANAGER.stop(bot_id)
+    await _safe_shutdown(mother_app)
+
+
+def main():
+    if not MOTHER_TOKEN:
+        raise RuntimeError("Chưa cấu hình BOT_TOKEN (token bot mẹ).")
+    if not DATABASE_URL:
+        raise RuntimeError("Chưa cấu hình DATABASE_URL.")
+    asyncio.run(amain())
 
 
 if __name__ == "__main__":
