@@ -688,7 +688,6 @@ def _init_db_sync():
                 ("verify_captcha", "1"),
                 ("allow_withdraw", "1"),
                 ("auto_buy_code", "1"),
-                ("verify_vpn", "1"),
             ]
             for key, val in default_settings:
                 cursor.execute(
@@ -697,7 +696,7 @@ def _init_db_sync():
                 )
             # Đã xoá tính năng Captcha/Camera MiniApp + CCCAM -> dọn cài đặt cũ
             cursor.execute(
-                "DELETE FROM settings WHERE key IN ('verify_camera','verify_miniapp_captcha','verify_cccam')"
+                "DELETE FROM settings WHERE key IN ('verify_camera','verify_miniapp_captcha','verify_cccam','verify_vpn')"
             )
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id, id DESC)"
@@ -947,116 +946,12 @@ async def get_user_ips(user_id: int):
 
 
 # ============================================================
-# CHỐNG VPN / PROXY / FAKE IP
-# Cấu hình bằng biến môi trường (.env / Railway Variables):
-#   VPN_BLOCK=1            bật chặn VPN/Proxy/Datacenter
-#   ONLY_VN_IP=1           chỉ cho IP Việt Nam (đặt 0 nếu nhận khách nước ngoài)
-#   CHECK_TZ=1             so múi giờ thiết bị (UTC+7) với IP Việt Nam
-#   CHECK_WEBRTC=1         phát hiện rò rỉ IP thật qua WebRTC
-#   IP_CHECK_FAIL_OPEN=1   API tra IP lỗi thì cho qua (0 = chặn luôn)
-#   PROXYCHECK_KEY=...     (khuyên dùng) key proxycheck.io, chính xác hơn ip-api
+# MINI APP XÁC MINH IP (đã bỏ chặn VPN/Proxy)
 # ============================================================
-VPN_BLOCK = os.getenv("VPN_BLOCK", "1") == "1"
-ONLY_VN_IP = os.getenv("ONLY_VN_IP", "1") == "1"
-CHECK_TZ = os.getenv("CHECK_TZ", "1") == "1"
-CHECK_WEBRTC = os.getenv("CHECK_WEBRTC", "1") == "1"
-IP_CHECK_FAIL_OPEN = os.getenv("IP_CHECK_FAIL_OPEN", "1") == "1"
-PROXYCHECK_KEY = os.getenv("PROXYCHECK_KEY", "").strip()
-IP_CACHE_TTL = 6 * 3600
 STATE_TTL = 3600
 
-_ip_info_cache = {}        # ip -> (ts, info)
 miniapp_state = {}         # token -> trạng thái xác minh PHÍA SERVER
 _miniapp_state_lock = threading.Lock()
-_vpn_alert_ts = _Scoped("vpn_alert_ts", dict)         # user_id -> ts (chống spam thông báo)
-
-
-def _http_json(url: str, timeout: int = 6):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8", "ignore"))
-
-
-def lookup_ip_info(ip: str) -> dict:
-    """Tra cứu IP: quốc gia, proxy/VPN, hosting. Có cache 6 giờ."""
-    now = time.time()
-    cached = _ip_info_cache.get(ip)
-    if cached and now - cached[0] < IP_CACHE_TTL:
-        return cached[1]
-    info = {"ok": False, "proxy": False, "hosting": False, "country": "", "type": ""}
-    try:
-        d = _http_json(
-            f"http://ip-api.com/json/{ip}?fields=status,countryCode,proxy,hosting"
-        )
-        if d.get("status") == "success":
-            info.update(
-                ok=True,
-                country=d.get("countryCode") or "",
-                proxy=bool(d.get("proxy")),
-                hosting=bool(d.get("hosting")),
-            )
-    except Exception as exc:
-        logger.warning("ip-api lỗi cho %s: %s", ip, exc)
-    if PROXYCHECK_KEY:
-        try:
-            d = _http_json(
-                f"https://proxycheck.io/v2/{ip}?key={PROXYCHECK_KEY}&vpn=1&asn=1&risk=1"
-            )
-            r = d.get(ip) or {}
-            if d.get("status") in ("ok", "warning") and r:
-                info["ok"] = True
-                if str(r.get("proxy", "")).lower() == "yes":
-                    info["proxy"] = True
-                    info["type"] = str(r.get("type") or "")
-                if not info["country"] and r.get("isocode"):
-                    info["country"] = str(r["isocode"])
-        except Exception as exc:
-            logger.warning("proxycheck lỗi cho %s: %s", ip, exc)
-    if info["ok"]:
-        _ip_info_cache[ip] = (now, info)
-        if len(_ip_info_cache) > 20000:
-            _ip_info_cache.clear()
-    elif now - _bot_mem("alerts").get("ipcheck", 0.0) > 1800:
-        _bot_mem("alerts")["ipcheck"] = now
-        _send_tg_sync(
-            main_admin_id(),
-            "⚠️ <b>Không tra cứu được IP (ip-api/proxycheck lỗi hoặc hết lượt).</b>\n"
-            + ("Đang cho qua (IP_CHECK_FAIL_OPEN=1)." if IP_CHECK_FAIL_OPEN else "Đang CHẶN tất cả.")
-            + "\nNên đặt PROXYCHECK_KEY để ổn định hơn.",
-        )
-    return info
-
-
-def evaluate_ip_risk(ip: str, tz_offset=None, webrtc=None):
-    """Trả về (risky, lý_do). Dùng cho IP lấy từ server."""
-    info = lookup_ip_info(ip)
-    if not info["ok"]:
-        return (not IP_CHECK_FAIL_OPEN), ("Không kiểm tra được IP" if not IP_CHECK_FAIL_OPEN else "")
-    if info["proxy"]:
-        return True, "VPN/Proxy" + (f" ({info['type']})" if info["type"] else "")
-    if info["hosting"]:
-        return True, "IP máy chủ/datacenter (VPN/Proxy)"
-    if ONLY_VN_IP and info["country"] and info["country"] != "VN":
-        return True, f"IP ngoài Việt Nam ({info['country']})"
-    if CHECK_TZ and ONLY_VN_IP and tz_offset is not None and tz_offset != -420:
-        return True, "Múi giờ thiết bị không khớp IP Việt Nam (nghi dùng VPN/Proxy)"
-    if CHECK_WEBRTC and webrtc:
-        ip_obj = ipaddress.ip_address(ip)
-        for w in list(webrtc)[:6]:
-            w = _valid_ip(w)
-            if not w or w == ip:
-                continue
-            w_obj = ipaddress.ip_address(w)
-            if not w_obj.is_global or w_obj.version != ip_obj.version:
-                continue
-            wi = lookup_ip_info(w)
-            if wi["ok"] and (
-                wi["proxy"]
-                or wi["hosting"]
-                or (ONLY_VN_IP and wi["country"] and wi["country"] != "VN")
-            ):
-                return True, "Rò rỉ WebRTC (IP thật khác IP đang dùng - nghi VPN/Proxy)"
-    return False, ""
 
 
 def get_miniapp_state(token):
@@ -1069,26 +964,6 @@ def get_miniapp_state(token):
             miniapp_state.pop(key, None)
             return None
         return st
-
-
-def _alert_vpn(uid: int, ip: str, reason: str):
-    now = time.time()
-    if now - _vpn_alert_ts.get(uid, 0) < 600:
-        return
-    _vpn_alert_ts[uid] = now
-    _send_tg_sync(
-        main_admin_id(),
-        "🚫 <b>CHẶN VPN/PROXY KHI XÁC MINH</b>\n"
-        f"User: <code>{uid}</code>\nIP: <code>{_html.escape(ip)}</code>\n"
-        f"Lý do: <b>{_html.escape(reason)}</b>\n"
-        f"Bỏ qua cho user này: <code>/skipip {uid}</code>",
-    )
-    _send_tg_sync(
-        uid,
-        "🚫 <b>XÁC MINH BỊ TỪ CHỐI</b>\n"
-        f"Hệ thống phát hiện: <b>{_html.escape(reason)}</b>.\n"
-        "Hãy TẮT VPN / Proxy, dùng mạng 4G/WiFi thật rồi bấm xác minh lại.",
-    )
 
 
 def get_verify_setting_sync(key: str, default=False) -> bool:
@@ -1104,7 +979,7 @@ def get_verify_setting_sync(key: str, default=False) -> bool:
 
 
 def process_miniapp_start(token, req, tz_offset=None, webrtc=None):
-    """Bước 1 của MiniApp: server tự lấy IP, kiểm tra VPN, tạo captcha phía server."""
+    """Bước 1 của MiniApp: server tự lấy IP và ghi nhận (không chặn VPN/Proxy)."""
     uid = _find_user_by_token_sync(token) if token else None
     if not uid:
         return {
@@ -1123,14 +998,9 @@ def process_miniapp_start(token, req, tz_offset=None, webrtc=None):
         )
         skip = bool(row and row[0] == 1)
 
-    risky, reason = (False, "")
-    vpn_enabled = VPN_BLOCK and get_verify_setting_sync("verify_vpn", default=True)
-    if vpn_enabled and not skip:
-        risky, reason = evaluate_ip_risk(ip, tz_offset, webrtc)
-
     a, b = random.randint(1, 9), random.randint(1, 9)
     st = {
-        "uid": uid, "ip": ip, "ip_ok": not risky, "reason": reason, "skip": skip,
+        "uid": uid, "ip": ip, "ip_ok": True, "reason": "", "skip": skip,
         "tz": tz_offset, "captcha_ok": False, "photo": False, "attempts": 0,
         "answer": a + b, "ts": time.time(),
     }
@@ -1141,35 +1011,9 @@ def process_miniapp_start(token, req, tz_offset=None, webrtc=None):
             for k in [k for k, v in miniapp_state.items() if v["ts"] < cutoff]:
                 miniapp_state.pop(k, None)
 
-    if risky:
-        pending_miniapp_ip.pop(uid, None)
-        _alert_vpn(uid, ip, reason)
-        return {"ok": False, "error": "vpn", "ip": ip, "reason": reason}
-
     pending_miniapp_ip[uid] = ip
     _register_ip_sync(uid, ip, notify_user=False)
     return {"ok": True, "ip": ip, "question": f"{a} + {b}"}
-
-
-def recheck_state_ip(st: dict, req):
-    """Khi gửi ảnh: IP phải còn hợp lệ (chặn trường hợp bật VPN SAU khi qua bước 1)."""
-    ip = get_request_ip(req)
-    if not ip:
-        return False, "Không xác định được IP"
-    if ip == st.get("ip"):
-        return True, ""
-    vpn_enabled = VPN_BLOCK and get_verify_setting_sync("verify_vpn", default=True)
-    if vpn_enabled and not st.get("skip"):
-        risky, reason = evaluate_ip_risk(ip, st.get("tz"), None)
-        if risky:
-            st["ip_ok"] = False
-            st["reason"] = reason
-            _alert_vpn(st["uid"], ip, reason)
-            return False, reason
-    st["ip"] = ip
-    pending_miniapp_ip[st["uid"]] = ip
-    _register_ip_sync(st["uid"], ip, notify_user=False)
-    return True, ""
 
 
 def _save_miniapp_token_sync(token: str, user_id: int):
@@ -1222,7 +1066,7 @@ def _record_miniapp_ip_sync(token, req, client_ip=None):
     ip = get_request_ip(req, client_ip)
     if not ip:
         return uid
-    # IP chỉ được ghi sau khi qua kiểm tra VPN ở /api/start
+    # IP được ghi ở /api/start
     return uid
 
 
@@ -3286,7 +3130,6 @@ async def build_admin_menu():
     st_captcha = await get_verify_setting("verify_captcha")
     st_withdraw = await get_verify_setting("allow_withdraw")
     st_auto_buy = await get_verify_setting("auto_buy_code")
-    st_vpn = await get_verify_setting("verify_vpn")
 
     def state(v):
         return "BẬT" if v else "TẮT"
@@ -3296,11 +3139,6 @@ async def build_admin_menu():
             f"Xác minh SĐT: {state(st_phone)}",
             "PHONE",
             callback_data="toggle_verify_phone",
-        )],
-        [abtn(
-            f"Chặn VPN/Proxy: {state(st_vpn)}",
-            "SHIELD",
-            callback_data="toggle_verify_vpn",
         )],
         [abtn(
             f"Xác minh IP Mini App: {state(st_ip)}",
@@ -3405,7 +3243,6 @@ async def admin_toggle_callback(
     key_map = {
         "toggle_verify_phone": "verify_phone",
         "toggle_verify_ip": "verify_ip",
-        "toggle_verify_vpn": "verify_vpn",
         "toggle_verify_channel": "verify_channel",
         "toggle_verify_captcha": "verify_captcha",
         "toggle_allow_withdraw": "allow_withdraw",
@@ -3867,7 +3704,7 @@ ADMIN_PAGES = [
             "• <b>/maint</b> – bật/tắt bảo trì\n"
             "• <b>/resetverify</b> – ⚠️ reset xác minh toàn bộ\n"
             "• <b>/wipeall</b> – ⚠️ XÓA SẠCH dữ liệu hệ thống\n"
-            "• <b>Cài đặt</b> – bật/tắt SĐT, Chặn VPN/Proxy, IP, Kênh, Captcha, Rút tiền, Auto mua code"
+            "• <b>Cài đặt</b> – bật/tắt SĐT, IP, Kênh, Captcha, Rút tiền, Auto mua code"
         ),
         "items": [
             ("/biofriends", "i", "biofriends", "SHIELD2"),
