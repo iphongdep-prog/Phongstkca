@@ -47,7 +47,7 @@ from telegram.ext import (  # noqa: E402
 # ============================================================
 # 2. CẤU HÌNH
 # ============================================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "9264667528:AAEN1mIYHnYL7R2SCHafAcbmO1NRPv9RDkc"  # Khuyến nghị đặt BOT_TOKEN trong Railway Variables
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip() or "9020648885:AAGL7hdtb_Ay7XAtcBtbO7RkzCem9wO0ns0"  # Khuyến nghị đặt BOT_TOKEN trong Railway Variables
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 MINI_APP_URL = os.getenv(
     "MINI_APP_URL", "https://iphongdep-prog.github.io/Phongstkca/"
