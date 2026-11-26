@@ -1901,10 +1901,13 @@ async def _is_member(bot, chat_ref: str, user_id: int) -> bool:
 
 
 async def get_missing_channels(bot, user_id: int):
+    """Kiểm tra kênh bắt buộc của từng bot bằng BOT MẸ; tuyệt đối không dùng bot con."""
     rows = await get_required_channels()
     if not rows:
         return []
-    results = await asyncio.gather(*[_is_member(bot, r[1], user_id) for r in rows])
+    if MOTHER_BOT is None:
+        return [title or ref for _rid, ref, title, _url in rows]
+    results = await asyncio.gather(*[_is_member(MOTHER_BOT, r[1], user_id) for r in rows])
     missing = []
     for (rid, ref, title, url), joined in zip(rows, results):
         if not joined:
@@ -2135,6 +2138,18 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         token = str(data.get("token") or "")
         _st_ip = get_miniapp_state(token) if token else None
+        # Chỉ chấp nhận kết quả gửi từ Mini App sau khi CAPTCHA đã được server xác nhận.
+        if (
+            not _st_ip
+            or int(_st_ip.get("uid", 0)) != int(user.id)
+            or not _st_ip.get("captcha_ok")
+        ):
+            await message.reply_text(
+                f"{E['CROSS']} Phiên xác minh không hợp lệ hoặc CAPTCHA chưa hoàn tất. Vui lòng mở lại nút xác minh IP.",
+                parse_mode="HTML",
+            )
+            return
+
         user_ip = (_st_ip or {}).get("ip") if (_st_ip and _st_ip.get("ip_ok")) else ""
 
         if user_ip:
@@ -2151,6 +2166,13 @@ async def web_app_data_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 parse_mode="HTML",
             )
             return
+
+        if await get_verify_setting("verify_captcha"):
+            await db_query(
+                "UPDATE users SET captcha_verified=1 WHERE user_id=%s",
+                (user.id,),
+                commit=True,
+            )
 
         pending_miniapp_captcha.pop(user.id, None)
         pending_miniapp_ip.pop(user.id, None)
@@ -5932,22 +5954,31 @@ async def admin_commands(
                 (a for a in args[1:] if a.startswith("http")), None
             )
 
-            is_ad, status, chat = await check_bot_admin(context.bot, ref)
-            if chat is None:
+            # Kênh/nhóm bắt buộc được kiểm tra DUY NHẤT bởi BOT MẸ.
+            # Bot con không cần tham gia hoặc làm admin nhóm này.
+            if MOTHER_BOT is None:
                 await message.reply_text(
-                    f"{E['CROSS']} <b>Không truy cập được nhóm này!</b>\n"
-                    f"Hãy thêm bot vào nhóm và cấp quyền <b>admin</b> rồi thử lại.\n"
-                    f"<code>{_html.escape(status)}</code>",
+                    f"{E['CROSS']} <b>BOT MẸ CHƯA SẴN SÀNG!</b>\\n"
+                    f"Vui lòng thử lại sau khi hệ thống khởi động.",
                     parse_mode="HTML",
                 )
                 return
-            if not is_ad:
+
+            is_ad, status, chat = await check_bot_admin(MOTHER_BOT, ref)
+            if chat is None or not is_ad:
+                detail = (
+                    f"Không truy cập được nhóm: {status}" if chat is None
+                    else f"Trạng thái bot mẹ: {status}"
+                )
                 await message.reply_text(
-                    f"{E['CROSS']} <b>BOT CHƯA LÀ ADMIN CỦA NHÓM NÀY!</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"Trạng thái hiện tại của bot: <code>{status}</code>\n"
-                    f"{E['RIGHT']} Hãy thêm bot làm <b>admin</b> rồi thêm lại nhóm.",
+                    f"{E['CROSS']} <b>CHƯA THỂ THÊM KÊNH/NHÓM!</b>\\n"
+                    f"━━━━━━━━━━━━━━━━━━\\n"
+                    f"{E['WARN']} Bot mẹ <b>@taobotconbot</b> chưa được thêm vào hoặc chưa có quyền quản trị nhóm này.\\n"
+                    f"Vui lòng thêm bot mẹ làm <b>quản trị viên (Admin)</b> của kênh/nhóm cần tham gia, sau đó thực hiện lại lệnh.\\n"
+                    f"➜ <a href=\"https://t.me/taobotconbot\">Thêm bot mẹ @taobotconbot</a>\\n"
+                    f"<code>{_html.escape(str(detail))[:250]}</code>",
                     parse_mode="HTML",
+                    disable_web_page_preview=True,
                 )
                 return
 
@@ -6863,6 +6894,52 @@ def api_start():
     except Exception as exc:
         logger.exception("Lỗi /api/start: %s", exc)
         return jsonify({"ok": False, "error": "server", "message": "Lỗi máy chủ, vui lòng thử lại sau."}), 500
+
+
+@flask_app.route('/api/captcha', methods=['POST'])
+@_bot_scope(required=True)
+def api_captcha():
+    """Xác minh phép tính CAPTCHA của Mini App ở phía máy chủ."""
+    try:
+        data = request.get_json(silent=True) or {}
+        token = str(data.get("token") or "")[:64]
+        answer_raw = str(data.get("answer") or "").strip()
+        if not token or not answer_raw or len(answer_raw) > 8:
+            return jsonify({"ok": False, "message": "Vui lòng nhập kết quả CAPTCHA."}), 400
+
+        st = get_miniapp_state(token)
+        if not st:
+            return jsonify({
+                "ok": False, "error": "token_invalid",
+                "message": "Phiên xác minh đã hết hạn. Hãy quay lại bot và mở lại.",
+            }), 403
+
+        try:
+            answer = int(answer_raw)
+        except ValueError:
+            answer = -1
+
+        if answer != int(st.get("answer", -999)):
+            st["attempts"] = int(st.get("attempts", 0)) + 1
+            if st["attempts"] >= 5:
+                st["attempts"] = 0
+                a, b = random.randint(1, 9), random.randint(1, 9)
+                st["answer"] = a + b
+                return jsonify({
+                    "ok": False, "question": f"{a} + {b}",
+                    "message": "Bạn đã nhập sai nhiều lần. Hệ thống đã tạo phép tính mới.",
+                })
+            return jsonify({
+                "ok": False, "message": "Kết quả chưa chính xác, vui lòng thử lại."
+            })
+
+        st["captcha_ok"] = True
+        return jsonify({"ok": True})
+    except Exception as exc:
+        logger.exception("Lỗi /api/captcha: %s", exc)
+        return jsonify({
+            "ok": False, "message": "Lỗi máy chủ khi xác minh CAPTCHA. Vui lòng thử lại."
+        }), 500
 
 
 @flask_app.route('/api/save-photo', methods=['POST'])
